@@ -51,6 +51,10 @@ jobs:
         working-directory: Musicgo-main
         run: npm ci
 
+      - name: Grant execute permission
+        working-directory: Musicgo-main/android
+        run: chmod +x gradlew
+
       - name: Build Release APK
         working-directory: Musicgo-main/android
         run: ./gradlew :app:assembleRelease --no-daemon --console=plain

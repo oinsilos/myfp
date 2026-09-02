@@ -33,9 +33,9 @@ jobs:
         with:
           cmdline-tools-version: latest
 
-      - name: Install SDK platform 37, build-tools & NDK
+      - name: Install SDK platform 37.0, build-tools & NDK
         run: |
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006"
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.1.12297006"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
       - name: Generate signing keystore & local.properties
