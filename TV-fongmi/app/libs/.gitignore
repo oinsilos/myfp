@@ -1,1 +1,2 @@
-lib-*.aar
+# lib-*.aar 为编译必需的本地库（media3 / ffmpeg / mpv），需提交
+!lib-*.aar
