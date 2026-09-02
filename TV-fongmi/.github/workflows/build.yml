@@ -1,0 +1,61 @@
+name: Build FongMi TV APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Python 3.10 (Chaquopy)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Install SDK platform 37, build-tools & NDK
+        run: |
+          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Generate signing keystore & local.properties
+        run: |
+          keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias fongmi -storepass fongmi123456 -keypass fongmi123456 \
+            -dname "CN=fongmi, OU=dev, O=fongmi, L=TW, S=TW, C=TW"
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          storeFile=../release.jks
+          keyAlias=fongmi
+          storePassword=fongmi123456
+          EOF
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Leanback Release APK
+        run: ./gradlew :app:assembleLeanbackRelease --no-daemon --console=plain
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fongmi-leanback-release-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
