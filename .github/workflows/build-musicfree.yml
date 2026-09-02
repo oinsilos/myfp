@@ -3,8 +3,8 @@ name: Build MusicFree APK
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    paths:
+      - 'Musicgo-main/**'
   workflow_dispatch:
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: Musicgo-main/package-lock.json
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -38,8 +38,9 @@ jobs:
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
       - name: Create keystore.properties (debug signing)
+        working-directory: Musicgo-main/android
         run: |
-          cat > android/keystore.properties <<'EOF'
+          cat > keystore.properties <<'EOF'
           RELEASE_STORE_FILE=debug.keystore
           RELEASE_STORE_PASSWORD=android
           RELEASE_KEY_ALIAS=androiddebugkey
@@ -47,12 +48,12 @@ jobs:
           EOF
 
       - name: Install npm dependencies
+        working-directory: Musicgo-main
         run: npm ci
 
       - name: Build Release APK
-        run: |
-          cd android
-          ./gradlew :app:assembleRelease --no-daemon --console=plain
+        working-directory: Musicgo-main/android
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
         env:
           NODE_ENV: production
 
@@ -60,5 +61,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: musicfree-release-apk
-          path: android/app/build/outputs/apk/**/*.apk
+          path: Musicgo-main/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
