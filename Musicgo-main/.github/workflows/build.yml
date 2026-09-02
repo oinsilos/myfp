@@ -1,0 +1,64 @@
+name: Build MusicFree APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Install SDK platform 35 & NDK 27
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Create keystore.properties (debug signing)
+        run: |
+          cat > android/keystore.properties <<'EOF'
+          RELEASE_STORE_FILE=debug.keystore
+          RELEASE_STORE_PASSWORD=android
+          RELEASE_KEY_ALIAS=androiddebugkey
+          RELEASE_KEY_PASSWORD=android
+          EOF
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew :app:assembleRelease --no-daemon --console=plain
+        env:
+          NODE_ENV: production
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: musicfree-release-apk
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

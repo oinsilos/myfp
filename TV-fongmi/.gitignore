@@ -1,0 +1,14 @@
+.idea
+.vscode
+.gradle
+.github/*
+!.github/workflows
+.github/workflows/*
+!.github/workflows/build.yml
+.settings
+*build
+*.jks
+*.properties
+lib-*.aar
+/Release
+/docs
