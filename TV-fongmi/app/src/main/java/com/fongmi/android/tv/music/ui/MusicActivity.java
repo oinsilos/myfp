@@ -140,14 +140,14 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         binding.btnPrev.setOnClickListener(v -> ifService(s -> s.prev()));
         binding.btnNext.setOnClickListener(v -> ifService(s -> s.next()));
         binding.btnPlay.setOnClickListener(v -> ifService(MusicPlaybackService::toggle));
-        // 歌词行点击：有词进全屏歌词，无词/失败给原因，绝不无声
+        // 歌词行点击：有词进全屏歌词；无词/失败也弹 Dialog 显示原因（Toast 在部分 ROM 上不可靠）
         binding.tvLyric.setOnClickListener(v -> {
             if (lyricLines != null && !lyricLines.isEmpty()) {
                 showLyricDialog();
             } else if (lastLyricError != null) {
-                Notify.show("歌词：" + lastLyricError);
+                showLyricMessage("歌词获取失败\n\n" + lastLyricError);
             } else {
-                Notify.show("暂无歌词");
+                showLyricMessage("该歌曲暂无歌词\n\n（未收录歌词或 VIP 歌曲）");
             }
         });
         binding.tvMode.setOnClickListener(v -> {
@@ -479,6 +479,41 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
 
     private View spacer() {
         return new View(this);
+    }
+
+    /** 无词/失败时的全屏提示：不依赖 Toast，保证用户一定能看到原因。点击任意处关闭。 */
+    private void showLyricMessage(String message) {
+        if (lyricDialog != null) return;
+        TextView body = new TextView(this);
+        body.setText(message == null ? "" : message);
+        body.setTextSize(16f);
+        body.setTextColor(0xFFDDDDDD);
+        body.setGravity(Gravity.CENTER);
+        body.setPadding(48, 0, 48, 0);
+
+        TextView tip = new TextView(this);
+        tip.setText("点击任意处关闭");
+        tip.setTextSize(12f);
+        tip.setTextColor(0xFF666666);
+        tip.setGravity(Gravity.CENTER);
+        tip.setPadding(0, 24, 0, 48);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER);
+        root.setClickable(true);
+        root.setFocusable(true);
+        root.addView(body, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(tip, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        lyricDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        Window w = lyricDialog.getWindow();
+        if (w != null) w.setBackgroundDrawable(new ColorDrawable(0xE6000000));
+        lyricDialog.setContentView(root);
+        root.setOnClickListener(v -> lyricDialog.dismiss());
+        lyricDialog.setOnDismissListener(d -> lyricDialog = null);
+        lyricDialog.setCanceledOnTouchOutside(true);
+        lyricDialog.show();
     }
 
     private LinearLayout.LayoutParams spacerLp(int h) {
