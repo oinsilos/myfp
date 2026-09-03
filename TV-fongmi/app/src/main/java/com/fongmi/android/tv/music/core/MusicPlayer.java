@@ -46,8 +46,8 @@ public final class MusicPlayer {
         /** 播放器状态机变化（STATE_IDLE/BUFFERING/READY/ENDED），诊断用。 */
         void onStateChanged(int state);
 
-        /** 播放错误（含错误码/原因/当前 URL），诊断用。 */
-        void onError(MusicMedia media, int errorCode, String message);
+        /** 播放错误（完整异常对象，含 cause 链，诊断用）。 */
+        void onError(MusicMedia media, PlaybackException error);
 
         /** 播放进度（位置/时长，毫秒）。 */
         void onProgress(long positionMs, long durationMs);
@@ -257,7 +257,7 @@ public final class MusicPlayer {
                 Log.e(TAG, "playback error: media=" + (current == null ? "null" : current.title)
                         + " url=" + (current == null ? "null" : current.url)
                         + " code=" + error.errorCode + " msg=" + error.getMessage(), error);
-                callback.onError(current, error.errorCode, error.getMessage());
+                callback.onError(current, error);
                 handleErrors(error.getMessage());
             }
         });

@@ -19,6 +19,7 @@ import android.os.Looper;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.media3.common.PlaybackException;
 
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.music.core.MusicPlayer;
@@ -50,7 +51,7 @@ public final class MusicPlaybackService extends Service {
 
         void onStateChanged(int state);
 
-        void onError(MusicMedia media, int errorCode, String message);
+        void onError(MusicMedia media, PlaybackException error);
 
         void onProgress(long positionMs, long durationMs);
 
@@ -251,8 +252,8 @@ public final class MusicPlaybackService extends Service {
         }
 
         @Override
-        public void onError(MusicMedia media, int errorCode, String message) {
-            if (listener != null) listener.onError(media, errorCode, message);
+        public void onError(MusicMedia media, PlaybackException error) {
+            if (listener != null) listener.onError(media, error);
         }
 
         @Override

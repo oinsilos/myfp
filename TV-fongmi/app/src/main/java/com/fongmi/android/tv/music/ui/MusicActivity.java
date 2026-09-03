@@ -16,6 +16,7 @@ import android.widget.SeekBar;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -216,12 +217,25 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     }
 
     @Override
-    public void onError(MusicMedia media, int errorCode, String message) {
+    public void onError(MusicMedia media, PlaybackException error) {
         String url = media == null || media.url == null ? "-" : media.url;
-        String why = message == null || message.isEmpty() ? "未知" : message;
-        if (why.length() > 100) why = why.substring(0, 100) + "…";
-        lastError = "err " + errorCode + ": " + why + "\n" + url;
+        // 表层 message 常是 "Source error"，真正原因在 cause 链里
+        String why = describe(error);
+        if (why.isEmpty()) why = error.getMessage() == null ? "未知" : error.getMessage();
+        if (why.length() > 120) why = why.substring(0, 120) + "…";
+        lastError = "err " + error.errorCode + ": " + why + "\n" + url;
         runOnUiThread(() -> binding.tvState.setText(lastError));
+    }
+
+    /** 取 cause 链顶层的具体异常原因（跳过笼统的 "Source error"）。 */
+    private String describe(Throwable t) {
+        for (int i = 0; t != null && i < 4; i++, t = t.getCause()) {
+            String m = t.getMessage();
+            if (m != null && !m.isEmpty() && !"Source error".equals(m)) {
+                return t.getClass().getSimpleName() + ": " + m;
+            }
+        }
+        return "";
     }
 
     private static String stateName(int state) {
