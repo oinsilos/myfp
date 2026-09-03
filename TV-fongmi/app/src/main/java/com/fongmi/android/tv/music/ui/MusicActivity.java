@@ -203,6 +203,15 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         runOnUiThread(() -> binding.tvState.setText(stateName(state)));
     }
 
+    @Override
+    public void onError(MusicMedia media, int errorCode, String message) {
+        String url = media == null || media.url == null ? "-" : media.url;
+        String why = message == null || message.isEmpty() ? "未知" : message;
+        if (why.length() > 100) why = why.substring(0, 100) + "…";
+        final String display = "err " + errorCode + ": " + why + "\n" + url;
+        runOnUiThread(() -> binding.tvState.setText(display));
+    }
+
     private static String stateName(int state) {
         switch (state) {
             case Player.STATE_IDLE: return "idle";
