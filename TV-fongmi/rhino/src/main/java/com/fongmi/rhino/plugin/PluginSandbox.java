@@ -36,6 +36,12 @@ public final class PluginSandbox {
     private volatile Scriptable instance;
     private volatile boolean ready;
     private volatile boolean destroyed;
+    /**
+     * 沙箱线程标记：单线程 executor 的所有任务（含 __tick 泵送的微任务 flush）开始时写入当前线程。
+     * stringify 等「submit().get()」路径据此判断是否重入——重入时直接内联执行，
+     * 避免单线程 executor 自提交自等待死锁（App 内音乐搜索永久转圈的根因）。
+     */
+    private final ThreadLocal<Thread> sandboxTL = new ThreadLocal<>();
 
     private PluginSandbox(PluginHost.Variables variables, String appVersion) {
         this.variables = variables;
@@ -54,12 +60,12 @@ public final class PluginSandbox {
     public void ready() {
         if (ready) return;
         try {
-            executor.submit(() -> {
+            executor.submit(() -> mark(() -> {
                 initCtx();
                 host = new PluginHost(cx, scope, variables, appVersion);
                 host.bind();
                 return null;
-            }).get();
+            })).get();
             ready = true;
         } catch (Exception e) {
             throw new RuntimeException("rhino plugin runtime init failed", e);
@@ -71,11 +77,11 @@ public final class PluginSandbox {
         if (destroyed) return;
         destroyed = true;
         try {
-            executor.submit(() -> {
+            executor.submit(() -> mark(() -> {
                 if (global != null) global.destroy();
                 Context.exit();
                 return null;
-            }).get();
+            })).get();
         } catch (Throwable ignored) {
         }
         executor.shutdownNow();
@@ -85,7 +91,7 @@ public final class PluginSandbox {
     public Scriptable load(final String code) {
         ready();
         try {
-            return executor.submit(() -> {
+            return executor.submit(() -> mark(() -> {
                 String content = Transpile.toCommonJs(code);
                 // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
                 // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
@@ -102,7 +108,7 @@ public final class PluginSandbox {
                 Object name = ScriptableObject.getProperty(this.instance, "platform");
                 if (host != null) host.setPluginName(name instanceof CharSequence ? name.toString() : "");
                 return this.instance;
-            }).get();
+            })).get();
         } catch (Exception e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
             if (cause instanceof RuntimeException) throw (RuntimeException) cause;
@@ -113,7 +119,7 @@ public final class PluginSandbox {
     /** 调用插件方法（方法可返回 Promise），异步桥回 Java CompletableFuture。 */
     public CompletableFuture<Object> call(final String method, final Object... args) {
         final CompletableFuture<Object> future = new CompletableFuture<>();
-        executor.submit(() -> {
+        executor.submit(() -> mark(() -> {
             try {
                 Async.run(cx, scope, instance, method, args).whenComplete((result, error) -> {
                     if (error != null) future.completeExceptionally(error);
@@ -122,7 +128,8 @@ public final class PluginSandbox {
             } catch (Throwable e) {
                 future.completeExceptionally(e);
             }
-        });
+            return null;
+        }));
         return future;
     }
 
@@ -138,11 +145,11 @@ public final class PluginSandbox {
      */
     public CompletableFuture<Object> callJson(final String method, final String argsJson) {
         final CompletableFuture<Object> future = new CompletableFuture<>();
-        executor.submit(() -> {
+        executor.submit(() -> mark(() -> {
             try {
                 if (instance == null || cx == null || scope == null) {
                     future.completeExceptionally(new IllegalStateException("plugin not loaded"));
-                    return;
+                    return null;
                 }
                 Scriptable arr = (Scriptable) cx.evaluateString(scope, "[" + (argsJson == null ? "" : argsJson) + "]", "args", 1, null);
                 Object[] args = (Object[]) Context.jsToJava(arr, Object[].class);
@@ -153,7 +160,8 @@ public final class PluginSandbox {
             } catch (Throwable e) {
                 future.completeExceptionally(e);
             }
-        });
+            return null;
+        }));
         return future;
     }
 
@@ -165,11 +173,11 @@ public final class PluginSandbox {
     /** 插件声明的 platform 名（未加载为空串）。 */
     public String platformName() {
         try {
-            return String.valueOf(executor.submit(() -> {
+            return String.valueOf(executor.submit(() -> mark(() -> {
                 if (instance == null) return "";
                 Object p = ScriptableObject.getProperty(instance, "platform");
                 return p instanceof CharSequence ? p.toString() : "";
-            }).get());
+            })).get());
         } catch (Exception e) {
             return "";
         }
@@ -178,16 +186,21 @@ public final class PluginSandbox {
     /** 在沙箱线程内把 JS 值序列化为 JSON 字符串（null/标量直接 toString 兜底）。 */
     public String stringify(Object jsValue) {
         try {
-            return String.valueOf(executor.submit(() -> {
-                if (jsValue instanceof Scriptable) {
-                    ScriptableObject.putProperty(scope, "__str__", jsValue);
-                    return Context.toString(cx.evaluateString(scope, "JSON.stringify(__str__)", "stringify", 1, null));
-                }
-                return String.valueOf(jsValue);
-            }).get());
+            // thenApply/whenComplete 等回调运行在沙箱线程上时，直接内联序列化，
+            // 避免单线程 executor 上 submit().get() 自等待死锁（App 内搜索转圈的根因）。
+            if (Thread.currentThread() == sandboxTL.get()) return doStringify(jsValue);
+            return String.valueOf(executor.submit(() -> mark(() -> doStringify(jsValue))).get());
         } catch (Exception e) {
             return "null";
         }
+    }
+
+    private String doStringify(Object jsValue) {
+        if (jsValue instanceof Scriptable) {
+            ScriptableObject.putProperty(scope, "__str__", jsValue);
+            return Context.toString(cx.evaluateString(scope, "JSON.stringify(__str__)", "stringify", 1, null));
+        }
+        return String.valueOf(jsValue);
     }
 
     /** 插件声明的方法名集合（与 RN supportedMethods 等价的本地查询）。 */
@@ -207,5 +220,11 @@ public final class PluginSandbox {
         global = Global.create(cx, scope, executor);
         cx.evaluateString(scope, Asset.read("js/lib/promise.js"), "promise.js", 1, null);
         cx.evaluateString(scope, Asset.read("js/lib/http.js"), "http.js", 1, null);
+    }
+
+    /** 标记沙箱线程后执行任务：单线程 executor 的一切任务（含 __tick 泵送的微任务 flush）都经此执行。 */
+    private <T> T mark(java.util.concurrent.Callable<T> task) throws Exception {
+        sandboxTL.set(Thread.currentThread());
+        return task.call();
     }
 }
