@@ -45,6 +45,7 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private boolean bound;
     private boolean dragging;
     private boolean playing;
+    private String lastError;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long SEARCH_TIMEOUT_MS = 20_000L;
 
@@ -200,7 +201,18 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
 
     @Override
     public void onStateChanged(int state) {
-        runOnUiThread(() -> binding.tvState.setText(stateName(state)));
+        // 错误一闪而过问题：onPlayerError 后状态切 IDLE，会覆盖错误文本。
+        // 有未读错误时，IDLE 状态保留错误文本，等下一首歌开始播放才清空。
+        runOnUiThread(() -> {
+            if (state == Player.STATE_IDLE && lastError != null) {
+                binding.tvState.setText(lastError);
+            } else if (state == Player.STATE_READY) {
+                lastError = null;
+                binding.tvState.setText("ready");
+            } else {
+                binding.tvState.setText(stateName(state));
+            }
+        });
     }
 
     @Override
@@ -208,8 +220,8 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         String url = media == null || media.url == null ? "-" : media.url;
         String why = message == null || message.isEmpty() ? "未知" : message;
         if (why.length() > 100) why = why.substring(0, 100) + "…";
-        final String display = "err " + errorCode + ": " + why + "\n" + url;
-        runOnUiThread(() -> binding.tvState.setText(display));
+        lastError = "err " + errorCode + ": " + why + "\n" + url;
+        runOnUiThread(() -> binding.tvState.setText(lastError));
     }
 
     private static String stateName(int state) {
