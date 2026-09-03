@@ -139,9 +139,12 @@ public final class PluginSandbox {
     }
 
     /**
-     * JSON 参数调用：argsJson 为形如 {@code 'kw', 1, 0} 的展开参数（不含括号），
-     * 在沙箱线程内解析并调用插件方法（async 方法自动桥回 Promise）。
-     * 用于需要传对象/数组参数的场景（如 getMediaSource(song, quality)）。
+     * JSON 参数调用：argsJson 为 JSON 数组文本（如 {@code ["周杰伦",0,0]}），
+     * 沙箱线程内经 JSON.parse 解析为 JS 数组后调用插件方法（async 方法自动桥回 Promise）。
+     * <p>
+     * 之所以不直接 eval 拼「JS 表达式列表」：插件字段可能含引号/换行等会断裂语法的内容，
+     * 表达式拼错会抛 "Missing ] after element list (args#1)"；JSON.parse 通道对任意合法
+     * JSON 文本都安全，特殊字符问题一劳永逸。
      */
     public CompletableFuture<Object> callJson(final String method, final String argsJson) {
         final CompletableFuture<Object> future = new CompletableFuture<>();
@@ -151,7 +154,8 @@ public final class PluginSandbox {
                     future.completeExceptionally(new IllegalStateException("plugin not loaded"));
                     return null;
                 }
-                Scriptable arr = (Scriptable) cx.evaluateString(scope, "[" + (argsJson == null ? "" : argsJson) + "]", "args", 1, null);
+                String expr = "JSON.parse(" + jsString(argsJson) + ")";
+                Scriptable arr = (Scriptable) cx.evaluateString(scope, expr, "args", 1, null);
                 Object[] args = (Object[]) Context.jsToJava(arr, Object[].class);
                 Async.run(cx, scope, instance, method, args).whenComplete((result, error) -> {
                     if (error != null) future.completeExceptionally(error);
@@ -163,6 +167,28 @@ public final class PluginSandbox {
             return null;
         }));
         return future;
+    }
+
+    /** 转成 JS 单引号字符串字面量（用于包住 JSON 文本；转义反斜杠/单引号/全部控制字符）。 */
+    private static String jsString(String s) {
+        if (s == null) return "''";
+        StringBuilder sb = new StringBuilder("'");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '\'': sb.append("\\'"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                default:
+                    if (c < 0x20 || c == '\u2028' || c == '\u2029') sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+            }
+        }
+        return sb.append('\'').toString();
     }
 
     /** 当前插件实例（未加载时为 null）。 */

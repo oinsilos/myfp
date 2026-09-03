@@ -44,7 +44,7 @@ public final class MusicSource {
      * 搜索。返回可播放列表；插件未实现 search 或结果为空时返回空列表。
      */
     public CompletableFuture<List<MusicMedia>> search(String keyword, int page, int type) {
-        String args = quote(keyword == null ? "" : keyword) + "," + page + "," + type;
+        String args = new JSONArray().put(keyword == null ? "" : keyword).put(page).put(type).toString();
         return sandbox.callJson("search", args).thenApply(result -> {
             String json = sandbox.stringify(result);
             return parseSearch(json);
@@ -53,8 +53,8 @@ public final class MusicSource {
 
     /** 拉取播放 URL。返回可直接播放的 url；失败时异常交由上层换源策略处理。 */
     public CompletableFuture<String> getMediaUrl(MusicMedia media, String quality) {
-        String item = buildItemJson(media);
-        return sandbox.callJson("getMediaSource", item + "," + quote(quality == null ? "" : quality))
+        String args = new JSONArray().put(itemObject(media)).put(quality == null ? "" : quality).toString();
+        return sandbox.callJson("getMediaSource", args)
                 .thenApply(result -> {
                     String json = sandbox.stringify(result);
                     try {
@@ -68,10 +68,10 @@ public final class MusicSource {
                 });
     }
 
-    /** 拉取歌词。返回 LRC 文本；插件无词/失败返回 null（不抛错）。 */
+    /** 拉取歌词。返回 LRC 文本；插件无词返回 null，接口异常抛错（UI 可见原因）。 */
     public CompletableFuture<String> getLyric(MusicMedia media) {
-        String item = buildItemJson(media);
-        return sandbox.callJson("getLyric", item)
+        String args = new JSONArray().put(itemObject(media)).toString();
+        return sandbox.callJson("getLyric", args)
                 .thenApply(result -> {
                     if (result == null) return null;
                     String json = sandbox.stringify(result);
@@ -83,6 +83,24 @@ public final class MusicSource {
                         return null;
                     }
                 });
+    }
+
+    /** 组装传回插件的 musicItem JSON 对象（保留插件的 songId 等原始字段）。 */
+    private static JSONObject itemObject(MusicMedia media) {
+        JSONObject obj = new JSONObject();
+        try {
+            obj.put("id", media.id)
+                    .put("title", media.title)
+                    .put("artist", media.artist)
+                    .put("album", media.album)
+                    .put("cover", media.cover == null ? "" : media.cover)
+                    .put("url", media.url == null ? "" : media.url);
+            if (media.extra != null && !media.extra.isEmpty() && !"{}".equals(media.extra)) {
+                obj.put("songId", media.id); // extra 固定为 {songId:...}，直接补字段
+            }
+        } catch (JSONException ignored) {
+        }
+        return obj;
     }
 
     // ------------------------------------------------------------ 解析与拼装
@@ -121,43 +139,8 @@ public final class MusicSource {
         return list;
     }
 
-    /** 组装传回插件的 musicItem JSON（保留插件的 songId 等原始字段）。 */
-    private static String buildItemJson(MusicMedia media) {
-        StringBuilder sb = new StringBuilder("{");
-        sb.append("\"id\":").append(quote(media.id)).append(',');
-        sb.append("\"title\":").append(quote(media.title)).append(',');
-        sb.append("\"artist\":").append(quote(media.artist)).append(',');
-        sb.append("\"album\":").append(quote(media.album)).append(',');
-        sb.append("\"cover\":").append(quote(media.cover == null ? "" : media.cover)).append(',');
-        sb.append("\"url\":").append(quote(media.url == null ? "" : media.url));
-        if (media.extra != null && !media.extra.isEmpty() && !"{}".equals(media.extra)) {
-            sb.append(',').append(media.extra.substring(1)); // 去掉 extra 的开头 {，合并字段
-        }
-        sb.append('}');
-        return sb.toString();
-    }
-
     private static String opt(JSONObject obj, String key) {
         String v = obj.optString(key);
         return v == null ? "" : v;
-    }
-
-    private static String quote(String s) {
-        if (s == null) return "\"\"";
-        StringBuilder sb = new StringBuilder("\"");
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"': sb.append("\\\""); break;
-                case '\\': sb.append("\\\\"); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
-                default:
-                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
-                    else sb.append(c);
-            }
-        }
-        return sb.append('"').toString();
     }
 }
