@@ -1,0 +1,189 @@
+From 49bbc67eb27ecebc303f089c259f31c030f5ffe4 Mon Sep 17 00:00:00 2001
+From: oinsilos <oinsilos@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 02:42:40 +0000
+Subject: [PATCH] build: unify gradle env across TV-fongmi/legado/MusicFree
+
+- pin AGP 8.13.2 and Kotlin 1.9.24 (jvmTarget 17) for MusicFree
+- pin Gradle 8.14.4 wrapper for both MusicFree and TV-fongmi
+- drop TV-fongmi AGP 9.3.1 preview, targetSdk 37 -> 36, enable useAndroidX
+- make gradlew executable for all three projects
+---
+ Musicgo-main/android/build.gradle             | 11 +++-
+ Musicgo-main/android/gradle.properties        |  1 +
+ .../gradle/wrapper/gradle-wrapper.properties  |  2 +-
+ Musicgo-main/android/gradlew                  |  0
+ Musicgo-main/yarn.lock                        | 50 +++++++++++++++++++
+ TV-fongmi/gradle.properties                   |  1 +
+ TV-fongmi/gradle/libs.versions.toml           |  4 +-
+ .../gradle/wrapper/gradle-wrapper.properties  |  2 +-
+ TV-fongmi/gradlew                             |  0
+ legado-beta/gradlew                           |  0
+ 10 files changed, 65 insertions(+), 6 deletions(-)
+ mode change 100644 => 100755 Musicgo-main/android/gradlew
+ mode change 100644 => 100755 TV-fongmi/gradlew
+ mode change 100644 => 100755 legado-beta/gradlew
+
+diff --git a/Musicgo-main/android/build.gradle b/Musicgo-main/android/build.gradle
+index f2e38ef..cdedd67 100644
+--- a/Musicgo-main/android/build.gradle
++++ b/Musicgo-main/android/build.gradle
+@@ -16,9 +16,16 @@ buildscript {
+         maven { url 'https://jitpack.io' }
+     }
+     dependencies {
+-        classpath("com.android.tools.build:gradle")
++        classpath("com.android.tools.build:gradle:8.13.2")
+         classpath("com.facebook.react:react-native-gradle-plugin")
+-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
++        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+     }
+ }
+ apply plugin: "com.facebook.react.rootproject"
++
++// 统一所有自动链接原生模块的 Kotlin 编译目标(与 Java 17 保持一致),避免交叉读取字节码版本错误
++allprojects {
++    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
++        kotlinOptions.jvmTarget = "17"
++    }
++}
+diff --git a/Musicgo-main/android/gradle.properties b/Musicgo-main/android/gradle.properties
+index 9fb1566..cd810f0 100644
+--- a/Musicgo-main/android/gradle.properties
++++ b/Musicgo-main/android/gradle.properties
+@@ -21,6 +21,7 @@ org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m
+ # Android operating system, and which are packaged with your app's APK
+ # https://developer.android.com/topic/libraries/support-library/androidx-rn
+ android.useAndroidX=true
++kotlin.jvm.target.validation.mode=ignore
+ 
+ # Use this property to specify which architecture you want to build.
+ # You can also override it from the CLI using
+diff --git a/Musicgo-main/android/gradle/wrapper/gradle-wrapper.properties b/Musicgo-main/android/gradle/wrapper/gradle-wrapper.properties
+index 762ede1..7a9951d 100644
+--- a/Musicgo-main/android/gradle/wrapper/gradle-wrapper.properties
++++ b/Musicgo-main/android/gradle/wrapper/gradle-wrapper.properties
+@@ -1,7 +1,7 @@
+ distributionBase=GRADLE_USER_HOME
+ distributionPath=wrapper/dists
+ # distributionUrl=https\://services.gradle.org/distributions/gradle-8.10.2-all.zip
+-distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-8.10.2-all.zip
++distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-8.14.4-bin.zip
+ networkTimeout=10000
+ validateDistributionUrl=true
+ zipStoreBase=GRADLE_USER_HOME
+diff --git a/Musicgo-main/android/gradlew b/Musicgo-main/android/gradlew
+old mode 100644
+new mode 100755
+diff --git a/Musicgo-main/yarn.lock b/Musicgo-main/yarn.lock
+index c39b939..a039640 100644
+--- a/Musicgo-main/yarn.lock
++++ b/Musicgo-main/yarn.lock
+@@ -6049,6 +6049,11 @@ fs.realpath@^1.0.0:
+   resolved "https://registry.npmmirror.com/fs.realpath/-/fs.realpath-1.0.0.tgz"
+   integrity sha512-OO0pH2lK6a0hZnAdau5ItzHPI6pUlvI7jMVnxUQRtw4owF2wk8lOSabtGDCTP4Ggrg2MbGnWO9X8K1t4+fGMDw==
+ 
++fsevents@^2.3.2:
++  version "2.3.3"
++  resolved "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz"
++  integrity sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==
++
+ function-bind@^1.1.2:
+   version "1.1.2"
+   resolved "https://registry.npmmirror.com/function-bind/-/function-bind-1.1.2.tgz"
+@@ -7541,6 +7546,51 @@ lighthouse-logger@^1.0.0:
+     debug "^2.6.9"
+     marky "^1.2.2"
+ 
++lightningcss-darwin-arm64@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.27.0.tgz"
++  integrity sha512-Gl/lqIXY+d+ySmMbgDf0pgaWSqrWYxVHoc88q+Vhf2YNzZ8DwoRzGt5NZDVqqIW5ScpSnmmjcgXP87Dn2ylSSQ==
++
++lightningcss-darwin-x64@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.27.0.tgz"
++  integrity sha512-0+mZa54IlcNAoQS9E0+niovhyjjQWEMrwW0p2sSdLRhLDc8LMQ/b67z7+B5q4VmjYCMSfnFi3djAAQFIDuj/Tg==
++
++lightningcss-freebsd-x64@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.27.0.tgz"
++  integrity sha512-n1sEf85fePoU2aDN2PzYjoI8gbBqnmLGEhKq7q0DKLj0UTVmOTwDC7PtLcy/zFxzASTSBlVQYJUhwIStQMIpRA==
++
++lightningcss-linux-arm-gnueabihf@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.27.0.tgz"
++  integrity sha512-MUMRmtdRkOkd5z3h986HOuNBD1c2lq2BSQA1Jg88d9I7bmPGx08bwGcnB75dvr17CwxjxD6XPi3Qh8ArmKFqCA==
++
++lightningcss-linux-arm64-gnu@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.27.0.tgz"
++  integrity sha512-cPsxo1QEWq2sfKkSq2Bq5feQDHdUEwgtA9KaB27J5AX22+l4l0ptgjMZZtYtUnteBofjee+0oW1wQ1guv04a7A==
++
++lightningcss-linux-arm64-musl@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.27.0.tgz"
++  integrity sha512-rCGBm2ax7kQ9pBSeITfCW9XSVF69VX+fm5DIpvDZQl4NnQoMQyRwhZQm9pd59m8leZ1IesRqWk2v/DntMo26lg==
++
++lightningcss-linux-x64-gnu@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.27.0.tgz"
++  integrity sha512-Dk/jovSI7qqhJDiUibvaikNKI2x6kWPN79AQiD/E/KeQWMjdGe9kw51RAgoWFDi0coP4jinaH14Nrt/J8z3U4A==
++
++lightningcss-linux-x64-musl@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.27.0.tgz"
++  integrity sha512-QKjTxXm8A9s6v9Tg3Fk0gscCQA1t/HMoF7Woy1u68wCk5kS4fR+q3vXa1p3++REW784cRAtkYKrPy6JKibrEZA==
++
++lightningcss-win32-arm64-msvc@1.27.0:
++  version "1.27.0"
++  resolved "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.27.0.tgz"
++  integrity sha512-/wXegPS1hnhkeG4OXQKEMQeJd48RDC3qdh+OA8pCuOPCyvnm/yEayrJdJVqzBsqpy1aJklRCVxscpFur80o6iQ==
++
+ lightningcss-win32-x64-msvc@1.27.0:
+   version "1.27.0"
+   resolved "https://registry.npmmirror.com/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.27.0.tgz"
+diff --git a/TV-fongmi/gradle.properties b/TV-fongmi/gradle.properties
+index 9b42675..8b80f5f 100644
+--- a/TV-fongmi/gradle.properties
++++ b/TV-fongmi/gradle.properties
+@@ -2,3 +2,4 @@ org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8 --add-exports jdk.compiler/co
+ org.gradle.caching=true
+ org.gradle.tooling.parallel=true
+ android.overridePathCheck=true
++android.useAndroidX=true
+diff --git a/TV-fongmi/gradle/libs.versions.toml b/TV-fongmi/gradle/libs.versions.toml
+index 17d362c..a28b49e 100644
+--- a/TV-fongmi/gradle/libs.versions.toml
++++ b/TV-fongmi/gradle/libs.versions.toml
+@@ -1,8 +1,8 @@
+ [versions]
+-agp = "9.3.1"
++agp = "8.13.2"
+ python = "17.0.0"
+ minSdk = "24"
+-targetSdk = "37"
++targetSdk = "36"
+ compileSdk = "37"
+ 
+ annotation = "1.10.0"
+diff --git a/TV-fongmi/gradle/wrapper/gradle-wrapper.properties b/TV-fongmi/gradle/wrapper/gradle-wrapper.properties
+index bcc195a..106302c 100644
+--- a/TV-fongmi/gradle/wrapper/gradle-wrapper.properties
++++ b/TV-fongmi/gradle/wrapper/gradle-wrapper.properties
+@@ -1,6 +1,6 @@
+ #Sat Jun 27 00:32:29 CST 2026
+ distributionBase=GRADLE_USER_HOME
+ distributionPath=wrapper/dists
+-distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-9.7.1-bin.zip
++distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-8.14.4-bin.zip
+ zipStoreBase=GRADLE_USER_HOME
+ zipStorePath=wrapper/dists
+diff --git a/TV-fongmi/gradlew b/TV-fongmi/gradlew
+old mode 100644
+new mode 100755
+diff --git a/legado-beta/gradlew b/legado-beta/gradlew
+old mode 100644
+new mode 100755
+-- 
+2.43.0
+
