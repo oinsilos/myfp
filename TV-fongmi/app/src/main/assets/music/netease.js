@@ -154,30 +154,45 @@
             // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
             return { url: outerUrl(songId) };
         },
-        // 歌词：weapi（listen1/落雪同款，主站 Web 接口，未收录/VIP 歌也能返回歌词）。
-        // 接口异常抛 Error（UI 可见原因）；接口正常但确实无词返回 null。
+        // 歌词：优先 weapi（listen1/落雪同款，未收录/VIP 歌也能返回歌词；带 os/appver cookie 提升成功率），
+        //      失败自动 fallback 公开接口（免费歌可用）。接口异常抛 Error（UI 可见原因）；确实无词返回 null。
         async getLyric(musicItem) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) return null;
-            try {
-                var resp = await webApiPost('/weapi/song/lyric?csrf_token=', {
-                    id: String(songId),
-                    lv: -1,
-                    tv: -1,
-                    csrf_token: ''
-                });
-                var body = resp.data;
-                if (!body) throw new Error('weapi lyric: empty response for id=' + songId);
-                if (body.code !== undefined && body.code !== 200) {
-                    throw new Error('weapi lyric code=' + body.code + ' msg=' + (body.message || '') + ' id=' + songId);
+            var attempts = [];
+            var we = webWeapi({ id: String(songId), lv: -1, tv: -1, csrf_token: '' });
+            attempts.push({
+                do: function () {
+                    var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
+                    return axios.post('https://music.163.com/weapi/song/lyric?csrf_token=', body, {
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+                    });
                 }
-                var lrc = body.lrc && body.lrc.lyric;
-                // 网易云无词歌会返回占位文本 "[00:00.00]暂无歌词"，过滤后按无词处理
-                if (lrc && /暂无歌词/.test(lrc) && lrc.length <= 64) return null;
-                return (lrc && lrc.length) ? lrc : null;
-            } catch (e) {
-                throw new Error('lyric failed (' + ((e && e.message) || String(e)) + ')');
+            });
+            attempts.push({
+                do: function () {
+                    return axios.get('https://music.163.com/api/song/lyric', {
+                        params: { id: String(songId), lv: -1, kv: -1, tv: -1, os: 'pc' },
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+                    });
+                }
+            });
+            var last = '';
+            for (var i = 0; i < attempts.length; i++) {
+                try {
+                    var resp = await attempts[i].do();
+                    var body = resp.data;
+                    if (body && typeof body === 'object') {
+                        if (body.nolyric || body.uncollected) return null;
+                        var lrc = body.lrc && body.lrc.lyric;
+                        if (lrc && typeof lrc === 'string' && lrc.length && !/暂无歌词/.test(lrc)) return lrc;
+                    }
+                    last = 'empty response from attempt#' + (i + 1);
+                } catch (e) {
+                    last = 'attempt#' + (i + 1) + ' err=' + ((e && e.message) || String(e));
+                }
             }
+            throw new Error('lyric failed (' + last + ')');
         }
     };
 })();

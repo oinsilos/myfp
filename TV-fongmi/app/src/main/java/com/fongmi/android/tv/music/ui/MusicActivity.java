@@ -344,7 +344,9 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
             if (error != null) {
                 lastLyricError = friendly(error);
                 Log.w("MusicActivity", "lyric error", error);
-                binding.tvLyric.setText("歌词获取失败");
+                // 失败原因直接上屏（截断），点击弹窗看完整
+                String brief = lastLyricError.length() > 24 ? lastLyricError.substring(0, 24) + "…" : lastLyricError;
+                binding.tvLyric.setText("歌词失败:" + brief);
                 return;
             }
             List<LyricLine> lines = parseLrc(lrc);
