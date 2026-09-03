@@ -96,6 +96,7 @@ public final class MusicSource {
                 );
                 // 透传插件原始字段（getMediaSource 时按原样回传）
                 media.extra = "{\"songId\":\"" + songId + "\"}";
+                media.vip = item.optBoolean("vip", false);
                 list.add(media);
             }
         } catch (JSONException ignored) {

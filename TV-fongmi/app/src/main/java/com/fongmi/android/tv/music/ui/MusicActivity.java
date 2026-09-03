@@ -298,7 +298,9 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         @Override
         public void onBindViewHolder(Holder holder, int position) {
             MusicMedia media = results.get(position);
-            holder.binding.tvTitle.setText(media.title);
+            String title = media.vip ? media.title + "  [VIP]" : media.title;
+            holder.binding.tvTitle.setText(title);
+            holder.binding.tvTitle.setAlpha(media.vip ? 0.55f : 1f);
             holder.binding.tvArtist.setText(media.artist.isEmpty() ? media.album : (media.artist + (media.album.isEmpty() ? "" : " · " + media.album)));
             holder.binding.tvDuration.setText(fmt(media.durationMs));
             holder.binding.getRoot().setOnClickListener(v -> {

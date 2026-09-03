@@ -9,6 +9,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DataSource;
@@ -237,7 +238,8 @@ public final class MusicPlayer {
         // 关键：音乐是纯 mp3 场景，给播放器挂「仅 Mp3Extractor」的专用 factory，
         // 跳过 DefaultExtractorsFactory 的全量探测（避免 fork 探测链对其它容器解析失败，
         // 以及无谓的 container 依赖），mp3 一进来就用 Mp3Extractor 直解。
-        HttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(OkHttp.player());
+        HttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(OkHttp.player())
+                .setUserAgent("Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
         DataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context, httpFactory);
         DefaultMediaSourceFactory sourceFactory = new DefaultMediaSourceFactory(dataSourceFactory,
                 () -> new Extractor[]{new Mp3Extractor()});
@@ -350,7 +352,8 @@ public final class MusicPlayer {
             url = media.moreUrls.isEmpty() ? "" : media.moreUrls.remove(0);
             media.url = url;
         }
-        return new MediaItem.Builder().setMediaId(media.id).setUri(url).build();
+        // 显式声明 MIME：配合单 Mp3Extractor 的媒体工厂，跳过内容嗅探、直接按 mp3 解析
+        return new MediaItem.Builder().setMediaId(media.id).setUri(url).setMimeType(MimeTypes.AUDIO_MPEG).build();
     }
 
     private void stopInternal() {

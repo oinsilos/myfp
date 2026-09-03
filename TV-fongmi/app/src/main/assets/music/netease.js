@@ -43,14 +43,16 @@
                 var album = s.album || {};
                 var durationSec = Math.round((s.duration || 0) / 1000);
                 data.push({
-                    title: s.name,
-                    artist: pickName(s.artists),
-                    album: album.name,
-                    duration: durationSec,
-                    cover: album.picUrl,
-                    songId: s.id,
-                    url: outerUrl(s.id)
-                });
+                            title: s.name,
+                            artist: pickName(s.artists),
+                            album: album.name,
+                            duration: durationSec,
+                            cover: album.picUrl,
+                            songId: s.id,
+                            fee: s.fee,
+                            vip: (s.fee || 0) > 0,
+                            url: outerUrl(s.id)
+                        });
             }
             return { isEnd: true, data: data };
         },
