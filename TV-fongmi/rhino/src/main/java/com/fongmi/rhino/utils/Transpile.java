@@ -470,7 +470,41 @@ public final class Transpile {
         boolean isFn = src.regionMatches(p, "function", 0, 8) && isWordEnd(src, p + 8);
         if (isFn) p = skipWs(src, p + 8);
         boolean paren = p < n && src.charAt(p) == '(';
-        if (!isFn && !paren) { // 非 async 函数用法（如 async 变量名），原样拷贝
+        if (!isFn && !paren) {
+            // 对象字面量方法简写：async m(params) { body } → m: function(params) { return __async(...) }
+            // （覆盖 MusicFree 插件 module.exports = { async search() {...} } 的常见写法）
+            if (p < n && (isIdentStart(src.charAt(p)) || src.charAt(p) == '\'' || src.charAt(p) == '"')) {
+                try {
+                    String key;
+                    int after;
+                    if (src.charAt(p) == '\'' || src.charAt(p) == '"') {
+                        char q = src.charAt(p);
+                        int end = scanString(src, p, q);
+                        key = src.substring(p, end);
+                        after = skipWs(src, end);
+                    } else {
+                        String[] w = readWord(src, p);
+                        key = w[0];
+                        after = skipWs(src, Integer.parseInt(w[1]));
+                    }
+                    if (after < n && src.charAt(after) == '(') {
+                        int closeP = findClose(src, after, '(');
+                        if (closeP > 0) {
+                            String params2 = src.substring(after, closeP + 1);
+                            int b = skipWs(src, closeP + 1);
+                            if (b < n && src.charAt(b) == '{') {
+                                int closeB = findClose(src, b, '{');
+                                if (closeB > 0) {
+                                    out.append(key).append(": function").append(params2).append(" { return __async(function* () {")
+                                            .append(toGeneratorBody(src.substring(b + 1, closeB))).append("}); }");
+                                    return closeB + 1;
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
             out.append("async");
             return i + 5;
         }
@@ -502,8 +536,8 @@ public final class Transpile {
                 out.append("async");
                 return i + 5;
             }
-            out.append("function ").append(name).append(params).append(" { return __async(function* ")
-                    .append(name).append(params).append(" {").append(toGeneratorBody(src.substring(p + 1, close))).append("}); }");
+            out.append("function ").append(name).append(params).append(" { return __async(function* () {").append(toGeneratorBody(src.substring(p + 1, close))).append("}); }");
+            // 注：generator 不声明形参——__async 以 genFn() 无参调用，body 中的参数名经闭包取外层函数实参
             return close + 1;
         }
         // 箭头函数或无括号单参数箭头
@@ -533,12 +567,12 @@ public final class Transpile {
                     out.append("async");
                     return i + 5;
                 }
-                out.append(params).append(" => __async(function* ").append(params).append(" {")
-                        .append(toGeneratorBody(src.substring(p + 1, close))).append("});");
+                out.append(params).append(" => __async(function* () {")
+                    .append(toGeneratorBody(src.substring(p + 1, close))).append("});");
                 return close + 1;
             }
             int end = arrowExprEnd(src, p);
-            out.append(params).append(" => __async(function* ").append(params).append(" { return ")
+            out.append(params).append(" => __async(function* () { return ")
                     .append(toGeneratorBody(src.substring(p, end))).append("; });");
             return end;
         }
