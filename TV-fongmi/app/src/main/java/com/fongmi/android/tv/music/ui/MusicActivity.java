@@ -342,12 +342,12 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
             if (error != null) {
                 lastLyricError = friendly(error);
                 Log.w("MusicActivity", "lyric error", error);
-                binding.tvLyric.setText("暂无歌词");
+                binding.tvLyric.setText("歌词获取失败");
                 return;
             }
             List<LyricLine> lines = parseLrc(lrc);
             if (lines.isEmpty()) {
-                binding.tvLyric.setText("暂无歌词");
+                binding.tvLyric.setText("该歌暂无歌词");
                 return;
             }
             lyricLines = lines;
