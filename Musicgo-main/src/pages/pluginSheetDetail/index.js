@@ -1,0 +1,10 @@
+import React from "react";
+import MusicSheetPage from "@/components/musicSheetPage";
+import { useParams } from "@/core/router";
+import usePluginSheetMusicList from "./hooks/usePluginSheetMusicList";
+import i18n from "@/core/i18n";
+export default function PluginSheetDetail() {
+    const { sheetInfo } = useParams();
+    const [requestState, sheetItem, musicList, getSheetDetail] = usePluginSheetMusicList(sheetInfo);
+    return (<MusicSheetPage canStar sheetInfo={sheetItem} navTitle={sheetInfo?.title ?? i18n.t("common.sheet")} musicList={musicList} state={requestState} onRetry={getSheetDetail} onLoadMore={getSheetDetail}/>);
+}
