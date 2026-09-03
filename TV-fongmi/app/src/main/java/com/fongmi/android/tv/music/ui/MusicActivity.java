@@ -336,6 +336,11 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         currentLyricIndex = -1;
         lyricLines = null;
         lastLyricError = null;
+        // VIP 歌大概率无歌词（网易云接口对未收录/收费歌返回空词），直接提示不发请求
+        if (media != null && media.vip) {
+            binding.tvLyric.setText("VIP 歌曲暂无歌词");
+            return;
+        }
         binding.tvLyric.setText(media == null ? "暂无歌词" : "加载歌词…");
         if (media == null) return;
         MusicRepository.get().getLyric(media).whenComplete((lrc, error) -> runOnUiThread(() -> {
