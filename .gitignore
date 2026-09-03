@@ -13,6 +13,9 @@ APK/
 .DS_Store
 Thumbs.db
 
+# git bundle 留档（体积大，不入库；仅本地快照用）
+*.bundle
+
 # IDE
 .idea/
 .vscode/
