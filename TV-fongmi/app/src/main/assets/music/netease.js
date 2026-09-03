@@ -54,12 +54,12 @@
             }
             return { isEnd: true, data: data };
         },
-        // 播放源：返回 { url }
+        // 播放源：总是重新生成带新鲜签名的直链（搜索时生成的签名链接有时效，
+        // 播放/换源时复用旧链接可能 403 导致无法起播）
         async getMediaSource(musicItem, quality) {
-            var url = musicItem && musicItem.url;
-            if (!url && musicItem && musicItem.songId) url = outerUrl(musicItem.songId);
-            if (!url) throw new Error('netease: no songId for media source');
-            return { url: url };
+            var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
+            if (!songId) throw new Error('netease: no songId for media source');
+            return { url: outerUrl(String(songId)) };
         },
         // 歌词（可选，暂返回 null 交由内核忽略）
         async getLyric() {

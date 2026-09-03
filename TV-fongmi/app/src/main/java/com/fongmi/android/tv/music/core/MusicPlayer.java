@@ -3,6 +3,7 @@ package com.fongmi.android.tv.music.core;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -31,6 +32,8 @@ import java.util.List;
  * - 进度回调（500ms 节流）供 UI 刷新
  */
 public final class MusicPlayer {
+
+    private static final String TAG = "MusicPlayer";
 
     public interface Callback {
 
@@ -183,12 +186,12 @@ public final class MusicPlayer {
     /**
      * 上层（插件）换源成功后回填 URL 并重试。
      * 也会用于回调 {@link Callback#onNeedReloadUrl} 之后的补 URL。
+     * 注意：不重置失败预算——换源本身也是一次尝试，避免坏 URL 时无限换源死循环。
      */
     public void updateUrl(MusicMedia media, String url) {
         if (media == null || current == null || media != current) return;
         if (url == null || url.isEmpty()) return;
         current.url = url;
-        failCount = 0; // 拿到新 URL 视为新来源，重置预算
         rebindSource();
     }
 
@@ -232,6 +235,9 @@ public final class MusicPlayer {
 
             @Override
             public void onPlayerError(@NonNull PlaybackException error) {
+                Log.e(TAG, "playback error: media=" + (current == null ? "null" : current.title)
+                        + " url=" + (current == null ? "null" : current.url)
+                        + " code=" + error.errorCode + " msg=" + error.getMessage(), error);
                 handleErrors(error.getMessage());
             }
         });

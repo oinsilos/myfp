@@ -209,7 +209,9 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
 
     @Override
     public void onSourceFailed(MusicMedia media, String message) {
-        // 换源失败：内核将自动跳过；此处可刷新列表提示
+        // 换源失败：内核将自动跳过；把具体原因浮出，便于定位网络/协议问题
+        String why = message == null || message.isEmpty() ? "未知错误" : message;
+        runOnUiThread(() -> Notify.show("播放失败：" + media.title + "（" + why + "）"));
     }
 
     private void updateNow(MusicMedia media, RepeatMode mode) {
