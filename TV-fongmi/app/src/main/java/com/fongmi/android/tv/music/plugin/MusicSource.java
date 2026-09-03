@@ -3,6 +3,7 @@ package com.fongmi.android.tv.music.plugin;
 import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.rhino.plugin.PluginSandbox;
 
+import org.htmlunit.corejs.javascript.Scriptable;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -79,10 +80,18 @@ public final class MusicSource {
         return sandbox.callJson("getLyric", args)
                 .thenApply(result -> {
                     if (result == null) return null;
+                    // 插件返回的是原始 LRC 文本（Java String / NativeString）：直接使用。
+                    // 切勿走 JSON.stringify 再包 {"v":...} 二次解析——原始文本未加引号，构造出的 JSON 必然非法，
+                    // 会被 JSONException 吞成 null，导致「该歌曲暂无歌词」假象（根因）。
+                    if (result instanceof CharSequence) {
+                        String s = result.toString();
+                        return (s.isEmpty() || "null".equals(s)) ? null : s;
+                    }
+                    // 插件返回对象（如 {lrc: "..."}）：JSON 序列化后提取
+                    if (!(result instanceof Scriptable)) return null;
                     String json = sandbox.stringify(result);
                     if (json == null || json.isEmpty() || "null".equals(json)) return null;
                     try {
-                        // 还原为 Java 字符串（去除 JSON 引号与 \n 转义）
                         return new JSONObject("{\"v\":" + json + "}").getString("v");
                     } catch (JSONException e) {
                         return null;

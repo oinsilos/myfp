@@ -80,9 +80,9 @@
 
     module.exports = {
         platform: 'netease',
-        version: '0.2.0',
+        version: '0.2.1',
         appVersion: '^0.0.1',
-        fullVersion: '0.2.0',
+        fullVersion: '0.2.1',
         // 搜索：keyword / page(1 起) / type
         async search(keyword, page, type) {
             var resp = await axios.get(SEARCH_URL, {
@@ -155,7 +155,8 @@
             return { url: outerUrl(songId) };
         },
         // 歌词：优先 weapi（listen1/落雪同款，未收录/VIP 歌也能返回歌词；带 os/appver cookie 提升成功率），
-        //      失败自动 fallback 公开接口（免费歌可用）。接口异常抛 Error（UI 可见原因）；确实无词返回 null。
+        //      失败自动 fallback 公开接口。任一接口拿到有效 LRC 即返回；多个接口都判定无词返回 null；
+        //      全部接口网络异常才抛 Error（UI 可见原因）。
         async getLyric(musicItem) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) return null;
@@ -177,21 +178,36 @@
                     });
                 }
             });
+            var noLyric = false;
             var last = '';
             for (var i = 0; i < attempts.length; i++) {
                 try {
                     var resp = await attempts[i].do();
                     var body = resp.data;
                     if (body && typeof body === 'object') {
-                        if (body.nolyric || body.uncollected) return null;
+                        if (body.nolyric || body.uncollected) {
+                            noLyric = true;
+                            last = 'attempt#' + (i + 1) + ' no lyric (nolyric/uncollected)';
+                            console.log('[netease] lyric: ' + last + ' id=' + songId);
+                            continue;
+                        }
                         var lrc = body.lrc && body.lrc.lyric;
-                        if (lrc && typeof lrc === 'string' && lrc.length && !/暂无歌词/.test(lrc)) return lrc;
+                        if (lrc && typeof lrc === 'string' && lrc.length && !/暂无歌词/.test(lrc)) {
+                            console.log('[netease] lyric ok from attempt#' + (i + 1) + ' len=' + lrc.length + ' id=' + songId);
+                            return lrc;
+                        }
+                        last = 'attempt#' + (i + 1) + ' empty lrc';
+                    } else {
+                        last = 'attempt#' + (i + 1) + ' unexpected body: ' + String(body).substring(0, 80);
                     }
-                    last = 'empty response from attempt#' + (i + 1);
+                    console.log('[netease] lyric: ' + last + ' id=' + songId);
                 } catch (e) {
                     last = 'attempt#' + (i + 1) + ' err=' + ((e && e.message) || String(e));
+                    console.log('[netease] lyric: ' + last + ' id=' + songId);
                 }
             }
+            // 至少有一个接口正常响应并判定该歌无词 → 真无词，返回 null（UI 显示「该歌曲暂无歌词」）
+            if (noLyric) return null;
             throw new Error('lyric failed (' + last + ')');
         }
     };
