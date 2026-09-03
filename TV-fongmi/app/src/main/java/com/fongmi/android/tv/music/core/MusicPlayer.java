@@ -1,6 +1,7 @@
 package com.fongmi.android.tv.music.core;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -20,6 +21,7 @@ import com.fongmi.android.tv.music.model.RepeatMode;
 import com.github.catvod.net.OkHttp;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 音乐播放内核：复用捆绑 Media3（fork 版）的 ExoPlayer，脱离 react-native-trackPlayer。
@@ -315,7 +317,16 @@ public final class MusicPlayer {
             url = media.moreUrls.isEmpty() ? "" : media.moreUrls.remove(0);
             media.url = url;
         }
-        return new MediaItem.Builder().setMediaId(media.id).setUri(url).build();
+        MediaItem.Builder builder = new MediaItem.Builder().setMediaId(media.id).setUri(url);
+        // 自定义请求头透传（与主播放器 ExoMediaSourceFactory.extractHeaders 同机制）
+        if (media.headers != null && !media.headers.isEmpty()) {
+            Bundle extras = new Bundle();
+            for (Map.Entry<String, String> e : media.headers.entrySet()) {
+                extras.putString(e.getKey(), e.getValue());
+            }
+            builder.setRequestMetadata(new MediaItem.RequestMetadata.Builder().setExtras(extras).build());
+        }
+        return builder.build();
     }
 
     private void stopInternal() {
