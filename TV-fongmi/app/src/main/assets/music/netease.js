@@ -54,12 +54,27 @@
             }
             return { isEnd: true, data: data };
         },
-        // 播放源：总是重新生成带新鲜签名的直链（搜索时生成的签名链接有时效，
-        // 播放/换源时复用旧链接可能 403 导致无法起播）
+        // 播放源：优先官方 player/url 接口（匿名可用，免费歌返回 320k CDN 直链；
+        // VIP/无版权歌返回 url=null → 抛错由内核自动跳下一首），失败再走公开外链兜底。
         async getMediaSource(musicItem, quality) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) throw new Error('netease: no songId for media source');
-            return { url: outerUrl(String(songId)) };
+            songId = String(songId);
+            var brs = [320000, 192000, 128000];
+            for (var i = 0; i < brs.length; i++) {
+                try {
+                    var resp = await axios.get('https://music.163.com/api/song/enhance/player/url', {
+                        params: { ids: '[' + songId + ']', br: brs[i] },
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                    });
+                    var arr = resp.data && resp.data.data;
+                    var first = arr && arr[0];
+                    var url = first && first.url;
+                    if (url && url.length && url.indexOf('http') === 0) return { url: url };
+                } catch (e) { /* 接口异常：继续尝试下一档/兜底 */ }
+            }
+            // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
+            return { url: outerUrl(songId) };
         },
         // 歌词（可选，暂返回 null 交由内核忽略）
         async getLyric() {
