@@ -10,10 +10,14 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.datasource.HttpDataSource;
+import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 
 import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.android.tv.music.model.RepeatMode;
+import com.github.catvod.net.OkHttp;
 
 import java.util.List;
 
@@ -204,7 +208,13 @@ public final class MusicPlayer {
 
     private void ensurePlayer() {
         if (player != null) return;
-        player = new ExoPlayer.Builder(context).build();
+        // 网易云等源返回的 mp3 直链常为 http，而请求是 https；
+        // OkHttp 默认跟随跨协议重定向，直接复用主播放器同款数据源，避免 Media3 默认拒绝 https→http
+        HttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(OkHttp.player());
+        DefaultMediaSourceFactory sourceFactory = new DefaultMediaSourceFactory(httpFactory);
+        player = new ExoPlayer.Builder(context)
+                .setMediaSourceFactory(sourceFactory)
+                .build();
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
         player.setHandleAudioBecomingNoisy(true);
         player.addListener(new Player.Listener() {
