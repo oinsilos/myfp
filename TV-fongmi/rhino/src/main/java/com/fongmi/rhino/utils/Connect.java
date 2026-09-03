@@ -9,6 +9,7 @@ import com.google.common.net.HttpHeaders;
 import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import java.security.SecureRandom;
 import java.util.List;
@@ -31,7 +32,7 @@ public class Connect {
         return client.newCall(getRequest(url, req, Headers.of(req.getHeader())));
     }
 
-    public static Scriptable success(Context cx, Scriptable scope, Req req, Response res) {
+    public static Scriptable success(Context cx, VarScope scope, Req req, Response res) {
         try (res) {
             Scriptable jsObject = cx.newObject(scope);
             Scriptable jsHeader = cx.newObject(scope);
@@ -48,7 +49,7 @@ public class Connect {
         }
     }
 
-    public static Scriptable error(Context cx, Scriptable scope) {
+    public static Scriptable error(Context cx, VarScope scope) {
         Scriptable jsObject = cx.newObject(scope);
         Scriptable jsHeader = cx.newObject(scope);
         ScriptableObject.putProperty(jsObject, "headers", jsHeader);
@@ -94,7 +95,7 @@ public class Connect {
         return builder.build();
     }
 
-    private static void setHeader(Context cx, Scriptable scope, Response res, Scriptable object) {
+    private static void setHeader(Context cx, VarScope scope, Response res, Scriptable object) {
         for (Map.Entry<String, List<String>> entry : res.headers().toMultimap().entrySet()) {
             if (entry.getValue().size() == 1) ScriptableObject.putProperty(object, entry.getKey(), entry.getValue().get(0));
             if (entry.getValue().size() >= 2) ScriptableObject.putProperty(object, entry.getKey(), JSUtil.toArray(cx, scope, entry.getValue()));

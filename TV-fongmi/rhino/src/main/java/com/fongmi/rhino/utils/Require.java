@@ -1,14 +1,16 @@
 package com.fongmi.rhino.utils;
 
+import org.htmlunit.corejs.javascript.BaseFunction;
 import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 犀牛环境下的轻量模块装载器（CommonJS 风格）。
+ * Rhino 环境下的轻量模块装载器（CommonJS 风格）。
  * 将影视源 import 的库名解析到内置 js/lib 资源或远程脚本，并缓存 exports。
  */
 public final class Require {
@@ -16,20 +18,20 @@ public final class Require {
     private static final Map<String, String> ALIASES = new ConcurrentHashMap<>();
 
     static {
-        ALIASES.put("http", "lib/http");
-        ALIASES.put("crypto-js", "lib/crypto-js");
-        ALIASES.put("cheerio", "lib/cheerio.min");
-        ALIASES.put("gbk", "lib/gbk");
-        ALIASES.put("similarity", "lib/similarity");
-        ALIASES.put("cat", "lib/cat");
-        ALIASES.put("dayjs", "lib/cat");
+        ALIASES.put("http", "http");
+        ALIASES.put("crypto-js", "crypto-js");
+        ALIASES.put("cheerio", "cheerio.min");
+        ALIASES.put("gbk", "gbk");
+        ALIASES.put("similarity", "similarity");
+        ALIASES.put("cat", "cat");
+        ALIASES.put("dayjs", "cat");
     }
 
     private final Map<String, Scriptable> cache = new ConcurrentHashMap<>();
     private final Context cx;
-    private final Scriptable scope;
+    private final VarScope scope;
 
-    public Require(Context cx, Scriptable scope) {
+    public Require(Context cx, VarScope scope) {
         this.cx = cx;
         this.scope = scope;
     }
@@ -47,7 +49,10 @@ public final class Require {
 
     private String normalize(String raw) {
         String s = raw.trim().replace('\\', '/');
-        if (s.startsWith("assets://js/lib/")) return s.substring("assets://js/lib/".length(), s.length() - (s.endsWith(".js") ? 3 : 0));
+        if (s.startsWith("assets://js/lib/")) {
+            String r = s.substring("assets://js/lib/".length());
+            return r.endsWith(".js") ? r.substring(0, r.length() - 3) : r;
+        }
         if (s.startsWith("assets://")) return s;
         if (s.startsWith("http://") || s.startsWith("https://")) return s;
         while (s.startsWith("./") || s.startsWith("../") || s.startsWith("lib/")) {
@@ -80,10 +85,10 @@ public final class Require {
     /** 将 __require 绑定到全局。 */
     public void bind() {
         if (!(scope instanceof ScriptableObject)) return;
-        ScriptableObject target = (ScriptableObject) scope;
-        target.put("__require", target, new org.htmlunit.corejs.javascript.BaseFunction(scope, "__require", 1) {
+        final ScriptableObject target = (ScriptableObject) scope;
+        target.put("__require", target, new BaseFunction() {
             @Override
-            public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+            public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
                 String name = args.length > 0 && args[0] != null ? Context.toString(args[0]) : "";
                 return Require.this.load(name);
             }

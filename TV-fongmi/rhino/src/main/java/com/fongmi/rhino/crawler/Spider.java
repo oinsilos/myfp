@@ -13,9 +13,9 @@ import com.github.catvod.utils.Asset;
 import com.github.catvod.utils.Json;
 import com.github.catvod.utils.Util;
 
-import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import org.json.JSONArray;
 
@@ -38,8 +38,8 @@ public class Spider extends com.github.catvod.crawler.Spider {
     private final DexClassLoader dex;
     private final String api;
 
-    private volatile Context cx;
-    private volatile Scriptable scope;
+    private volatile org.htmlunit.corejs.javascript.Context cx;
+    private volatile VarScope scope;
     private volatile Scriptable jsObject;
     private Global global;
     private volatile boolean cat;
@@ -145,7 +145,7 @@ public class Spider extends com.github.catvod.crawler.Spider {
     private void releaseJS() throws Exception {
         submit(() -> {
             if (global != null) global.destroy();
-            if (cx != null) Context.exit();
+            if (cx != null) org.htmlunit.corejs.javascript.Context.exit();
             return null;
         }).get();
     }
@@ -159,10 +159,10 @@ public class Spider extends com.github.catvod.crawler.Spider {
     }
 
     private void createCtx() {
-        cx = Context.enter();
+        cx = org.htmlunit.corejs.javascript.Context.enter();
         cx.setOptimizationLevel(-1); // 解释模式：体积与兼容优先，避免生成类/字节码
-        cx.setLanguageVersion(Context.VERSION_ES6);
-        scope = cx.initStandardObjects();
+        cx.setLanguageVersion(org.htmlunit.corejs.javascript.Context.VERSION_ES6);
+        scope = (VarScope) cx.initStandardObjects();
         if (!ScriptableObject.hasProperty(scope, "globalThis")) ScriptableObject.putProperty(scope, "globalThis", scope);
         global = Global.create(cx, scope, executor);
         new Require(cx, scope).bind();
@@ -178,7 +178,7 @@ public class Spider extends com.github.catvod.crawler.Spider {
         cx.evaluateString(scope, wrapped, api, 1, null);
         cx.evaluateString(scope, Asset.read("js/lib/spider.js"), "spider.js", 1, null);
         Object js = ScriptableObject.getProperty(scope, "__JS_SPIDER__");
-        jsObject = js instanceof Scriptable ? (Scriptable) js : (Scriptable) cx.newObject(scope);
+        jsObject = js instanceof Scriptable ? (Scriptable) js : cx.newObject(scope);
         ScriptableObject.deleteProperty(scope, "__module");
     }
 

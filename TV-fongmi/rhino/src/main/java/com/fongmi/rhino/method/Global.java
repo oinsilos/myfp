@@ -10,13 +10,15 @@ import com.github.catvod.utils.Crypto;
 import com.github.catvod.utils.Trans;
 import com.github.catvod.utils.UriUtil;
 
+import org.htmlunit.corejs.javascript.BaseFunction;
 import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Function;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.Undefined;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import java.io.IOException;
-import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,13 +36,13 @@ public class Global {
     private final ExecutorService executor;
     private final AtomicInteger timerId;
     private final Context cx;
-    private final Scriptable scope;
+    private final VarScope scope;
     private final Timer timer;
     private final Local local;
 
     private volatile boolean destroyed;
 
-    private Global(Context cx, Scriptable scope, ExecutorService executor) {
+    private Global(Context cx, VarScope scope, ExecutorService executor) {
         this.executor = executor;
         this.timerId = new AtomicInteger();
         this.timers = new ConcurrentHashMap<>();
@@ -51,7 +53,7 @@ public class Global {
         setProperty();
     }
 
-    public static Global create(Context cx, Scriptable scope, ExecutorService executor) {
+    public static Global create(Context cx, VarScope scope, ExecutorService executor) {
         return new Global(cx, scope, executor);
     }
 
@@ -72,7 +74,7 @@ public class Global {
         ScriptableObject.putProperty(console, "debug", fn(args -> consoleLog(args)));
         ScriptableObject.putProperty(g, "console", console);
 
-        ScriptableObject l = cx.newObject(scope);
+        Scriptable l = cx.newObject(scope);
         JSUtil.bind(cx, scope, l, "get", args -> local.get(str(args, 0), str(args, 1)));
         JSUtil.bind(cx, scope, l, "set", args -> {
             local.set(str(args, 0), str(args, 1), str(args, 2));
@@ -117,7 +119,7 @@ public class Global {
     }
 
     private static String str(Object[] args, int i) {
-        if (args == null || i >= args.length || args[i] == null || args[i] instanceof org.htmlunit.corejs.javascript.Undefined) return "";
+        if (args == null || i >= args.length || args[i] == null || args[i] instanceof Undefined) return "";
         return Context.toString(args[i]);
     }
 
@@ -132,18 +134,18 @@ public class Global {
         return 0;
     }
 
-    private static Scriptable scriptableOf(Scriptable scope, Object[] args, int i) {
+    private static Scriptable scriptableOf(Object[] args, int i) {
         if (args == null || i >= args.length || !(args[i] instanceof Scriptable)) return null;
-        Scriptable s = (Scriptable) args[i];
-        return s instanceof ScriptableObject ? (ScriptableObject) s : s;
+        return (Scriptable) args[i];
     }
 
-    private static org.htmlunit.corejs.javascript.BaseFunction fn(final JSUtil.JsFn fn) {
-        return new org.htmlunit.corejs.javascript.BaseFunction() {
+    private static BaseFunction fn(final JSUtil.JsFn fn) {
+        return new BaseFunction() {
             @Override
-            public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+            public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
                 try {
-                    return fn.apply(args);
+                    Object result = fn.apply(args);
+                    return result == null ? Context.getUndefinedValue() : result;
                 } catch (Throwable e) {
                     return Context.getUndefinedValue();
                 }
@@ -156,7 +158,7 @@ public class Global {
         Integer siteType = intOf(args, 1);
         String siteKey = str(args, 2);
         String url = str(args, 3);
-        Scriptable headers = scriptableOf(scope, args, 4);
+        Scriptable headers = scriptableOf(args, 4);
         return getProxy(dynamic != null && !dynamic) + String.format("&from=catvod&siteType=%s&siteKey=%s&header=%s&url=%s", siteType, siteKey, Uri.encode(JSUtil.stringify(cx, scope, headers == null ? scope : headers)), Uri.encode(url));
     }
 
@@ -182,7 +184,7 @@ public class Global {
 
     private Object _http(Object[] args) {
         String url = str(args, 0);
-        Scriptable options = scriptableOf(scope, args, 1);
+        Scriptable options = scriptableOf(args, 1);
         if (options == null) return req(args);
         Object complete = ScriptableObject.getProperty(options, "complete");
         if (!(complete instanceof Function)) return req(args);
@@ -192,7 +194,7 @@ public class Global {
 
     private Object req(Object[] args) {
         String url = str(args, 0);
-        Scriptable options = scriptableOf(scope, args, 1);
+        Scriptable options = scriptableOf(args, 1);
         try {
             Req req = Req.objectFrom(options == null ? "{}" : JSUtil.stringify(cx, scope, options));
             Response res = Connect.to(url, req).execute();
@@ -227,12 +229,12 @@ public class Global {
     private Callback getCallback(final Function complete, final Req req) {
         return new Callback() {
             @Override
-            public void onResponse(okhttp3.Call call, Response res) {
+            public void onResponse(Call call, Response res) {
                 completeSuccess(complete, req, res);
             }
 
             @Override
-            public void onFailure(okhttp3.Call call, IOException e) {
+            public void onFailure(Call call, IOException e) {
                 completeError(complete);
             }
         };
@@ -247,8 +249,7 @@ public class Global {
     }
 
     private boolean postCallback(Function callback, Runnable runnable) {
-        boolean posted = submit(runnable);
-        return posted;
+        return submit(runnable);
     }
 
     private boolean submit(Runnable runnable) {

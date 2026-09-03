@@ -5,6 +5,7 @@ import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Function;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -12,12 +13,12 @@ import java.util.concurrent.CompletableFuture;
 public class Async {
 
     private final Context cx;
-    private final Scriptable scope;
+    private final VarScope scope;
     private CompletableFuture<Object> future;
 
     private final Function success = new BaseFunction() {
         @Override
-        public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+        public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
             future.complete(args != null && args.length > 0 ? args[0] : null);
             return Context.getUndefinedValue();
         }
@@ -25,20 +26,20 @@ public class Async {
 
     private final Function error = new BaseFunction() {
         @Override
-        public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+        public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
             String msg = args != null && args.length > 0 && args[0] != null ? String.valueOf(args[0]) : "";
             future.completeExceptionally(new Exception(msg));
             return Context.getUndefinedValue();
         }
     };
 
-    private Async(Context cx, Scriptable scope) {
+    private Async(Context cx, VarScope scope) {
         this.cx = cx;
         this.scope = scope;
         this.future = new CompletableFuture<>();
     }
 
-    public static CompletableFuture<Object> run(Context cx, Scriptable scope, Scriptable object, String name, Object... args) {
+    public static CompletableFuture<Object> run(Context cx, VarScope scope, Scriptable object, String name, Object... args) {
         return new Async(cx, scope).call(object, name, args);
     }
 
