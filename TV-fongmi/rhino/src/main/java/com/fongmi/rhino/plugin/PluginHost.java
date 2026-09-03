@@ -13,7 +13,6 @@ import org.htmlunit.corejs.javascript.Undefined;
 import org.htmlunit.corejs.javascript.VarScope;
 
 import java.net.URI;
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -34,7 +33,6 @@ public final class PluginHost {
     private final VarScope scope;
     private final Variables variables;
     private final String appVersion;
-    private final Map<String, Scriptable> cache = new HashMap<>();
 
     private volatile String pluginName = "";
 
@@ -51,13 +49,29 @@ public final class PluginHost {
     }
 
     /**
-     * 把 __mf_req / __mf_env / __mf_url / __mf_proc 绑定到 scope，
+     * 把 __mf_req(__mf_require_js) / __mf_env / __mf_url / __mf_proc 绑定到 scope，
      * 插件代码经这些占位被注入（与 RN 的 8 参注入顺序一致）。
+     * <p>
+     * 注意：require 必须走 JS shim（查 script scope 槽 __mf_lib_&lt;name&gt;）。
+     * Rhino 解释模式下若把 Java 宿主函数的返回值直接赋给 var 再读取，变量绑定会丢失
+     * （ReferenceError: "axios" is not defined），JS 查表路径则完全健康。
      */
     public void bind() {
         JSUtil.bind(cx, scope, "__mf_url_parse", args -> urlParse(str(args, 0)));
         JSUtil.bind(cx, scope, "__mf_url_resolve", args -> urlResolve(str(args, 0), str(args, 1)));
-        ScriptableObject.putProperty(scope, "__mf_req", requireFn());
+        // Java 副作用加载：仅负责把 <name> 对应的库加载并写入 script scope 槽
+        // __mf_lib_<name>，不把返回值交由插件代码持有（见类注释，避免解释模式 var 绑定丢失）。
+        JSUtil.bind(cx, scope, "__mf_host_load", args -> {
+            require(str(args, 0));
+            return null;
+        });
+        // JS require shim：优先查槽（幂等），未命中才交 __mf_host_load 加载
+        cx.evaluateString(scope,
+                "var __mf_require_js = function (name) { var g = globalThis;"
+                        + " if (g['__mf_lib_' + name] !== undefined) return g['__mf_lib_' + name];"
+                        + " __mf_host_load(name); return g['__mf_lib_' + name]; };"
+                        + "var __mf_req = __mf_require_js;",
+                "mf-require.js", 1, null);
         ScriptableObject.putProperty(scope, "__mf_env", env());
         ScriptableObject.putProperty(scope, "__mf_url", evalLib("mf/url.js", "URL"));
         ScriptableObject.putProperty(scope, "__mf_proc", process());
@@ -67,11 +81,10 @@ public final class PluginHost {
                 "env.js", 1, null);
     }
 
-    /** require 入口：解析宿主内置库并缓存 exports。 */
-    public Scriptable require(String name) {
+    /** require 加载：解析宿主内置库，加载并把 exports 写入 script scope 槽 __mf_lib_<name>（幂等）。 */
+    public void require(String name) {
         if (name == null) name = "";
-        Scriptable hit = cache.get(name);
-        if (hit != null) return hit;
+        if (ScriptableObject.getProperty(scope, "__mf_lib_" + name) instanceof Scriptable) return;
         String key = name;
         Scriptable lib;
         switch (name) {
@@ -99,17 +112,7 @@ public final class PluginHost {
             default:
                 lib = stub(name);
         }
-        cache.put(key, lib);
-        return lib;
-    }
-
-    private Scriptable requireFn() {
-        return new BaseFunction() {
-            @Override
-            public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
-                return require(args.length > 0 && args[0] != null ? Context.toString(args[0]) : "");
-            }
-        };
+        ScriptableObject.putProperty(scope, "__mf_lib_" + key, lib);
     }
 
     /** 求值内置库：CommonJS 包装（provide module/exports，让 UMD 走 CJS 分支），取 module.exports。 */

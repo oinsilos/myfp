@@ -87,11 +87,12 @@ public final class PluginSandbox {
         try {
             return executor.submit(() -> {
                 String content = Transpile.toCommonJs(code);
-                // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植
+                // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
+                // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
                 String wrapped = "(function(){\n'use strict';\nvar __module = { exports: {} };\n"
                         + "(function(require, __musicfree_require, module, exports, console, env, URL, process) {\n"
                         + content
-                        + "\n})(__mf_req, __mf_req, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
+                        + "\n})(__mf_require_js, __mf_require_js, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
                         + "return __module.exports;\n})();";
                 Object obj = cx.evaluateString(scope, wrapped, "plugin.js", 1, null);
                 this.instance = obj instanceof Scriptable ? (Scriptable) obj : (Scriptable) cx.newObject(scope);
@@ -130,9 +131,63 @@ public final class PluginSandbox {
         return call(method, args).get();
     }
 
+    /**
+     * JSON 参数调用：argsJson 为形如 {@code 'kw', 1, 0} 的展开参数（不含括号），
+     * 在沙箱线程内解析并调用插件方法（async 方法自动桥回 Promise）。
+     * 用于需要传对象/数组参数的场景（如 getMediaSource(song, quality)）。
+     */
+    public CompletableFuture<Object> callJson(final String method, final String argsJson) {
+        final CompletableFuture<Object> future = new CompletableFuture<>();
+        executor.submit(() -> {
+            try {
+                if (instance == null || cx == null || scope == null) {
+                    future.completeExceptionally(new IllegalStateException("plugin not loaded"));
+                    return;
+                }
+                Scriptable arr = (Scriptable) cx.evaluateString(scope, "[" + (argsJson == null ? "" : argsJson) + "]", "args", 1, null);
+                Object[] args = (Object[]) Context.jsToJava(arr, Object[].class);
+                Async.run(cx, scope, instance, method, args).whenComplete((result, error) -> {
+                    if (error != null) future.completeExceptionally(error);
+                    else future.complete(result);
+                });
+            } catch (Throwable e) {
+                future.completeExceptionally(e);
+            }
+        });
+        return future;
+    }
+
     /** 当前插件实例（未加载时为 null）。 */
     public Scriptable instance() {
         return instance;
+    }
+
+    /** 插件声明的 platform 名（未加载为空串）。 */
+    public String platformName() {
+        try {
+            return String.valueOf(executor.submit(() -> {
+                if (instance == null) return "";
+                Object p = ScriptableObject.getProperty(instance, "platform");
+                return p instanceof CharSequence ? p.toString() : "";
+            }).get());
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 在沙箱线程内把 JS 值序列化为 JSON 字符串（null/标量直接 toString 兜底）。 */
+    public String stringify(Object jsValue) {
+        try {
+            return String.valueOf(executor.submit(() -> {
+                if (jsValue instanceof Scriptable) {
+                    ScriptableObject.putProperty(scope, "__str__", jsValue);
+                    return Context.toString(cx.evaluateString(scope, "JSON.stringify(__str__)", "stringify", 1, null));
+                }
+                return String.valueOf(jsValue);
+            }).get());
+        } catch (Exception e) {
+            return "null";
+        }
     }
 
     /** 插件声明的方法名集合（与 RN supportedMethods 等价的本地查询）。 */

@@ -105,6 +105,22 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".music.service.MusicPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <activity
+            android:name=".music.ui.MusicActivity"
+            android:exported="true"
+            android:theme="@style/Theme.App"
+            android:label="音乐搜索">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />

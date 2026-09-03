@@ -26,6 +26,8 @@ public final class MusicMedia {
     public final List<String> moreUrls;
     /** 自定义请求头（可空）。 */
     public final Map<String, String> headers;
+    /** 插件原始字段透传（JSON 片段，如 {"songId":"123"}，getMediaSource 时原样带回插件）。 */
+    public String extra;
 
     public MusicMedia(String id, String title, String artist, String album, long durationMs, String cover, String url, List<String> moreUrls, Map<String, String> headers) {
         this.id = id == null ? "" : id;
