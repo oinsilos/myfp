@@ -1,6 +1,6 @@
 # TV
 -keep class androidx.leanback.widget.** { *; }
--keep class com.fongmi.quickjs.method.** { *; }
+-keep class com.fongmi.rhino.method.** { *; }
 -keep class com.fongmi.android.tv.bean.** { *; }
 
 # Gson

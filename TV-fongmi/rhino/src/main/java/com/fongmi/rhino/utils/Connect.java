@@ -1,12 +1,15 @@
-package com.fongmi.quickjs.utils;
+package com.fongmi.rhino.utils;
 
-import com.fongmi.quickjs.bean.Req;
+import com.fongmi.rhino.bean.Req;
 import com.github.catvod.net.OkHttp;
 import com.github.catvod.utils.Json;
 import com.github.catvod.utils.Util;
 import com.google.common.net.HttpHeaders;
-import com.whl.quickjs.wrapper.JSObject;
-import com.whl.quickjs.wrapper.QuickJSContext;
+
+import org.htmlunit.corejs.javascript.Context;
+import org.htmlunit.corejs.javascript.Scriptable;
+import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 
 import java.security.SecureRandom;
 import java.util.List;
@@ -29,29 +32,29 @@ public class Connect {
         return client.newCall(getRequest(url, req, Headers.of(req.getHeader())));
     }
 
-    public static JSObject success(QuickJSContext ctx, Req req, Response res) {
+    public static Scriptable success(Context cx, VarScope scope, Req req, Response res) {
         try (res) {
-            JSObject jsObject = ctx.createNewJSObject();
-            JSObject jsHeader = ctx.createNewJSObject();
-            setHeader(ctx, res, jsHeader);
-            jsObject.setProperty("code", res.code());
-            jsObject.setProperty("headers", jsHeader);
-            if (req.getBuffer() == 0) jsObject.setProperty("content", new String(res.body().bytes(), req.getCharset()));
-            if (req.getBuffer() == 1) jsObject.setProperty("content", JSUtil.toArray(ctx, res.body().bytes()));
-            if (req.getBuffer() == 2) jsObject.setProperty("content", Util.base64(res.body().bytes()));
-            if (req.getBuffer() == 3) jsObject.setProperty("content", res.body().bytes());
+            Scriptable jsObject = cx.newObject(scope);
+            Scriptable jsHeader = cx.newObject(scope);
+            setHeader(cx, scope, res, jsHeader);
+            ScriptableObject.putProperty(jsObject, "code", res.code());
+            ScriptableObject.putProperty(jsObject, "headers", jsHeader);
+            if (req.getBuffer() == 0) ScriptableObject.putProperty(jsObject, "content", new String(res.body().bytes(), req.getCharset()));
+            if (req.getBuffer() == 1) ScriptableObject.putProperty(jsObject, "content", JSUtil.toArray(cx, scope, res.body().bytes()));
+            if (req.getBuffer() == 2) ScriptableObject.putProperty(jsObject, "content", Util.base64(res.body().bytes()));
+            if (req.getBuffer() == 3) ScriptableObject.putProperty(jsObject, "content", res.body().bytes());
             return jsObject;
         } catch (Exception e) {
-            return error(ctx);
+            return error(cx, scope);
         }
     }
 
-    public static JSObject error(QuickJSContext ctx) {
-        JSObject jsObject = ctx.createNewJSObject();
-        JSObject jsHeader = ctx.createNewJSObject();
-        jsObject.setProperty("headers", jsHeader);
-        jsObject.setProperty("content", "");
-        jsObject.setProperty("code", "");
+    public static Scriptable error(Context cx, VarScope scope) {
+        Scriptable jsObject = cx.newObject(scope);
+        Scriptable jsHeader = cx.newObject(scope);
+        ScriptableObject.putProperty(jsObject, "headers", jsHeader);
+        ScriptableObject.putProperty(jsObject, "content", "");
+        ScriptableObject.putProperty(jsObject, "code", "");
         return jsObject;
     }
 
@@ -92,10 +95,10 @@ public class Connect {
         return builder.build();
     }
 
-    private static void setHeader(QuickJSContext ctx, Response res, JSObject object) {
+    private static void setHeader(Context cx, VarScope scope, Response res, Scriptable object) {
         for (Map.Entry<String, List<String>> entry : res.headers().toMultimap().entrySet()) {
-            if (entry.getValue().size() == 1) object.setProperty(entry.getKey(), entry.getValue().get(0));
-            if (entry.getValue().size() >= 2) object.setProperty(entry.getKey(), JSUtil.toArray(ctx, entry.getValue()));
+            if (entry.getValue().size() == 1) ScriptableObject.putProperty(object, entry.getKey(), entry.getValue().get(0));
+            if (entry.getValue().size() >= 2) ScriptableObject.putProperty(object, entry.getKey(), JSUtil.toArray(cx, scope, entry.getValue()));
         }
     }
 }

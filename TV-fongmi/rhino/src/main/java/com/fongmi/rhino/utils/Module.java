@@ -1,4 +1,4 @@
-package com.fongmi.quickjs.utils;
+package com.fongmi.rhino.utils;
 
 import android.text.TextUtils;
 import android.util.LruCache;
