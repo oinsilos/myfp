@@ -209,6 +209,19 @@ public final class PluginSandbox {
         }
     }
 
+    /** 插件声明的 version 名（未加载为空串）。 */
+    public String versionName() {
+        try {
+            return String.valueOf(executor.submit(() -> mark(() -> {
+                if (instance == null) return "";
+                Object p = ScriptableObject.getProperty(instance, "version");
+                return p instanceof CharSequence ? p.toString() : "";
+            })).get());
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     /** 在沙箱线程内把 JS 值序列化为 JSON 字符串（null/标量直接 toString 兜底）。 */
     public String stringify(Object jsValue) {
         try {

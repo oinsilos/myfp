@@ -101,6 +101,8 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         setContentView(binding.getRoot());
         getSupportActionBarHere();
         MusicRepository.get().init(this);
+        // 状态区显示音源标识，便于确认装到的插件版本（对比 0.2.0）
+        binding.tvState.setText("music " + MusicRepository.get().platform() + " v" + MusicRepository.get().version());
         setupList();
         setupSearch();
         setupControls();

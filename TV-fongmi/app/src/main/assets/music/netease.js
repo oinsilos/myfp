@@ -80,9 +80,9 @@
 
     module.exports = {
         platform: 'netease',
-        version: '0.1.0',
+        version: '0.2.0',
         appVersion: '^0.0.1',
-        fullVersion: '0.1.0',
+        fullVersion: '0.2.0',
         // 搜索：keyword / page(1 起) / type
         async search(keyword, page, type) {
             var resp = await axios.get(SEARCH_URL, {

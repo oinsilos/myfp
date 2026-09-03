@@ -40,6 +40,11 @@ public final class MusicSource {
         return loaded ? sandbox.platformName() : "";
     }
 
+    /** 插件版本（load 后可用）。 */
+    public String version() {
+        return loaded ? sandbox.versionName() : "";
+    }
+
     /**
      * 搜索。返回可播放列表；插件未实现 search 或结果为空时返回空列表。
      */

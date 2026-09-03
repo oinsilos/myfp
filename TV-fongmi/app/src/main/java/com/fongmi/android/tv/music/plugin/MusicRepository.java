@@ -44,6 +44,16 @@ public final class MusicRepository {
         return initialised;
     }
 
+    /** 插件名（如 netease），用于界面标识当前音源。 */
+    public String platform() {
+        return source.platform();
+    }
+
+    /** 插件版本（如 0.2.0），用于确认是否装到最新插件包。 */
+    public String version() {
+        return source.version();
+    }
+
     /** 搜索（第 1 页，类型=歌曲）。 */
     public CompletableFuture<List<MusicMedia>> search(String keyword) {
         return source.search(keyword == null ? "" : keyword, 1, 1);
