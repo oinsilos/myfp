@@ -179,7 +179,6 @@ public class Spider extends com.github.catvod.crawler.Spider {
         cx.evaluateString(scope, Asset.read("js/lib/spider.js"), "spider.js", 1, null);
         Object js = ScriptableObject.getProperty(scope, "__JS_SPIDER__");
         jsObject = js instanceof Scriptable ? (Scriptable) js : cx.newObject(scope);
-        ScriptableObject.deleteProperty(scope, "__module");
     }
 
     private Object getExt(String ext) {

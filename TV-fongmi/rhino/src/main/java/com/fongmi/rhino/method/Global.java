@@ -19,6 +19,7 @@ import org.htmlunit.corejs.javascript.Undefined;
 import org.htmlunit.corejs.javascript.VarScope;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,6 +38,7 @@ public class Global {
     private final AtomicInteger timerId;
     private final Context cx;
     private final VarScope scope;
+    private final Scriptable thisObj;
     private final Timer timer;
     private final Local local;
 
@@ -49,6 +51,7 @@ public class Global {
         this.timer = new Timer("rhino-timer", true);
         this.cx = cx;
         this.scope = scope;
+        this.thisObj = cx.newObject(scope);
         this.local = new Local();
         setProperty();
     }
@@ -65,45 +68,44 @@ public class Global {
     }
 
     private void setProperty() {
-        ScriptableObject g = (ScriptableObject) scope;
         Scriptable console = cx.newObject(scope);
         ScriptableObject.putProperty(console, "log", fn(args -> consoleLog(args)));
         ScriptableObject.putProperty(console, "info", fn(args -> consoleLog(args)));
         ScriptableObject.putProperty(console, "warn", fn(args -> consoleLog(args)));
         ScriptableObject.putProperty(console, "error", fn(args -> consoleLog(args)));
         ScriptableObject.putProperty(console, "debug", fn(args -> consoleLog(args)));
-        ScriptableObject.putProperty(g, "console", console);
+        ScriptableObject.putProperty(scope, "console", console);
 
         Scriptable l = cx.newObject(scope);
-        JSUtil.bind(cx, scope, l, "get", args -> local.get(str(args, 0), str(args, 1)));
-        JSUtil.bind(cx, scope, l, "set", args -> {
+        JSUtil.bindObj(l, "get", args -> local.get(str(args, 0), str(args, 1)));
+        JSUtil.bindObj(l, "set", args -> {
             local.set(str(args, 0), str(args, 1), str(args, 2));
             return null;
         });
-        JSUtil.bind(cx, scope, l, "delete", args -> {
+        JSUtil.bindObj(l, "delete", args -> {
             local.delete(str(args, 0), str(args, 1));
             return null;
         });
-        ScriptableObject.putProperty(g, "local", l);
+        ScriptableObject.putProperty(scope, "local", l);
 
-        JSUtil.bind(cx, scope, g, "s2t", args -> Trans.s2t(false, str(args, 0)));
-        JSUtil.bind(cx, scope, g, "t2s", args -> Trans.t2s(false, str(args, 0)));
-        JSUtil.bind(cx, scope, g, "getPort", args -> Proxy.getPort());
-        JSUtil.bind(cx, scope, g, "getProxy", args -> Proxy.getUrl(bool(args, 0)) + "?do=js");
-        JSUtil.bind(cx, scope, g, "js2Proxy", args -> js2Proxy(args));
-        JSUtil.bind(cx, scope, g, "setTimeout", args -> setTimeout(args));
-        JSUtil.bind(cx, scope, g, "clearTimeout", args -> {
+        JSUtil.bind(cx, scope, "s2t", args -> Trans.s2t(false, str(args, 0)));
+        JSUtil.bind(cx, scope, "t2s", args -> Trans.t2s(false, str(args, 0)));
+        JSUtil.bind(cx, scope, "getPort", args -> Proxy.getPort());
+        JSUtil.bind(cx, scope, "getProxy", args -> Proxy.getUrl(bool(args, 0)) + "?do=js");
+        JSUtil.bind(cx, scope, "js2Proxy", args -> js2Proxy(args));
+        JSUtil.bind(cx, scope, "setTimeout", args -> setTimeout(args));
+        JSUtil.bind(cx, scope, "clearTimeout", args -> {
             cancel(intOf(args, 0));
             return null;
         });
-        JSUtil.bind(cx, scope, g, "_http", args -> _http(args));
-        JSUtil.bind(cx, scope, g, "req", args -> req(args));
-        JSUtil.bind(cx, scope, g, "joinUrl", args -> UriUtil.resolve(str(args, 0), str(args, 1)));
-        JSUtil.bind(cx, scope, g, "md5X", args -> Crypto.md5(str(args, 0)));
-        JSUtil.bind(cx, scope, g, "aesX", args -> Crypto.aes(str(args, 0), bool(args, 1), str(args, 2), bool(args, 3), str(args, 4), str(args, 5), bool(args, 6)));
-        JSUtil.bind(cx, scope, g, "desX", args -> Crypto.des(str(args, 0), bool(args, 1), str(args, 2), bool(args, 3), str(args, 4), str(args, 5), bool(args, 6)));
-        JSUtil.bind(cx, scope, g, "rsaX", args -> Crypto.rsa(str(args, 0), bool(args, 1), bool(args, 2), str(args, 3), bool(args, 4), str(args, 5), bool(args, 6)));
-        JSUtil.bind(cx, scope, g, "__tick", args -> tick(args));
+        JSUtil.bind(cx, scope, "_http", args -> _http(args));
+        JSUtil.bind(cx, scope, "req", args -> req(args));
+        JSUtil.bind(cx, scope, "joinUrl", args -> UriUtil.resolve(str(args, 0), str(args, 1)));
+        JSUtil.bind(cx, scope, "md5X", args -> Crypto.md5(str(args, 0)));
+        JSUtil.bind(cx, scope, "aesX", args -> Crypto.aes(str(args, 0), bool(args, 1), str(args, 2), bool(args, 3), str(args, 4), str(args, 5), bool(args, 6)));
+        JSUtil.bind(cx, scope, "desX", args -> Crypto.des(str(args, 0), bool(args, 1), str(args, 2), bool(args, 3), str(args, 4), str(args, 5), bool(args, 6)));
+        JSUtil.bind(cx, scope, "rsaX", args -> Crypto.rsa(str(args, 0), bool(args, 1), bool(args, 2), str(args, 3), bool(args, 4), str(args, 5), bool(args, 6)));
+        JSUtil.bind(cx, scope, "__tick", args -> tick(args));
     }
 
     // ------------------------------------------------------------ helpers
@@ -159,7 +161,7 @@ public class Global {
         String siteKey = str(args, 2);
         String url = str(args, 3);
         Scriptable headers = scriptableOf(args, 4);
-        return getProxy(dynamic != null && !dynamic) + String.format("&from=catvod&siteType=%s&siteKey=%s&header=%s&url=%s", siteType, siteKey, Uri.encode(JSUtil.stringify(cx, scope, headers == null ? scope : headers)), Uri.encode(url));
+        return getProxy(dynamic != null && !dynamic) + String.format("&from=catvod&siteType=%s&siteKey=%s&header=%s&url=%s", siteType, siteKey, Uri.encode(JSUtil.stringify(cx, scope, headers == null ? thisObj : headers)), Uri.encode(url));
     }
 
     private Object setTimeout(Object[] args) {
@@ -210,7 +212,7 @@ public class Global {
         try {
             executor.submit(() -> {
                 if (destroyed) return null;
-                return fn.call(cx, scope, scope, new Object[0]);
+                return fn.call(cx, scope, thisObj, new Object[0]);
             });
         } catch (Throwable ignored) {
         }
@@ -241,11 +243,11 @@ public class Global {
     }
 
     private void completeSuccess(Function complete, Req req, Response res) {
-        postCallback(complete, () -> complete.call(cx, scope, scope, new Object[]{Connect.success(cx, scope, req, res)}));
+        postCallback(complete, () -> complete.call(cx, scope, thisObj, new Object[]{Connect.success(cx, scope, req, res)}));
     }
 
     private void completeError(Function complete) {
-        postCallback(complete, () -> complete.call(cx, scope, scope, new Object[]{Connect.error(cx, scope)}));
+        postCallback(complete, () -> complete.call(cx, scope, thisObj, new Object[]{Connect.error(cx, scope)}));
     }
 
     private boolean postCallback(Function callback, Runnable runnable) {
@@ -283,7 +285,7 @@ public class Global {
         private void fire() {
             if (canceled) return;
             try {
-                func.call(cx, scope, scope, new Object[0]);
+                func.call(cx, scope, thisObj, new Object[0]);
             } finally {
                 Global.this.cancel(id);
             }

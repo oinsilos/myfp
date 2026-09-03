@@ -47,14 +47,21 @@ public final class JSUtil {
             return Context.toString(cx.evaluateString(scope, "JSON.stringify(__json__)", "stringify", 1, null));
         } catch (Throwable e) {
             return Context.toString(object);
-        } finally {
-            ScriptableObject.deleteProperty(scope, "__json__");
         }
     }
 
-    /** 向 parent 上绑定一个 name 函数。 */
-    public static void bind(Context cx, VarScope scope, Scriptable parent, String name, final JsFn fn) {
-        BaseFunction f = new BaseFunction() {
+    /** 向全局 scope 绑定一个 name 函数。 */
+    public static void bind(Context cx, VarScope scope, String name, final JsFn fn) {
+        ScriptableObject.putProperty(scope, name, fnOf(fn));
+    }
+
+    /** 向指定对象（非 scope）绑定一个 name 函数。 */
+    public static void bindObj(Scriptable parent, String name, final JsFn fn) {
+        ScriptableObject.putProperty(parent, name, fnOf(fn));
+    }
+
+    private static BaseFunction fnOf(final JsFn fn) {
+        return new BaseFunction() {
             @Override
             public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
                 try {
@@ -65,7 +72,6 @@ public final class JSUtil {
                 }
             }
         };
-        ScriptableObject.putProperty(parent, name, f);
     }
 
     public interface JsFn {

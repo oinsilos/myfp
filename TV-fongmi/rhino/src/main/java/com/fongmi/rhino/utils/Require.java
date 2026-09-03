@@ -84,9 +84,7 @@ public final class Require {
 
     /** 将 __require 绑定到全局。 */
     public void bind() {
-        if (!(scope instanceof ScriptableObject)) return;
-        final ScriptableObject target = (ScriptableObject) scope;
-        target.put("__require", target, new BaseFunction() {
+        ScriptableObject.putProperty(scope, "__require", new BaseFunction() {
             @Override
             public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
                 String name = args.length > 0 && args[0] != null ? Context.toString(args[0]) : "";

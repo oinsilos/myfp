@@ -55,12 +55,17 @@ public class Async {
 
     private void call(Function func, Object... args) {
         try {
-            Object result = func.call(cx, scope, scope, args);
+            Object result = func.call(cx, scope, object(Scriptable.NOT_FOUND), args);
             if (result instanceof Scriptable) then((Scriptable) result);
             else future.complete(result);
         } catch (Throwable e) {
             future.completeExceptionally(e);
         }
+    }
+
+    /** 备用 this 值：物化为普通对象，避免把 VarScope 当作 this。 */
+    private Scriptable object(Object fallback) {
+        return fallback instanceof Scriptable ? (Scriptable) fallback : cx.newObject(scope);
     }
 
     private void then(Scriptable promise) {
