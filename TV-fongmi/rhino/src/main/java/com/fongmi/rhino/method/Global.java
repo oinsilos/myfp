@@ -164,6 +164,10 @@ public class Global {
         return getProxy(dynamic != null && !dynamic) + String.format("&from=catvod&siteType=%s&siteKey=%s&header=%s&url=%s", siteType, siteKey, Uri.encode(JSUtil.stringify(cx, scope, headers == null ? thisObj : headers)), Uri.encode(url));
     }
 
+    private String getProxy(Boolean local) {
+        return Proxy.getUrl(local) + "?do=js";
+    }
+
     private Object setTimeout(Object[] args) {
         Function func = args.length > 0 && args[0] instanceof Function ? (Function) args[0] : null;
         if (func == null || destroyed) return 0;
