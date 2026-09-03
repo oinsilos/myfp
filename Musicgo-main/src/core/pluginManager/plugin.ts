@@ -10,87 +10,27 @@ import delay from "@/utils/delay";
 import { addFileScheme, getFileName } from "@/utils/fileUtils";
 import { getMediaExtraProperty, patchMediaExtra } from "@/utils/mediaExtra";
 import { getLocalPath, isSameMediaItem, resetMediaItem } from "@/utils/mediaUtils";
-import notImplementedFunction from "@/utils/notImplementedFunction.ts";
 import axios from "axios";
-import bigInt from "big-integer";
-import * as cheerio from "cheerio";
 import { satisfies } from "compare-versions";
 import CryptoJs from "crypto-js";
-import dayjs from "dayjs";
-import he from "he";
 import { produce } from "immer";
 import { nanoid } from "nanoid";
 import objectPath from "object-path";
-import qs from "qs";
-import { default as DeviceInfo, default as deviceInfoModule } from "react-native-device-info";
+import { default as DeviceInfo } from "react-native-device-info";
 import RNFS, { exists, readFile, stat, writeFile } from "react-native-fs";
 import { URL } from "react-native-url-polyfill";
-import * as webdav from "webdav";
 import { devLog, errorLog, trace } from "../../utils/log";
 import Network from "../../utils/network";
 import MediaCache from "../mediaCache";
 import _internalPluginMeta from "./meta";
+import { createRnPluginHost } from "./sandbox/rnHost";
+import { evalSandbox } from "./sandbox/evalSandbox";
 import { IPluginManager } from "@/types/core/pluginManager";
 
 
-axios.defaults.timeout = 2000;
-axios.interceptors.response.use((response) => {
-    // 统一setcookie格式，nodejs环境是数组，移动端环境都放在第一个元素
-    const setCookie = response.headers["set-cookie"];
-    if(setCookie && setCookie.length === 1) {
-        const splitedCookie = setCookie[0].split(",");
-        response.headers["set-cookie"] = splitedCookie;
-        response.headers["x-set-cookie"] = setCookie;
-    }
-
-    return response;
-});
-
 const sha256 = CryptoJs.SHA256;
 
-const deprecatedCookieManager = {
-    get: notImplementedFunction,
-    set: notImplementedFunction,
-    flush: notImplementedFunction,
-};
-
-const packages: Record<string, any> = {
-    cheerio,
-    "crypto-js": CryptoJs,
-    axios,
-    dayjs,
-    "big-integer": bigInt,
-    qs,
-    he,
-    "@react-native-cookies/cookies": deprecatedCookieManager,
-    webdav,
-};
-
-const _require = (packageName: string) => {
-    let pkg = packages[packageName];
-    pkg.default = pkg;
-    return pkg;
-};
-
-const _consoleBind = function (
-    method: "log" | "error" | "info" | "warn",
-    ...args: any
-) {
-    const fn = console[method];
-    if (fn) {
-        fn(...args);
-        devLog(method, ...args);
-    }
-};
-
-const _console = {
-    log: _consoleBind.bind(null, "log"),
-    warn: _consoleBind.bind(null, "warn"),
-    info: _consoleBind.bind(null, "info"),
-    error: _consoleBind.bind(null, "error"),
-};
-
-const appVersion = deviceInfoModule.getVersion();
+const appVersion = DeviceInfo.getVersion();
 
 function formatAuthUrl(url: string) {
     const urlObj = new URL(url);
@@ -908,51 +848,17 @@ export class Plugin {
         this.state = PluginState.Loading;
         let _instance: IPlugin.IPluginDefine;
 
-        const _module: any = { exports: {} };
         try {
             if (typeof funcCode === "string") {
-                // 插件的环境变量
-                const env = {
-                    getUserVariables: () => {
-                        return (
-                            _internalPluginMeta.getUserVariables(this.name)
-                        );
-                    },
-                    get userVariables() {
-                        return this.getUserVariables() ?? {};
-                    },
-                    appVersion,
-                    os: "android",
-                    lang: "zh-CN",
-                };
-                const _process = {
-                    platform: "android",
-                    version: appVersion,
-                    env,
-                };
-
-                // eslint-disable-next-line no-new-func
-                _instance = Function(`
-                    'use strict';
-                    return function(require, __musicfree_require, module, exports, console, env, URL, process) {
-                        ${funcCode}
-                    }
-                `)()(
-                    _require,
-                    _require,
-                    _module,
-                    _module.exports,
-                    _console,
-                    env,
-                    URL,
-                    _process
+                // 通过插件沙箱求值：宿主能力（require/console/env/URL/process）由 rnHost 注入，
+                // 求值方式由沙箱决定（RN 当前为 Function；迁移 Rhino 时替换 IPluginSandbox 实现即可）
+                _instance = evalSandbox.load(
+                    funcCode,
+                    createRnPluginHost({
+                        getUserVariables: () =>
+                            _internalPluginMeta.getUserVariables(this.name),
+                    }),
                 );
-                if (_module.exports.default) {
-                    _instance = _module.exports
-                        .default as IPlugin.IPluginInstance;
-                } else {
-                    _instance = _module.exports as IPlugin.IPluginInstance;
-                }
             } else {
                 _instance = funcCode();
             }
