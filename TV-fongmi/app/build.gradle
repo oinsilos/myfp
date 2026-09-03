@@ -121,5 +121,6 @@ dependencies {
     annotationProcessor libs.room.compiler
     annotationProcessor libs.eventbus.annotation.processor
     annotationProcessor libs.glide.compiler
+    testImplementation libs.junit
     coreLibraryDesugaring libs.desugar
 }
