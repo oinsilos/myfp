@@ -65,6 +65,7 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private boolean playing;
     private String lastError;
     private List<LyricLine> lyricLines;
+    private String lastLyricError;
     private Dialog lyricDialog;
     private ScrollView lyricScroll;
     private List<TextView> lyricTexts;
@@ -139,6 +140,16 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
         binding.btnPrev.setOnClickListener(v -> ifService(s -> s.prev()));
         binding.btnNext.setOnClickListener(v -> ifService(s -> s.next()));
         binding.btnPlay.setOnClickListener(v -> ifService(MusicPlaybackService::toggle));
+        // 歌词行点击：有词进全屏歌词，无词/失败给原因，绝不无声
+        binding.tvLyric.setOnClickListener(v -> {
+            if (lyricLines != null && !lyricLines.isEmpty()) {
+                showLyricDialog();
+            } else if (lastLyricError != null) {
+                Notify.show("歌词：" + lastLyricError);
+            } else {
+                Notify.show("暂无歌词");
+            }
+        });
         binding.tvMode.setOnClickListener(v -> {
             ifService(s -> {
                 RepeatMode mode = s.mode();
@@ -324,10 +335,13 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private void loadLyric(MusicMedia media) {
         currentLyricIndex = -1;
         lyricLines = null;
+        lastLyricError = null;
         binding.tvLyric.setText(media == null ? "暂无歌词" : "加载歌词…");
         if (media == null) return;
         MusicRepository.get().getLyric(media).whenComplete((lrc, error) -> runOnUiThread(() -> {
-            if (error != null || lrc == null) {
+            if (error != null) {
+                lastLyricError = friendly(error);
+                Log.w("MusicActivity", "lyric error", error);
                 binding.tvLyric.setText("暂无歌词");
                 return;
             }
@@ -338,7 +352,6 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
             }
             lyricLines = lines;
             binding.tvLyric.setText("点击显示歌词");
-            binding.tvLyric.setOnClickListener(v -> showLyricDialog());
         }));
     }
 

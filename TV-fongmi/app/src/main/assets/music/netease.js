@@ -99,22 +99,35 @@
             // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
             return { url: outerUrl(songId) };
         },
-        // 歌词：网易云标准 LRC（[mm:ss.xx]文本），接口不可用/无词返回 null 交由 UI 忽略
+        // 歌词：网易云标准 LRC（[mm:ss.xx]文本）。多档参数尝试提升真实设备成功率；
+        // 全部失败抛 Error（携带原因，UI 可见），无词但有响应才返回 null。
         async getLyric(musicItem) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) return null;
-            try {
-                var resp = await axios.get('https://music.163.com/api/song/lyric', {
-                    params: { id: String(songId), lv: 1, kv: 1, tv: -1 },
-                    headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
-                });
-                var lrc = resp.data && resp.data.lrc && resp.data.lrc.lyric;
-                if (!(lrc && lrc.length)) console.log('netease lyric: empty for id=' + songId + ' data=' + JSON.stringify(resp.data).slice(0, 200));
-                return (lrc && lrc.length) ? lrc : null;
-            } catch (e) {
-                console.log('netease lyric error id=' + songId + ' err=' + (e && e.message));
-                return null;
+            var attempts = [
+                { url: 'https://music.163.com/api/song/lyric', params: { id: String(songId), lv: 1, kv: 1, tv: -1 } },
+                { url: 'https://music.163.com/api/song/lyric', params: { id: String(songId), lv: -1 } }
+            ];
+            var last = '';
+            for (var i = 0; i < attempts.length; i++) {
+                try {
+                    var resp = await axios.get(attempts[i].url, {
+                        params: attempts[i].params,
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                    });
+                    var body = resp.data;
+                    if (body) {
+                        // 未收录/无词：接口正常但确实没词，返回 null 交由 UI 显示"暂无歌词"
+                        if (body.uncollected || body.nolyric) return null;
+                        var lrc = body.lrc && body.lrc.lyric;
+                        if (lrc && lrc.length) return lrc;
+                    }
+                    last = 'empty lrc for id=' + songId;
+                } catch (e) {
+                    last = (e && e.message) || String(e);
+                }
             }
+            throw new Error('lyric failed (' + last + ')');
         }
     };
 })();
