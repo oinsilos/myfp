@@ -16,9 +16,16 @@ buildscript {
         maven { url 'https://jitpack.io' }
     }
     dependencies {
-        classpath("com.android.tools.build:gradle")
+        classpath("com.android.tools.build:gradle:8.13.2")
         classpath("com.facebook.react:react-native-gradle-plugin")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
 }
 apply plugin: "com.facebook.react.rootproject"
+
+// 统一所有自动链接原生模块的 Kotlin 编译目标(与 Java 17 保持一致),避免交叉读取字节码版本错误
+allprojects {
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        kotlinOptions.jvmTarget = "17"
+    }
+}
