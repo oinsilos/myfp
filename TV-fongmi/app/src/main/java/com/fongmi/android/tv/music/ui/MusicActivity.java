@@ -16,6 +16,7 @@ import android.widget.SeekBar;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.media3.common.Player;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -195,6 +196,21 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     public void onPlayingChanged(boolean playing) {
         this.playing = playing;
         runOnUiThread(() -> binding.btnPlay.setImageResource(playing ? R.drawable.ic_notify_pause : R.drawable.ic_notify_play));
+    }
+
+    @Override
+    public void onStateChanged(int state) {
+        runOnUiThread(() -> binding.tvState.setText(stateName(state)));
+    }
+
+    private static String stateName(int state) {
+        switch (state) {
+            case Player.STATE_IDLE: return "idle";
+            case Player.STATE_BUFFERING: return "buffering";
+            case Player.STATE_READY: return "ready";
+            case Player.STATE_ENDED: return "ended";
+            default: return "unknown(" + state + ")";
+        }
     }
 
     @Override

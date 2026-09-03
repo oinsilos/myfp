@@ -48,6 +48,8 @@ public final class MusicPlaybackService extends Service {
 
         void onPlayingChanged(boolean playing);
 
+        void onStateChanged(int state);
+
         void onProgress(long positionMs, long durationMs);
 
         void onSourceFailed(MusicMedia media, String message);
@@ -239,6 +241,11 @@ public final class MusicPlaybackService extends Service {
         public void onPlayingChanged(boolean playing) {
             postNotification();
             if (listener != null) listener.onPlayingChanged(playing);
+        }
+
+        @Override
+        public void onStateChanged(int state) {
+            if (listener != null) listener.onStateChanged(state);
         }
 
         @Override

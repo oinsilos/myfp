@@ -59,6 +59,14 @@
         android:paddingHorizontal="12dp"
         android:paddingBottom="8dp">
 
+        <TextView
+            android:id="@+id/tvState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="idle"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="10sp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

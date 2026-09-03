@@ -43,6 +43,9 @@ public final class MusicPlayer {
         /** 播放/暂停状态变化。 */
         void onPlayingChanged(boolean playing);
 
+        /** 播放器状态机变化（STATE_IDLE/BUFFERING/READY/ENDED），诊断用。 */
+        void onStateChanged(int state);
+
         /** 播放进度（位置/时长，毫秒）。 */
         void onProgress(long positionMs, long durationMs);
 
@@ -207,6 +210,17 @@ public final class MusicPlayer {
         current = null;
     }
 
+    /** 播放器状态机映射（诊断/日志用）。 */
+    private static String stateName(int state) {
+        switch (state) {
+            case Player.STATE_IDLE: return "IDLE";
+            case Player.STATE_BUFFERING: return "BUFFERING";
+            case Player.STATE_READY: return "READY";
+            case Player.STATE_ENDED: return "ENDED";
+            default: return "UNKNOWN(" + state + ")";
+        }
+    }
+
     // ------------------------------------------------------------ 内部驱动
 
     private void ensurePlayer() {
@@ -223,6 +237,8 @@ public final class MusicPlayer {
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
+                Log.d(TAG, "state: " + stateName(state) + " media=" + (current == null ? "null" : current.title));
+                callback.onStateChanged(state);
                 if (state == Player.STATE_ENDED) onEnded();
                 else if (state == Player.STATE_READY) queueDuration();
             }
