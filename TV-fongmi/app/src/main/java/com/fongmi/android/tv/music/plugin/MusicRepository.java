@@ -53,4 +53,9 @@ public final class MusicRepository {
     public CompletableFuture<String> getMediaUrl(MusicMedia media, String quality) {
         return source.getMediaUrl(media, quality);
     }
+
+    /** 拉取歌词（LRC 文本，无词/失败为 null）。 */
+    public CompletableFuture<String> getLyric(MusicMedia media) {
+        return source.getLyric(media);
+    }
 }

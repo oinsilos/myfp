@@ -1,26 +1,41 @@
 package com.fongmi.android.tv.music.ui;
 
+import android.app.Dialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.Window;
 import android.view.inputmethod.EditorInfo;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.TextView;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.bumptech.glide.Glide;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.databinding.ActivityMusicBinding;
 import com.fongmi.android.tv.databinding.ItemMusicBinding;
@@ -32,6 +47,8 @@ import com.fongmi.android.tv.utils.Notify;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 最小原生音乐界面：搜索 → 结果列表 → 点击播放。
@@ -47,8 +64,14 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private boolean dragging;
     private boolean playing;
     private String lastError;
+    private List<LyricLine> lyricLines;
+    private Dialog lyricDialog;
+    private ScrollView lyricScroll;
+    private List<TextView> lyricTexts;
+    private int currentLyricIndex = -1;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long SEARCH_TIMEOUT_MS = 20_000L;
+    private static final Pattern LRC_TIME = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2})(?:[.:](\\d{1,3}))?\\]");
 
     /** 从主界面（HomeActivity）进入音乐模块。 */
     public static void start(Context context) {
@@ -191,7 +214,12 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
 
     @Override
     public void onMusicChanged(MusicMedia media) {
-        runOnUiThread(() -> updateNow(media, service == null ? RepeatMode.LIST : service.mode()));
+        runOnUiThread(() -> {
+            closeLyricDialog();
+            updateNow(media, service == null ? RepeatMode.LIST : service.mode());
+            loadCover(binding.ivNow, media == null ? null : media.cover);
+            loadLyric(media);
+        });
     }
 
     @Override
@@ -255,6 +283,7 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
                 int progress = durationMs <= 0 ? 0 : (int) Math.min(1000, positionMs * 1000 / durationMs);
                 binding.seek.setProgress(progress);
             }
+            updateLyricUi(positionMs);
         });
     }
 
@@ -272,6 +301,195 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
 
     private void updateMode(RepeatMode mode) {
         binding.tvMode.setText(mode == RepeatMode.ONE ? "单曲循环" : mode == RepeatMode.SHUFFLE ? "随机播放" : "列表循环");
+    }
+
+    // ------------------------------------------------------------ 封面
+
+    private static final ColorDrawable PLACEHOLDER = new ColorDrawable(0xFF323232);
+
+    private void loadCover(ImageView iv, String url) {
+        if (url == null || url.isEmpty()) {
+            iv.setImageDrawable(PLACEHOLDER);
+            return;
+        }
+        Glide.with(this)
+                .load(url)
+                .placeholder(PLACEHOLDER)
+                .error(PLACEHOLDER)
+                .into(iv);
+    }
+
+    // ------------------------------------------------------------ 歌词
+
+    private void loadLyric(MusicMedia media) {
+        currentLyricIndex = -1;
+        lyricLines = null;
+        binding.tvLyric.setText(media == null ? "暂无歌词" : "加载歌词…");
+        if (media == null) return;
+        MusicRepository.get().getLyric(media).whenComplete((lrc, error) -> runOnUiThread(() -> {
+            if (error != null || lrc == null) {
+                binding.tvLyric.setText("暂无歌词");
+                return;
+            }
+            List<LyricLine> lines = parseLrc(lrc);
+            if (lines.isEmpty()) {
+                binding.tvLyric.setText("暂无歌词");
+                return;
+            }
+            lyricLines = lines;
+            binding.tvLyric.setText("点击显示歌词");
+            binding.tvLyric.setOnClickListener(v -> showLyricDialog());
+        }));
+    }
+
+    /** 解析标准 LRC：支持多个时间戳共享一行（取最后一个），时间单位 mm:ss(.xx)。 */
+    private static List<LyricLine> parseLrc(String lrc) {
+        List<LyricLine> lines = new ArrayList<>();
+        if (lrc == null) return lines;
+        for (String raw : lrc.split("\n")) {
+            String line = raw.trim();
+            if (line.isEmpty()) continue;
+            Matcher m = LRC_TIME.matcher(line);
+            long time = -1;
+            int lastEnd = 0;
+            while (m.find()) {
+                long t = Long.parseLong(m.group(1)) * 60_000L + Long.parseLong(m.group(2)) * 1000L;
+                String frac = m.group(3);
+                if (frac != null) {
+                    t += frac.length() == 1 ? Long.parseLong(frac) * 100L
+                            : frac.length() == 2 ? Long.parseLong(frac) * 10L
+                            : Long.parseLong(frac);
+                }
+                time = Math.max(time, t);
+                lastEnd = m.end();
+            }
+            if (time < 0) continue;
+            String text = lastEnd >= line.length() ? "" : line.substring(lastEnd).trim();
+            lines.add(new LyricLine(time, text));
+        }
+        lines.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
+        return lines;
+    }
+
+    /** 二分定位 positionMs 落在哪一句（上一句仍未结束则为前一句）。 */
+    private static int lyricIndex(List<LyricLine> lines, long positionMs) {
+        int lo = 0, hi = lines.size() - 1, ans = -1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            if (lines.get(mid).timeMs <= positionMs) {
+                ans = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return ans;
+    }
+
+    private void updateLyricUi(long positionMs) {
+        if (lyricLines == null || lyricLines.isEmpty()) return;
+        int idx = lyricIndex(lyricLines, positionMs);
+        if (idx == currentLyricIndex) return;
+        currentLyricIndex = idx;
+        binding.tvLyric.setText(idx < 0 ? "点击显示歌词" : lyricLines.get(idx).text);
+        highlightLyricDialog(idx);
+    }
+
+    private void closeLyricDialog() {
+        if (lyricDialog != null) lyricDialog.dismiss(); // dismiss 监听里置空字段
+    }
+
+    /** 全屏歌词 Dialog：按行渲染，当前句高亮 + 自动滚动到可视区；行可点，点击跳转对应时间。 */
+    private void showLyricDialog() {
+        if (lyricLines == null || lyricLines.isEmpty()) {
+            Notify.show("暂无歌词");
+            return;
+        }
+        if (lyricDialog != null) return;
+
+        LinearLayout lines = new LinearLayout(this);
+        lines.setOrientation(LinearLayout.VERTICAL);
+        // 顶部留白，方便第一句居中
+        lines.addView(spacer(), spacerLp(96));
+        lyricTexts = new ArrayList<>();
+        for (LyricLine l : lyricLines) {
+            TextView tv = new TextView(this);
+            tv.setText(l.text.isEmpty() ? "…" : l.text);
+            tv.setTextSize(18f);
+            tv.setTextColor(0xFF999999);
+            tv.setGravity(Gravity.CENTER);
+            tv.setFocusable(true);
+            tv.setClickable(true);
+            tv.setPadding(0, 16, 0, 16);
+            tv.setOnClickListener(v -> ifService(s -> s.seekTo(l.timeMs)));
+            tv.setTag(l.timeMs);
+            lines.addView(tv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            lyricTexts.add(tv);
+        }
+        lines.addView(spacer(), spacerLp(96));
+        lyricScroll = new ScrollView(this);
+        lyricScroll.setFillViewport(true);
+        lyricScroll.addView(lines, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+
+        // 顶部标题行：歌名 + 关闭提示
+        TextView title = new TextView(this);
+        title.setText(binding.tvNow.getText());
+        title.setTextSize(14f);
+        title.setTextColor(0xFFCCCCCC);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(0, 20, 0, 8);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.addView(title, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(lyricScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        lyricDialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        Window w = lyricDialog.getWindow();
+        if (w != null) w.setBackgroundDrawable(new ColorDrawable(0xE6000000));
+        lyricDialog.setContentView(root);
+        lyricDialog.setOnDismissListener(d -> {
+            lyricDialog = null;
+            lyricScroll = null;
+            lyricTexts = null;
+        });
+        lyricDialog.setOnShowListener(d -> {
+            if (lyricScroll != null) lyricScroll.post(() -> highlightLyricDialog(currentLyricIndex));
+        });
+        lyricDialog.show();
+    }
+
+    private View spacer() {
+        return new View(this);
+    }
+
+    private LinearLayout.LayoutParams spacerLp(int h) {
+        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h);
+    }
+
+    private void highlightLyricDialog(int idx) {
+        if (lyricTexts == null || lyricTexts.isEmpty()) return;
+        for (int i = 0; i < lyricTexts.size(); i++) {
+            TextView tv = lyricTexts.get(i);
+            boolean cur = i == idx;
+            tv.setTextColor(cur ? 0xFFFFFFFF : 0xFF999999);
+            tv.getPaint().setFakeBoldText(cur);
+        }
+        if (lyricScroll != null && idx >= 0 && idx < lyricTexts.size()) {
+            TextView tv = lyricTexts.get(idx);
+            int y = tv.getTop() + tv.getHeight() / 2 - lyricScroll.getHeight() / 2;
+            lyricScroll.smoothScrollTo(0, Math.max(0, y));
+        }
+    }
+
+    private static final class LyricLine {
+        final long timeMs;
+        final String text;
+
+        LyricLine(long timeMs, String text) {
+            this.timeMs = timeMs;
+            this.text = text;
+        }
     }
 
     // ------------------------------------------------------------ 列表适配器
@@ -303,6 +521,16 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
             holder.binding.tvTitle.setAlpha(media.vip ? 0.55f : 1f);
             holder.binding.tvArtist.setText(media.artist.isEmpty() ? media.album : (media.artist + (media.album.isEmpty() ? "" : " · " + media.album)));
             holder.binding.tvDuration.setText(fmt(media.durationMs));
+            boolean hasCover = media.cover != null && !media.cover.isEmpty();
+            holder.binding.ivCover.setVisibility(hasCover ? View.VISIBLE : View.GONE);
+            if (hasCover) {
+                Glide.with(activity)
+                        .load(media.cover)
+                        .centerCrop()
+                        .placeholder(PLACEHOLDER)
+                        .error(PLACEHOLDER)
+                        .into(holder.binding.ivCover);
+            }
             holder.binding.getRoot().setOnClickListener(v -> {
                 if (service == null) return;
                 service.play(new ArrayList<>(results), position);

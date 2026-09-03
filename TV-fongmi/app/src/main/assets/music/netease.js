@@ -78,9 +78,20 @@
             // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
             return { url: outerUrl(songId) };
         },
-        // 歌词（可选，暂返回 null 交由内核忽略）
-        async getLyric() {
-            return null;
+        // 歌词：网易云标准 LRC（[mm:ss.xx]文本），接口不可用/无词返回 null 交由 UI 忽略
+        async getLyric(musicItem) {
+            var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
+            if (!songId) return null;
+            try {
+                var resp = await axios.get('https://music.163.com/api/song/lyric', {
+                    params: { id: String(songId), lv: 1, kv: 1, tv: -1 },
+                    headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                });
+                var lrc = resp.data && resp.data.lrc && resp.data.lrc.lyric;
+                return (lrc && lrc.length) ? lrc : null;
+            } catch (e) {
+                return null;
+            }
         }
     };
 })();

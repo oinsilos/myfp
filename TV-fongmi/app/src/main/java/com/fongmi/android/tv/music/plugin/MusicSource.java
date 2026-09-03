@@ -68,6 +68,23 @@ public final class MusicSource {
                 });
     }
 
+    /** 拉取歌词。返回 LRC 文本；插件无词/失败返回 null（不抛错）。 */
+    public CompletableFuture<String> getLyric(MusicMedia media) {
+        String item = buildItemJson(media);
+        return sandbox.callJson("getLyric", item)
+                .thenApply(result -> {
+                    if (result == null) return null;
+                    String json = sandbox.stringify(result);
+                    if (json == null || json.isEmpty() || "null".equals(json)) return null;
+                    try {
+                        // 还原为 Java 字符串（去除 JSON 引号与 \n 转义）
+                        return new JSONObject("{\"v\":" + json + "}").getString("v");
+                    } catch (JSONException e) {
+                        return null;
+                    }
+                });
+    }
+
     // ------------------------------------------------------------ 解析与拼装
 
     private static List<MusicMedia> parseSearch(String json) {
