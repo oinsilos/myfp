@@ -13,7 +13,9 @@ import android.content.pm.ServiceInfo;
 import android.graphics.BitmapFactory;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -22,6 +24,7 @@ import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.music.core.MusicPlayer;
 import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.android.tv.music.model.RepeatMode;
+import com.fongmi.android.tv.music.plugin.MusicRepository;
 
 import java.util.List;
 
@@ -245,7 +248,13 @@ public final class MusicPlaybackService extends Service {
 
         @Override
         public void onNeedReloadUrl(MusicMedia media) {
-            // 上层（Activity/MusicSource 持有方）通过 reloadSource 回填；这里保持内核换源契约
+            // 播放失败且无备用 URL 时：交给插件重新拉取（getMediaSource），取到后回填内核
+            MusicRepository.get().getMediaUrl(media, "").whenComplete((url, error) -> {
+                if (error == null && url != null && !url.isEmpty()) {
+                    new Handler(Looper.getMainLooper()).post(() -> reloadSource(media, url));
+                }
+                // 失败或空 URL：内核在重试预算耗尽后自动跳到下一首
+            });
         }
 
         @Override
