@@ -1,4 +1,4 @@
-package com.fongmi.quickjs.bean;
+package com.fongmi.rhino.bean;
 
 import android.text.TextUtils;
 

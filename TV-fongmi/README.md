@@ -37,7 +37,7 @@
 TV/
 ├── app/            主應用程式（含兩套 UI Flavor）
 ├── catvod/         爬蟲抽象層（Spider 介面、OkHttp 網路棧）
-├── quickjs/        QuickJS JavaScript 引擎
+├── rhino/          Rhino JavaScript 引擎（htmlunit-core-js，与 legado 同源）
 ├── chaquo/         Chaquopy Python 引擎
 ```
 
@@ -81,7 +81,7 @@ TV/
 支援三種語言撰寫爬蟲：
 
 - Java JAR（DexClassLoader）
-- JavaScript（QuickJS）
+- JavaScript（Rhino，ES module/async 经轻量转译层兼容）
 - Python（Chaquopy）
 
 透過 `api` 欄位指定爬蟲，`ext` 欄位傳入初始化參數。完整 API 規格見 [SPIDER.md](docs/SPIDER.md)。

@@ -1,8 +1,8 @@
 package com.fongmi.android.tv.api.loader;
 
 import com.fongmi.android.tv.App;
-import com.fongmi.quickjs.crawler.Loader;
-import com.fongmi.quickjs.utils.Module;
+import com.fongmi.rhino.crawler.Loader;
+import com.fongmi.rhino.utils.Module;
 import com.github.catvod.crawler.Spider;
 import com.github.catvod.crawler.SpiderNull;
 
