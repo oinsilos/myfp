@@ -5,7 +5,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -23,6 +26,7 @@ import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.android.tv.music.model.RepeatMode;
 import com.fongmi.android.tv.music.plugin.MusicRepository;
 import com.fongmi.android.tv.music.service.MusicPlaybackService;
+import com.fongmi.android.tv.utils.Notify;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +44,8 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private boolean bound;
     private boolean dragging;
     private boolean playing;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private static final long SEARCH_TIMEOUT_MS = 20_000L;
 
     /** 从主界面（HomeActivity）进入音乐模块。 */
     public static void start(Context context) {
@@ -147,12 +153,35 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private void search(String keyword) {
         if (keyword == null || keyword.trim().isEmpty()) return;
         binding.loading.setVisibility(View.VISIBLE);
+        handler.removeCallbacksAndMessages(null);
+        // 兜底：无论底层如何，20s 内必须结束搜索态，绝不无限转圈
+        handler.postDelayed(() -> {
+            if (binding.loading.getVisibility() != View.VISIBLE) return;
+            binding.loading.setVisibility(View.GONE);
+            Notify.show("搜索超时，请检查网络");
+        }, SEARCH_TIMEOUT_MS);
+        Log.d("MusicActivity", "search start: " + keyword);
         MusicRepository.get().search(keyword.trim()).whenComplete((list, error) -> runOnUiThread(() -> {
+            handler.removeCallbacksAndMessages(null);
             binding.loading.setVisibility(View.GONE);
             results.clear();
-            if (error == null && list != null) results.addAll(list);
+            if (error != null) {
+                Log.w("MusicActivity", "search error", error);
+                Notify.show("搜索失败：" + friendly(error));
+            } else if (list != null) {
+                Log.d("MusicActivity", "search done: " + list.size() + " items");
+                results.addAll(list);
+                if (list.isEmpty()) Notify.show("未找到相关歌曲");
+            }
             adapter.notifyDataSetChanged();
         }));
+    }
+
+    private static String friendly(Throwable t) {
+        Throwable cause = t.getCause() == null ? t : t.getCause();
+        String msg = cause.getMessage() == null ? cause.toString() : cause.getMessage();
+        if (msg == null || msg.isEmpty()) msg = t.toString();
+        return msg.length() > 120 ? msg.substring(0, 120) + "…" : msg;
     }
 
     // ------------------------------------------------------------ 播放回调
