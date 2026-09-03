@@ -41,6 +41,11 @@ public final class MusicActivity extends AppCompatActivity implements MusicPlayb
     private boolean dragging;
     private boolean playing;
 
+    /** 从主界面（HomeActivity）进入音乐模块。 */
+    public static void start(Context context) {
+        context.startActivity(new Intent(context, MusicActivity.class));
+    }
+
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder iBinder) {

@@ -112,14 +112,9 @@
 
         <activity
             android:name=".music.ui.MusicActivity"
-            android:exported="true"
+            android:exported="false"
             android:theme="@style/Theme.App"
-            android:label="音乐搜索">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:label="音乐搜索" />
 
         <meta-data
             android:name="com.google.android.gms.car.application"
