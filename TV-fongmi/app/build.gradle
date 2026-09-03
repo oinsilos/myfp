@@ -86,7 +86,10 @@ android {
 AbiApkPackaging.configure(project, SingleArtifact.APK.INSTANCE)
 
 dependencies {
-    implementation fileTree(dir: "libs", include: ["*.aar"])
+    implementation fileTree(dir: "libs", include: ["*.aar", "*.jar"])
+    // fork 的 media3 libs 漏打包 container 模块（NalUnitUtil/Mp4Box 等被 extractor 依赖），
+    // 运行时 NoClassDefFoundError。补官方 container（关闭传递依赖，避免引入官方 common 与 fork 冲突）。
+    implementation("androidx.media3:media3-container:1.8.0") { transitive = false }
     implementation project(':catvod')
     implementation project(':chaquo')
     implementation project(':rhino')
