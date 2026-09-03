@@ -6,9 +6,64 @@
     'use strict';
 
     var axios = require('axios');
+    // weapi 加密宿主库：crypto-js 在 Rhino 走全局副作用（require 返回空对象），big-int 两个环境都返回真对象
+    require('crypto-js');
+    require('big-integer');
+    var CryptoJS = (typeof globalThis !== 'undefined' && globalThis.CryptoJS) ? globalThis.CryptoJS : require('crypto-js');
+    var bigInt = require('big-integer');
 
     var SEARCH_URL = 'https://music.163.com/api/search/get';
     var COMMON_UA = 'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36';
+
+    // ---- 网易云 weapi（与 listen1/落雪同款公式；无需登录取歌词，VIP 歌也能拿词）----
+    var NONCE = '0CoJUm6Qyw8W8jud';
+    var PUBKEY = '010001';
+    var AUTH_IV = '0102030405060708';
+    var MODULUS = '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab' +
+        '17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d' +
+        '05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc' +
+        '6935b3ece0462db0a22b8e7';
+
+    function createSecretKey(size) {
+        var chars = '012345679abcdef'.split('');
+        var out = [];
+        for (var i = 0; i < size; i++) out.push(chars[Math.floor(Math.random() * chars.length)]);
+        return out.join('');
+    }
+
+    function webAesCbc(text, keyStr) {
+        return CryptoJS.AES.encrypt(text, CryptoJS.enc.Utf8.parse(keyStr), {
+            iv: CryptoJS.enc.Utf8.parse(AUTH_IV),
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        }).toString();
+    }
+
+    function webRsaEncrypt(text) {
+        var hex = [];
+        var reversed = text.split('').reverse().join('');
+        for (var i = 0; i < reversed.length; i++) {
+            var b = reversed.charCodeAt(i).toString(16);
+            hex.push(b.length < 2 ? '0' + b : b);
+        }
+        var enc = bigInt(hex.join(''), 16).modPow(bigInt(PUBKEY, 16), bigInt(MODULUS, 16)).toString(16);
+        while (enc.length < 256) enc = '0' + enc;
+        return enc;
+    }
+
+    function webWeapi(d) {
+        var sk = createSecretKey(16);
+        var params = webAesCbc(webAesCbc(JSON.stringify(d), NONCE), sk);
+        return { params: params, encSecKey: webRsaEncrypt(sk) };
+    }
+
+    function webApiPost(path, d) {
+        var we = webWeapi(d);
+        var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
+        return axios.post('https://music.163.com' + path, body, {
+            headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+        });
+    }
 
     function outerUrl(songId) {
         return 'https://music.163.com/song/media/outer/url?id=' + songId + '.mp3';
@@ -99,35 +154,30 @@
             // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
             return { url: outerUrl(songId) };
         },
-        // 歌词：网易云标准 LRC（[mm:ss.xx]文本）。多档参数尝试提升真实设备成功率；
-        // 全部失败抛 Error（携带原因，UI 可见），无词但有响应才返回 null。
+        // 歌词：weapi（listen1/落雪同款，主站 Web 接口，未收录/VIP 歌也能返回歌词）。
+        // 接口异常抛 Error（UI 可见原因）；接口正常但确实无词返回 null。
         async getLyric(musicItem) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) return null;
-            var attempts = [
-                { url: 'https://music.163.com/api/song/lyric', params: { id: String(songId), lv: 1, kv: 1, tv: -1 } },
-                { url: 'https://music.163.com/api/song/lyric', params: { id: String(songId), lv: -1 } }
-            ];
-            var last = '';
-            for (var i = 0; i < attempts.length; i++) {
-                try {
-                    var resp = await axios.get(attempts[i].url, {
-                        params: attempts[i].params,
-                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
-                    });
-                    var body = resp.data;
-                    if (body) {
-                        // 未收录/无词：接口正常但确实没词，返回 null 交由 UI 显示"暂无歌词"
-                        if (body.uncollected || body.nolyric) return null;
-                        var lrc = body.lrc && body.lrc.lyric;
-                        if (lrc && lrc.length) return lrc;
-                    }
-                    last = 'empty lrc for id=' + songId;
-                } catch (e) {
-                    last = (e && e.message) || String(e);
+            try {
+                var resp = await webApiPost('/weapi/song/lyric?csrf_token=', {
+                    id: String(songId),
+                    lv: -1,
+                    tv: -1,
+                    csrf_token: ''
+                });
+                var body = resp.data;
+                if (!body) throw new Error('weapi lyric: empty response for id=' + songId);
+                if (body.code !== undefined && body.code !== 200) {
+                    throw new Error('weapi lyric code=' + body.code + ' msg=' + (body.message || '') + ' id=' + songId);
                 }
+                var lrc = body.lrc && body.lrc.lyric;
+                // 网易云无词歌会返回占位文本 "[00:00.00]暂无歌词"，过滤后按无词处理
+                if (lrc && /暂无歌词/.test(lrc) && lrc.length <= 64) return null;
+                return (lrc && lrc.length) ? lrc : null;
+            } catch (e) {
+                throw new Error('lyric failed (' + ((e && e.message) || String(e)) + ')');
             }
-            throw new Error('lyric failed (' + last + ')');
         }
     };
 })();
