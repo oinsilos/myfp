@@ -84,6 +84,18 @@ public final class PluginHost {
             case "crypto-js":
                 lib = evalLib("lib/crypto-js.js", "CryptoJS");
                 break;
+            case "dayjs":
+                lib = evalLib("lib/dayjs.min.js", "dayjs");
+                break;
+            case "big-integer":
+                lib = evalLib("lib/big-integer.js", "bigInt");
+                break;
+            case "qs":
+                lib = evalLib("lib/qs.js", "qs");
+                break;
+            case "he":
+                lib = evalLib("lib/he.js", "he");
+                break;
             default:
                 lib = stub(name);
         }
