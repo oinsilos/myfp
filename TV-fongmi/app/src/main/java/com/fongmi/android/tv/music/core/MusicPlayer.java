@@ -11,10 +11,14 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.extractor.Extractor;
+import androidx.media3.extractor.mp3.Mp3Extractor;
 
 import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.android.tv.music.model.RepeatMode;
@@ -229,9 +233,14 @@ public final class MusicPlayer {
     private void ensurePlayer() {
         if (player != null) return;
         // 网易云等源返回的 mp3 直链常为 http，而请求是 https；
-        // OkHttp 默认跟随跨协议重定向，直接复用主播放器同款数据源，避免 Media3 默认拒绝 https→http
+        // OkHttp 默认跟随跨协议重定向，直接复用主播放器同款数据源。
+        // 关键：音乐是纯 mp3 场景，给播放器挂「仅 Mp3Extractor」的专用 factory，
+        // 跳过 DefaultExtractorsFactory 的全量探测（避免 fork 探测链对其它容器解析失败，
+        // 以及无谓的 container 依赖），mp3 一进来就用 Mp3Extractor 直解。
         HttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(OkHttp.player());
-        DefaultMediaSourceFactory sourceFactory = new DefaultMediaSourceFactory(httpFactory);
+        DataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(context, httpFactory);
+        DefaultMediaSourceFactory sourceFactory = new DefaultMediaSourceFactory(dataSourceFactory,
+                () -> new Extractor[]{new Mp3Extractor()});
         player = new ExoPlayer.Builder(context)
                 .setMediaSourceFactory(sourceFactory)
                 .build();
