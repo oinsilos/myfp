@@ -67,6 +67,8 @@
         }
         var requestHeaders = headers;
         options.header = headers;
+        // 宿主桥 Req 模型只认复数 headers（单数 header 会被忽略），双写保证自定义头（UA/Referer）生效
+        options.headers = headers;
         return new g.Promise(function (resolve, reject) {
             var res;
             try {

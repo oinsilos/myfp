@@ -36,18 +36,39 @@
             });
             var result = resp.data && resp.data.result;
             var songs = (result && result.songs) || [];
-            var data = [];  
+            // 专辑封面回填：搜索接口的 album 已不带 picUrl（只有 picId），
+            // 批量 song/detail 换取 https 直链封面；失败则不阻断搜索（fallback 歌手图）。
+            var detailMap = null;
+            try {
+                var idcs = [];
+                for (var i2 = 0; i2 < songs.length; i2++) {
+                    if (songs[i2] && songs[i2].id) idcs.push(songs[i2].id);
+                }
+                if (idcs.length) {
+                    var dr = await axios.get('https://music.163.com/api/song/detail', {
+                        params: { ids: '[' + idcs.join(',') + ']' },
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                    });
+                    var ds = (dr.data && dr.data.songs) || [];
+                    detailMap = {};
+                    for (var j = 0; j < ds.length; j++) {
+                        if (ds[j] && ds[j].id && ds[j].album && ds[j].album.picUrl) detailMap[String(ds[j].id)] = ds[j].album.picUrl;
+                    }
+                }
+            } catch (e) { /* 封面回填失败不阻断搜索 */ }
+            var data = [];
             for (var i = 0; i < songs.length; i++) {
                 var s = songs[i];
                 if (!s || !s.id) continue;
                 var album = s.album || {};
                 var durationSec = Math.round((s.duration || 0) / 1000);
+                var cover = (detailMap && detailMap[String(s.id)]) || album.picUrl || (album.artist && album.artist.img1v1Url) || '';
                 data.push({
                             title: s.name,
                             artist: pickName(s.artists),
                             album: album.name,
                             duration: durationSec,
-                            cover: album.picUrl,
+                            cover: cover,
                             songId: s.id,
                             fee: s.fee,
                             vip: (s.fee || 0) > 0,
@@ -88,8 +109,10 @@
                     headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
                 });
                 var lrc = resp.data && resp.data.lrc && resp.data.lrc.lyric;
+                if (!(lrc && lrc.length)) console.log('netease lyric: empty for id=' + songId + ' data=' + JSON.stringify(resp.data).slice(0, 200));
                 return (lrc && lrc.length) ? lrc : null;
             } catch (e) {
+                console.log('netease lyric error id=' + songId + ' err=' + (e && e.message));
                 return null;
             }
         }
