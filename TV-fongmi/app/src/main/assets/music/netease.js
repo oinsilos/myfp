@@ -54,7 +54,9 @@ function tracksToItems(tracks) {
         return out;
     }
 
-    // 歌单详情统一入口：playlist/detail 老接口（公开可用，含完整 tracks）
+    // 歌单详情统一入口：playlist/detail 老接口（公开可用，含完整 tracks）。
+    // 带 os=pc cookie 时返回完整 tracks（冷启动无 cookie 只回前 10 首）；响应较大(数百 KB)，
+    // 属插件规范内可控范围——已通过移除默认自动搜索避免与歌单加载并发抢占沙箱线程。
     function sheetMusicById(id) {
         return axios.get('https://music.163.com/api/playlist/detail', {
             params: { id: String(id) },
@@ -203,14 +205,16 @@ function tracksToItems(tracks) {
             if (noLyric) return null;
             throw new Error('lyric failed (' + last + ')');
         },
-        // 榜单分组：toplist/detail 公开接口（63 个榜，含云音乐新歌榜/热歌榜等）
+        // 榜单分组：toplist/detail 公开接口（63 个榜，含云音乐新歌榜/热歌榜等）。
+        // 只取前 20 个主流榜：一次性渲染 63 张封面在低端机/模拟器上首屏过重（上图+解码并发压垮 UI 线程），
+        // 截断后既覆盖主流榜单又保证首屏轻快；后续想扩容只需调大 TOP_LIMIT。
         async getTopLists() {
             var resp = await axios.get('https://music.163.com/api/toplist/detail', {
                 headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
             });
             var list = (resp.data && resp.data.list) || [];
             var items = [];
-            for (var i = 0; i < list.length; i++) {
+            for (var i = 0; i < list.length && items.length < 20; i++) {
                 var t = list[i];
                 if (!t || !t.id) continue;
                 items.push({

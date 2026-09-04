@@ -116,6 +116,12 @@
             android:theme="@style/Theme.App"
             android:label="音乐搜索" />
 
+        <activity
+            android:name=".reader.ui.ReaderActivity"
+            android:exported="false"
+            android:theme="@style/Theme.App"
+            android:label="书源阅读" />
+
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />

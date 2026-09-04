@@ -31,6 +31,7 @@ import com.fongmi.android.tv.event.ServerEvent;
 import com.fongmi.android.tv.event.StateEvent;
 import com.fongmi.android.tv.impl.Callback;
 import com.fongmi.android.tv.music.ui.MusicActivity;
+import com.fongmi.android.tv.reader.ui.ReaderActivity;
 import com.fongmi.android.tv.player.extractor.Source;
 import com.fongmi.android.tv.receiver.ShortcutReceiver;
 import com.fongmi.android.tv.server.Server;
@@ -161,6 +162,7 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         mBinding.navigation.getMenu().findItem(R.id.setting).setVisible(true);
         mBinding.navigation.getMenu().findItem(R.id.live).setVisible(LiveConfig.hasUrl());
         mBinding.navigation.getMenu().findItem(R.id.music).setVisible(true);
+        mBinding.navigation.getMenu().findItem(R.id.read).setVisible(true);
     }
 
     private boolean openLive() {
@@ -213,6 +215,10 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         if (item.getItemId() == R.id.live) return openLive();
         if (item.getItemId() == R.id.music) {
             MusicActivity.start(this);
+            return true;
+        }
+        if (item.getItemId() == R.id.read) {
+            ReaderActivity.start(this);
             return true;
         }
         return false;

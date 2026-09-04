@@ -73,6 +73,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.bumptech.glide.Glide
+import com.bumptech.glide.request.RequestOptions
 import com.fongmi.android.tv.R
 import com.fongmi.android.tv.music.core.LrcParser
 import com.fongmi.android.tv.music.core.MusicDownloader
@@ -265,7 +266,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     return@runOnUiThread
                 }
                 if (ui.stateText == "idle" || ui.stateText.contains("music ")) ui.stateText = "ready"
-                search("周杰伦")
+                // 不默认自动搜索（早期调试遗留行为）：首屏保持空态，由用户输入触发；
+                // 避免插件就绪后立刻抢占沙箱线程解析大响应（歌单/榜单并发加载时的卡顿源）。
             }
         }
     }
@@ -416,7 +418,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     // ------------------------------------------------------------ 歌单 / 榜单 / 歌手 / 导入
 
-    /** 歌单 Tab 一次性装载：榜单分组 + 推荐分类，随后自动加载第一个分类的歌单。 */
+    /** 歌单 Tab 一次性装载：榜单分组 + 推荐分类（并行提交，互不嵌套等待）。
+     *  分类歌单改为用户点标签时才加载：此前自动加载第一个分类会再多 1 次网络请求 + 30 张封面，
+     *  与 63→20 张榜单封面叠加，正是低端机上「点进歌单就卡、弹无响应」的诱因。 */
     private fun loadSheetsTab() {
         if (ui.sheetsLoading) return
         ui.sheetsLoading = true
@@ -424,14 +428,16 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         ui.sheetTags = emptyList()
         ui.tagSheets = emptyList()
         ui.activeTag = ""
-        MusicRepository.get().topLists().whenComplete { groups, _ ->
-            MusicRepository.get().recommendTags().whenComplete { tags, _ ->
-                runOnUiThread {
-                    ui.topGroups = groups ?: emptyList()
-                    ui.sheetTags = tags ?: emptyList()
-                    ui.sheetsLoading = false
-                    if (ui.activeTag.isEmpty() && !ui.sheetTags.isEmpty()) loadTagSheets(ui.sheetTags[0])
-                }
+        val g = MusicRepository.get().topLists()
+        val t = MusicRepository.get().recommendTags()
+        // 两个请求分别完成即分别刷新对应状态，不再串行嵌套等待
+        g.whenComplete { groups, _ ->
+            runOnUiThread { ui.topGroups = groups ?: emptyList() }
+        }
+        t.whenComplete { tags, _ ->
+            runOnUiThread {
+                ui.sheetTags = tags ?: emptyList()
+                ui.sheetsLoading = false
             }
         }
     }
@@ -1483,6 +1489,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             GlideImage(
                 url = sheet.cover.takeIf { it.isNotEmpty() },
                 modifier = Modifier.size(136.dp).clip(RoundedCornerShape(6.dp)),
+                pixels = 400, // 136dp @3x ≈ 408px，贴近显示大小解码，避免大图全尺寸解码
             )
             Text(
                 sheet.title,
@@ -1651,9 +1658,11 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
     }
 
-    /** Glide 封面桥：Compose 内复用现有 Glide 加载（避免引入 coil 增加体积）。 */
+    /** Glide 封面桥：Compose 内复用现有 Glide 加载（避免引入 coil 增加体积）。
+     *  override 限制解码尺寸（网易封面原图常达数百 px，列表里按显示大小解码即可，
+     *  歌单页几十张封面并发时不至于内存/CPU 双爆）；timeout 保证弱网下不无限挂起 IO 线程。 */
     @Composable
-    private fun GlideImage(url: String?, modifier: Modifier = Modifier) {
+    private fun GlideImage(url: String?, modifier: Modifier = Modifier, pixels: Int = 256) {
         val context = LocalContext.current
         var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
         LaunchedEffect(url) {
@@ -1663,7 +1672,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             }
             val bmp = withContext(Dispatchers.IO) {
                 try {
-                    Glide.with(context).asBitmap().load(url).submit().get()
+                    Glide.with(context).asBitmap()
+                        .apply(RequestOptions().override(pixels, pixels).timeout(8000))
+                        .load(url).submit().get()
                 } catch (e: Exception) {
                     null
                 }

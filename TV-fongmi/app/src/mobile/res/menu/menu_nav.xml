@@ -20,6 +20,12 @@
         android:visible="false" />
 
     <item
+        android:id="@+id/read"
+        android:icon="@drawable/ic_book_read"
+        android:title="@string/nav_read"
+        android:visible="false" />
+
+    <item
         android:id="@+id/setting"
         android:icon="@drawable/ic_nav_setting"
         android:title="@string/nav_setting"
