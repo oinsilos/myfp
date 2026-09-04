@@ -23,6 +23,53 @@
         return out.join('/');
     }
 
+    // ---------------- 歌单 / 榜单 / 歌手 / 导入（对齐 MusicFree 插件契约） ----------------
+
+    // 网易云歌单广场常见分类（getRecommendSheetTags 的「推荐歌单」入口，不走 hotcats 失效接口）
+    var SHEET_CATS = ['华语', '流行', '经典', '摇滚', '民谣', '电子', '轻音乐', '影视原声', 'ACG', '怀旧', '治愈', '睡前', '驾车', '运动', '学习'];
+
+    // playlist/detail 的 tracks → MusicItem[]（与 search 的 item 同构：songId/title/artist/album/cover/duration/vip/url）。
+// 注意：playlist/detail 老接口用 artists/album/duration，artist/top/song 用 ar/al/dt —— 两套字段都兼容。
+function tracksToItems(tracks) {
+        var out = [];
+        if (!tracks || !tracks.length) return out;
+        for (var i = 0; i < tracks.length; i++) {
+            var t = tracks[i];
+            if (!t || !t.id) continue;
+            var al = t.al || t.album || {};
+            var fee = (t.fee === undefined || t.fee === null) ? 0 : t.fee;
+            var dt = t.dt || t.duration || 0;
+            out.push({
+                songId: String(t.id),
+                title: t.name,
+                artist: pickName(t.ar || t.artists),
+                album: al.name || '',
+                cover: al.picUrl || al.coverImgUrl || '',
+                duration: Math.round(dt / 1000),
+                fee: fee,
+                vip: fee > 0,
+                url: outerUrl(t.id)
+            });
+        }
+        return out;
+    }
+
+    // 歌单详情统一入口：playlist/detail 老接口（公开可用，含完整 tracks）
+    function sheetMusicById(id) {
+        return axios.get('https://music.163.com/api/playlist/detail', {
+            params: { id: String(id) },
+            headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+        }).then(function (resp) {
+            var tracks = (resp.data && resp.data.result && resp.data.result.tracks) || [];
+            return tracksToItems(tracks);
+        });
+    }
+
+    function sheetIdOf(item) {
+        if (!item) return '';
+        return String(item.playlistId || item.id || '');
+    }
+
     module.exports = {
         platform: 'netease',
         version: '0.3.0',
@@ -70,7 +117,9 @@
                 data.push({
                             title: s.name,
                             artist: pickName(s.artists),
+                            artistId: (s.artists && s.artists[0] && s.artists[0].id) ? String(s.artists[0].id) : '',
                             album: album.name,
+                            albumId: album.id ? String(album.id) : '',
                             duration: durationSec,
                             cover: cover,
                             songId: s.id,
@@ -153,6 +202,100 @@
             // 至少有一个接口正常响应并判定该歌无词 → 真无词，返回 null（UI 显示「该歌曲暂无歌词」）
             if (noLyric) return null;
             throw new Error('lyric failed (' + last + ')');
+        },
+        // 榜单分组：toplist/detail 公开接口（63 个榜，含云音乐新歌榜/热歌榜等）
+        async getTopLists() {
+            var resp = await axios.get('https://music.163.com/api/toplist/detail', {
+                headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+            });
+            var list = (resp.data && resp.data.list) || [];
+            var items = [];
+            for (var i = 0; i < list.length; i++) {
+                var t = list[i];
+                if (!t || !t.id) continue;
+                items.push({
+                    id: String(t.id),
+                    title: t.name,
+                    coverImgUrl: t.coverImgUrl || t.coverText || '',
+                    description: t.updateFrequency || t.description || '',
+                    playCount: (t.playCount === undefined || t.playCount === null) ? -1 : t.playCount,
+                    worksNum: (t.tracks && t.tracks.length) ? t.tracks.length : -1
+                });
+            }
+            return [{ id: 'netease-top', name: '官方榜', data: items }];
+        },
+        // 榜单详情：榜单 id 复用 playlist/detail（榜单在服务端即歌单）
+        async getTopListDetail(topListItem, page) {
+            var id = sheetIdOf(topListItem);
+            if (!id) throw new Error('netease: no id for top list');
+            return { isEnd: true, musicList: await sheetMusicById(id) };
+        },
+        // 推荐歌单分类：固定词（网易云歌单广场常用分类）
+        async getRecommendSheetTags() {
+            var data = [];
+            for (var i = 0; i < SHEET_CATS.length; i++) {
+                data.push({ name: SHEET_CATS[i], data: [] });
+            }
+            return { data: data };
+        },
+        // 某分类的推荐歌单：search type=1000（歌单搜索，公开）
+        async getRecommendSheetsByTag(tag, page) {
+            var kw = (tag && (tag.name || tag.id)) || '华语';
+            var resp = await axios.get('https://music.163.com/api/search/get', {
+                params: { s: kw, type: 1000, limit: 30, p: page || 1 },
+                headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+            });
+            var playlists = (resp.data && resp.data.result && resp.data.result.playlists) || [];
+            var data = [];
+            for (var i = 0; i < playlists.length; i++) {
+                var p = playlists[i];
+                if (!p || !p.id) continue;
+                data.push({
+                    id: String(p.id),
+                    title: p.name,
+                    coverImgUrl: p.coverImgUrl || '',
+                    artist: (p.creator && p.creator.nickname) || '',
+                    description: p.description || '',
+                    trackCount: p.trackCount || -1,
+                    playCount: p.playCount || 0
+                });
+            }
+            return { isEnd: page && page > 1, data: data };
+        },
+        // 歌单详情：playlist/detail（完整 tracks）
+        async getMusicSheetInfo(sheetItem, page) {
+            var id = sheetIdOf(sheetItem);
+            if (!id) throw new Error('netease: no id for sheet info');
+            return { isEnd: true, musicList: await sheetMusicById(id) };
+        },
+        // 歌手热门 50 首：artist/top/song（专辑作品 type='album' 暂未实现，返回空）
+        async getArtistWorks(artistItem, page, type) {
+            if (type && type !== 'song') return { isEnd: true, data: [] };
+            var id = (artistItem && String(artistItem.artistId || artistItem.playlistId || artistItem.id)) || '';
+            if (!id) return { isEnd: true, data: [] };
+            var resp = await axios.get('https://music.163.com/api/artist/top/song', {
+                params: { id: id },
+                headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+            });
+            return { isEnd: true, data: tracksToItems((resp.data && resp.data.songs) || []) };
+        },
+        // 歌单导入：粘贴网易云歌单/榜单链接（或裸 id）→ playlist/detail → MusicItem[]
+        async importMusicSheet(urlLike) {
+            var id = null;
+            if (typeof urlLike === 'string') {
+                var m1 = urlLike.match(/(?:playlist|toplist)[?/#=&:.\-\w]*?id=(\d+)/);
+                if (m1) id = m1[1];
+                if (!id) {
+                    var m2 = urlLike.match(/(?:playlist|toplist)\/(\d+)/);
+                    if (m2) id = m2[1];
+                }
+                if (!id) {
+                    var m3 = urlLike.match(/^(\d{5,20})$/);
+                    if (m3) id = m3[1];
+                }
+            }
+            if (!id) return [];
+            return sheetMusicById(id);
         }
     };
 })();

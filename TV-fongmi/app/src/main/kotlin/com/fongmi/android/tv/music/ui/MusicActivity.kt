@@ -31,8 +31,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,15 +78,19 @@ import com.fongmi.android.tv.music.core.LrcParser
 import com.fongmi.android.tv.music.core.MusicDownloader
 import com.fongmi.android.tv.music.core.MusicLibrary
 import com.fongmi.android.tv.music.model.MusicMedia
+import com.fongmi.android.tv.music.model.MusicSheet
 import com.fongmi.android.tv.music.model.RepeatMode
 import com.fongmi.android.tv.music.plugin.MusicRepository
+import com.fongmi.android.tv.music.plugin.MusicSource
 import com.fongmi.android.tv.music.service.MusicPlaybackService
 import com.fongmi.android.tv.utils.Notify
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
 import java.util.regex.Pattern
+import org.json.JSONObject
 
 /**
  * 音乐界面（Compose 版）：搜索 → 结果列表 → 点击播放。
@@ -119,7 +126,29 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var favorites by mutableStateOf<List<MusicMedia>>(emptyList())
         var history by mutableStateOf<List<MusicMedia>>(emptyList())
         var libraryTick by mutableStateOf(0)
-        var libraryDialogVisible by mutableStateOf(false)
+        // 顶部 Tab（0 搜索 / 1 歌单 / 2 我的音乐）
+        var tab by mutableStateOf(0)
+        // 歌单页：榜单分组 + 推荐分类 + 分类歌单
+        var topGroups by mutableStateOf<List<MusicSource.SheetGroup>>(emptyList())
+        var sheetTags by mutableStateOf<List<String>>(emptyList())
+        var tagSheets by mutableStateOf<List<MusicSheet>>(emptyList())
+        var activeTag by mutableStateOf("")
+        var sheetsLoading by mutableStateOf(false)
+        var tagSheetsLoading by mutableStateOf(false)
+        // 歌单导入弹窗
+        var importDialogVisible by mutableStateOf(false)
+        // 歌单/榜单/歌手/导入结果详情视图：非 null 时主区显示详情
+        var sheetView by mutableStateOf<SheetView?>(null)
+    }
+
+    /** 详情视图（歌单详情 / 榜单详情 / 歌手热歌 / 导入结果 共用）。 */
+    private class SheetView {
+        var title by mutableStateOf("")
+        var cover by mutableStateOf("")
+        var subtitle by mutableStateOf("")
+        var items by mutableStateOf<List<MusicMedia>>(emptyList())
+        var loading by mutableStateOf(false)
+        var error by mutableStateOf("")
     }
 
     private val ui = UiState()
@@ -197,9 +226,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onPlayAt = { index -> playAt(index) },
                     onDownloadAt = { index -> downloadAt(index) },
                     onFavoriteAt = { index -> toggleFavoriteAt(index) },
-                    onOpenLibrary = { ui.libraryDialogVisible = true },
-                    onPlayLibrary = { list, index -> playLibrary(list, index) },
-                    onUnfavLibrary = { media -> toggleFavorite(media) },
+                    onSelectTab = { ui.tab = it },
+                    onLoadSheets = ::loadSheetsTab,
+                    onOpenTag = ::loadTagSheets,
+                    onOpenSheet = ::openSheetDetail,
+                    onOpenTop = ::openTopDetail,
+                    onOpenArtistOf = ::openArtistOf,
+                    onOpenImport = { ui.importDialogVisible = true },
+                    onDoImport = ::doImport,
+                    onCloseSheetView = { ui.sheetView = null },
+                    onPlayList = ::playList,
+                    onDownloadMedia = ::downloadMedia,
+                    onToggleFavMedia = { media -> toggleFavorite(media) },
                     onToggleLyric = ::toggleLyric,
                     onCycleMode = ::cycleMode,
                     onSeek = ::seekTo,
@@ -364,11 +402,143 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         refreshLibrary()
     }
 
-    /** 播放收藏/历史中的一项（service 队列整表装载，从 index 起播）。 */
-    private fun playLibrary(list: List<MusicMedia>, index: Int) {
+    /** 播放任意列表（service 队列整表装载，从 index 起播；搜索/歌单详情/收藏/历史/导入共用）。 */
+    private fun playList(list: List<MusicMedia>, index: Int) {
         val s = service ?: return
         if (list.isEmpty() || index !in list.indices) return
         s.play(ArrayList(list), index)
+    }
+
+    /** 下载指定歌曲（歌单详情/导入结果行共用）。 */
+    private fun downloadMedia(media: MusicMedia) {
+        MusicDownloader.get().download(media)
+    }
+
+    // ------------------------------------------------------------ 歌单 / 榜单 / 歌手 / 导入
+
+    /** 歌单 Tab 一次性装载：榜单分组 + 推荐分类，随后自动加载第一个分类的歌单。 */
+    private fun loadSheetsTab() {
+        if (ui.sheetsLoading) return
+        ui.sheetsLoading = true
+        ui.topGroups = emptyList()
+        ui.sheetTags = emptyList()
+        ui.tagSheets = emptyList()
+        ui.activeTag = ""
+        MusicRepository.get().topLists().whenComplete { groups, _ ->
+            MusicRepository.get().recommendTags().whenComplete { tags, _ ->
+                runOnUiThread {
+                    ui.topGroups = groups ?: emptyList()
+                    ui.sheetTags = tags ?: emptyList()
+                    ui.sheetsLoading = false
+                    if (ui.activeTag.isEmpty() && !ui.sheetTags.isEmpty()) loadTagSheets(ui.sheetTags[0])
+                }
+            }
+        }
+    }
+
+    /** 加载某个推荐分类的歌单（结果列表缓存于 ui.tagSheets）。 */
+    private fun loadTagSheets(tag: String) {
+        if (ui.activeTag == tag && ui.tagSheets.isNotEmpty()) return
+        ui.activeTag = tag
+        ui.tagSheetsLoading = true
+        ui.tagSheets = emptyList()
+        MusicRepository.get().sheetsByTag(tag, 1).whenComplete { list, _ ->
+            runOnUiThread {
+                ui.tagSheetsLoading = false
+                ui.tagSheets = list ?: emptyList()
+                if (ui.tagSheets.isEmpty()) Notify.show("「$tag」分类暂无歌单")
+            }
+        }
+    }
+
+    /** 打开详情视图（歌单/榜单/歌手/导入共用），loader 负责拉取歌曲列表。 */
+    private fun openSheetView(title: String, cover: String, subtitle: String, loader: () -> CompletableFuture<List<MusicMedia>>) {
+        val v = SheetView()
+        v.title = title
+        v.cover = cover
+        v.subtitle = subtitle
+        v.loading = true
+        ui.sheetView = v
+        loader().whenComplete { list, e ->
+            runOnUiThread {
+                v.loading = false
+                if (e != null) {
+                    v.error = "加载失败：" + friendly(e)
+                } else {
+                    v.items = list ?: emptyList()
+                    if (v.items.isEmpty()) v.error = "该歌单暂无内容"
+                }
+            }
+        }
+    }
+
+    private fun openSheetDetail(sheet: MusicSheet) {
+        openSheetView(sheet.title, sheet.cover, "播放量 " + fmtCount(sheet.playCount), { MusicRepository.get().sheetDetail(sheet, 1) })
+    }
+
+    private fun openTopDetail(sheet: MusicSheet) {
+        openSheetView(sheet.title, sheet.cover, sheet.description.ifEmpty { "官方榜" }, { MusicRepository.get().topListDetail(sheet, 1) })
+    }
+
+    private fun openArtistDetail(artist: MusicSheet) {
+        openSheetView(artist.title, artist.cover, "热门歌曲", { MusicRepository.get().artistSongs(artist, 1) })
+    }
+
+    /** 搜索结果行的歌手入口：解析 extra 中的 artistId 后进歌手热歌页。 */
+    private fun openArtistOf(media: MusicMedia) {
+        val id = artistIdOf(media) ?: return
+        val artist = MusicSheet(id, media.artist.ifEmpty { media.title }, media.cover, media.artist, "", -1, -1)
+        artist.source = media.source
+        openArtistDetail(artist)
+    }
+
+    private fun artistIdOf(media: MusicMedia): String? {
+        if (media.extra.isNullOrEmpty()) return null
+        return try {
+            JSONObject(media.extra).optString("artistId").takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 歌单导入：URL → 歌曲列表进详情视图。 */
+    private fun doImport(url: String) {
+        if (url.isBlank()) {
+            Notify.show("请输入歌单链接")
+            return
+        }
+        ui.importDialogVisible = false
+        val v = SheetView()
+        v.title = "导入歌单…"
+        v.loading = true
+        v.subtitle = url.trim()
+        ui.sheetView = v
+        MusicRepository.get().importSheet(url.trim()).whenComplete { list, e ->
+            runOnUiThread {
+                v.loading = false
+                if (e != null) {
+                    v.error = "导入失败：" + friendly(e)
+                } else {
+                    val items = list ?: emptyList()
+                    if (items.isEmpty()) {
+                        v.error = "未解析到歌曲（支持网易云歌单/榜单链接或纯 id）"
+                    } else {
+                        v.title = "导入结果（${items.size} 首）"
+                        v.items = items
+                    }
+                }
+            }
+        }
+    }
+
+    /** 播放量/数量格式化：万/亿。 */
+    private fun fmtCount(n: Long): String {
+        if (n <= 0) return ""
+        return when {
+            n >= 100_000_000 -> String.format(Locale.US, "%.1f亿", n / 100_000_000.0)
+            n >= 10_000 -> String.format(Locale.US, "%.1f万", n / 10_000.0)
+            else -> n.toString()
+        }
     }
 
     private fun friendly(t: Throwable): String {
@@ -581,9 +751,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onPlayAt: (Int) -> Unit,
         onDownloadAt: (Int) -> Unit,
         onFavoriteAt: (Int) -> Unit,
-        onOpenLibrary: () -> Unit,
-        onPlayLibrary: (List<MusicMedia>, Int) -> Unit,
-        onUnfavLibrary: (MusicMedia) -> Unit,
+        onSelectTab: (Int) -> Unit,
+        onLoadSheets: () -> Unit,
+        onOpenTag: (String) -> Unit,
+        onOpenSheet: (MusicSheet) -> Unit,
+        onOpenTop: (MusicSheet) -> Unit,
+        onOpenArtistOf: (MusicMedia) -> Unit,
+        onOpenImport: () -> Unit,
+        onDoImport: (String) -> Unit,
+        onCloseSheetView: () -> Unit,
+        onPlayList: (List<MusicMedia>, Int) -> Unit,
+        onDownloadMedia: (MusicMedia) -> Unit,
+        onToggleFavMedia: (MusicMedia) -> Unit,
         onToggleLyric: () -> Unit,
         onCycleMode: () -> Unit,
         onSeek: (Float) -> Unit,
@@ -599,20 +778,58 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             Column(Modifier.fillMaxSize().padding(vertical = 8.dp)) {
-                SearchBar(keyword, { keyword = it }, onSearch = { onSearch(keyword) }, onOpenLibrary = onOpenLibrary)
-                if (ui.searching) {
-                    CircularProgressIndicator(
-                        Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(28.dp)
+                TopTabs(tab = ui.tab, onSelect = onSelectTab)
+                val view = ui.sheetView
+                if (view != null) {
+                    // 详情视图（歌单/榜单/歌手/导入结果）：覆盖当前 Tab 内容，播放条保持
+                    SheetDetailView(
+                        view = view,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        onBack = onCloseSheetView,
+                        onPlay = { idx -> onPlayList(view.items, idx) },
+                        onDownload = onDownloadMedia,
+                        onFavorite = onToggleFavMedia,
+                        onArtist = onOpenArtistOf,
                     )
+                } else {
+                    when (ui.tab) {
+                        1 -> {
+                            LaunchedEffect(Unit) { onLoadSheets() }
+                            SheetContent(
+                                ui = ui,
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                onOpenTag = onOpenTag,
+                                onOpenSheet = onOpenSheet,
+                                onOpenTop = onOpenTop,
+                                onOpenImport = onOpenImport,
+                            )
+                        }
+                        2 -> MyContent(
+                            ui = ui,
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            onPlayList = onPlayList,
+                            onDownloadMedia = onDownloadMedia,
+                            onToggleFavMedia = onToggleFavMedia,
+                        )
+                        else -> {
+                            SearchBar(keyword, { keyword = it }) { onSearch(keyword) }
+                            if (ui.searching) {
+                                CircularProgressIndicator(
+                                    Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(28.dp)
+                                )
+                            }
+                            ResultList(
+                                items = ui.results,
+                                libraryTick = ui.libraryTick,
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                onPlayAt = onPlayAt,
+                                onDownloadAt = onDownloadAt,
+                                onFavoriteAt = onFavoriteAt,
+                                onArtist = onOpenArtistOf,
+                            )
+                        }
+                    }
                 }
-                ResultList(
-                    items = ui.results,
-                    libraryTick = ui.libraryTick,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    onPlayAt = onPlayAt,
-                    onDownloadAt = onDownloadAt,
-                    onFavoriteAt = onFavoriteAt,
-                )
                 HorizontalDivider(color = Color(0xFF333333))
                 PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources)
             }
@@ -636,13 +853,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 onImport = onImportPlugin,
             )
         }
-        if (ui.libraryDialogVisible) {
-            LibraryDialog(
-                favorites = ui.favorites,
-                history = ui.history,
-                onClose = { ui.libraryDialogVisible = false },
-                onPlay = onPlayLibrary,
-                onUnfavorite = onUnfavLibrary,
+        if (ui.importDialogVisible) {
+            ImportDialog(
+                onClose = { ui.importDialogVisible = false },
+                onOk = onDoImport,
             )
         }
         if (ui.messageVisible) {
@@ -650,8 +864,41 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
     }
 
+    /** 顶部 Tab：搜索 / 歌单 / 我的音乐。 */
     @Composable
-    private fun SearchBar(value: String, onChange: (String) -> Unit, onSearch: () -> Unit, onOpenLibrary: () -> Unit) {
+    private fun TopTabs(tab: Int, onSelect: (Int) -> Unit) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf("搜索", "歌单", "我的音乐").forEachIndexed { index, name ->
+                TabItem(name, tab == index) { onSelect(index) }
+                if (index < 2) Spacer(Modifier.width(18.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "音源 " + ui.currentSource,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onSelect(0) },
+            )
+        }
+        HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(top = 4.dp))
+    }
+
+    @Composable
+    private fun TabItem(name: String, selected: Boolean, onClick: () -> Unit) {
+        Text(
+            name,
+            fontSize = 15.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF888888),
+            modifier = Modifier.clickable(onClick = onClick).padding(vertical = 6.dp, horizontal = 2.dp),
+        )
+    }
+
+    @Composable
+    private fun SearchBar(value: String, onChange: (String) -> Unit, onSearch: () -> Unit) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -668,94 +915,128 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             )
             Spacer(Modifier.width(8.dp))
             Button(onClick = onSearch) { Text("搜索") }
-            Spacer(Modifier.width(2.dp))
-            IconButton(onClick = onOpenLibrary) {
-                Icon(
-                    painterResource(R.drawable.ic_favorite),
-                    contentDescription = "我的音乐",
-                    tint = MaterialTheme.colorScheme.primary,
+        }
+    }
+
+    @Composable
+    private fun ResultList(items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit, onArtist: (MusicMedia) -> Unit) {
+        @Suppress("UNUSED_EXPRESSION")
+        libraryTick // 观察收藏变化：切换收藏后重绘心形图标
+        LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
+            itemsIndexed(items) { index, media ->
+                MusicRow(
+                    index = index,
+                    media = media,
+                    onPlay = onPlayAt,
+                    onDownload = onDownloadAt,
+                    onFavorite = onFavoriteAt,
+                    onArtist = onArtist,
                 )
             }
         }
     }
 
+    /** 歌曲列表行（搜索 / 歌单详情 / 导入结果 / 我的音乐 共用）：封面 + 标题 + 歌手/专辑 + 时长 + 收藏 + 下载。 */
     @Composable
-    private fun ResultList(items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit) {
-        @Suppress("UNUSED_EXPRESSION")
-        libraryTick // 观察收藏变化：切换收藏后重绘心形图标
-        LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
-            itemsIndexed(items) { index, media ->
-                val vip = media.vip
-                val sub = when {
-                    media.artist.isNotEmpty() && media.album.isNotEmpty() -> "${media.artist} · ${media.album}"
-                    media.artist.isNotEmpty() -> media.artist
-                    media.album.isNotEmpty() -> media.album
-                    else -> ""
-                }
-                val downloading = MusicDownloader.get().isRunning(media)
-                val downloaded = MusicDownloader.get().isDone(media)
-                Row(
-                    Modifier.fillMaxWidth()
-                        .clickable { onPlayAt(index) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (!media.cover.isNullOrEmpty()) {
-                        GlideImage(
-                            url = media.cover,
-                            modifier = Modifier.size(46.dp).clip(RoundedCornerShape(4.dp)),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    Column(Modifier.weight(1f)) {
+    private fun MusicRow(
+        index: Int,
+        media: MusicMedia,
+        onPlay: (Int) -> Unit,
+        onDownload: (Int) -> Unit,
+        onFavorite: (Int) -> Unit,
+        onArtist: (MusicMedia) -> Unit,
+    ) {
+        val vip = media.vip
+        val sub = when {
+            media.artist.isNotEmpty() && media.album.isNotEmpty() -> "${media.artist} · ${media.album}"
+            media.artist.isNotEmpty() -> media.artist
+            media.album.isNotEmpty() -> media.album
+            else -> ""
+        }
+        val artistId = artistIdOf(media)
+        val downloading = MusicDownloader.get().isRunning(media)
+        val downloaded = MusicDownloader.get().isDone(media)
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable { onPlay(index) }
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!media.cover.isNullOrEmpty()) {
+                GlideImage(
+                    url = media.cover,
+                    modifier = Modifier.size(46.dp).clip(RoundedCornerShape(4.dp)),
+                )
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = media.title + if (vip) "  [VIP]" else "",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (vip) 0.55f else 1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (artistId != null && media.artist.isNotEmpty() && media.album.isNotEmpty()) {
+                    // 歌手可点（有 artistId）：进歌手热歌页；专辑部分不可点
+                    Row {
                         Text(
-                            text = media.title + if (vip) "  [VIP]" else "",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = if (vip) 0.55f else 1f),
+                            text = media.artist,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { onArtist(media) },
                         )
                         Text(
-                            text = sub,
+                            text = " · " + media.album,
                             fontSize = 12.sp,
                             color = Color(0xFF999999),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text(fmt(media.durationMs), fontSize = 12.sp, color = Color(0xFF777777))
-                    // 收藏按钮：已收藏红色高亮，点击切换
-                    IconButton(
-                        onClick = { onFavoriteAt(index) },
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        val isFav = MusicLibrary.get().isFavorite(media)
-                        Icon(
-                            painterResource(R.drawable.ic_favorite),
-                            contentDescription = "收藏",
-                            tint = if (isFav) Color(0xFFFF4081) else Color(0xFF666666),
+                } else {
+                    Text(
+                        text = sub,
+                        fontSize = 12.sp,
+                        color = Color(0xFF999999),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(fmt(media.durationMs), fontSize = 12.sp, color = Color(0xFF777777))
+            // 收藏按钮：已收藏红色高亮，点击切换
+            IconButton(
+                onClick = { onFavorite(index) },
+                modifier = Modifier.size(36.dp),
+            ) {
+                val isFav = MusicLibrary.get().isFavorite(media)
+                Icon(
+                    painterResource(R.drawable.ic_favorite),
+                    contentDescription = "收藏",
+                    tint = if (isFav) Color(0xFFFF4081) else Color(0xFF666666),
+                )
+            }
+            // 下载按钮：下载中转圈，完成后变色；VIP 歌标记不可下载
+            if (!vip) {
+                IconButton(
+                    onClick = { onDownload(index) },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    if (downloading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
                         )
-                    }
-                    // 下载按钮：下载中转圈，完成后变色；VIP 歌标记不可下载
-                    if (!vip) {
-                        IconButton(
-                            onClick = { onDownloadAt(index) },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            if (downloading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            } else {
-                                Icon(
-                                    painterResource(R.drawable.ic_download),
-                                    contentDescription = "下载",
-                                    tint = if (downloaded) MaterialTheme.colorScheme.primary else Color(0xFF999999),
-                                )
-                            }
-                        }
+                    } else {
+                        Icon(
+                            painterResource(R.drawable.ic_download),
+                            contentDescription = "下载",
+                            tint = if (downloaded) MaterialTheme.colorScheme.primary else Color(0xFF999999),
+                        )
                     }
                 }
             }
@@ -1012,98 +1293,49 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 我的音乐弹窗：收藏 / 最近播放 双 Tab。点击项整表装载播放；收藏 Tab 可取消收藏。 */
+    /** 我的音乐页面（Tab 2）：收藏 / 最近播放 双 Tab，行可播放、收藏 Tab 可取消收藏。 */
     @Composable
-    private fun LibraryDialog(
-        favorites: List<MusicMedia>,
-        history: List<MusicMedia>,
-        onClose: () -> Unit,
-        onPlay: (List<MusicMedia>, Int) -> Unit,
-        onUnfavorite: (MusicMedia) -> Unit,
+    private fun MyContent(
+        ui: UiState,
+        modifier: Modifier = Modifier,
+        onPlayList: (List<MusicMedia>, Int) -> Unit,
+        onDownloadMedia: (MusicMedia) -> Unit,
+        onToggleFavMedia: (MusicMedia) -> Unit,
     ) {
         var tab by remember { mutableStateOf(0) }
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text(
-                    "我的音乐",
-                    fontSize = 16.sp,
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp),
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    LibraryTab("收藏 (${favorites.size})", tab == 0) { tab = 0 }
-                    Spacer(Modifier.width(16.dp))
-                    LibraryTab("最近播放 (${history.size})", tab == 1) { tab = 1 }
+        Column(modifier) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                LibraryTab("收藏 (${ui.favorites.size})", tab == 0) { tab = 0 }
+                Spacer(Modifier.width(16.dp))
+                LibraryTab("最近播放 (${ui.history.size})", tab == 1) { tab = 1 }
+            }
+            HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 6.dp))
+            val items = if (tab == 0) ui.favorites else ui.history
+            if (items.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (tab == 0) "暂无收藏" else "暂无播放记录",
+                        fontSize = 13.sp,
+                        color = Color(0xFF666666),
+                    )
                 }
-                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 6.dp))
-                val items = if (tab == 0) favorites else history
-                if (items.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text(
-                            if (tab == 0) "暂无收藏" else "暂无播放记录",
-                            fontSize = 13.sp,
-                            color = Color(0xFF666666),
+            } else {
+                LazyColumn(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    itemsIndexed(items) { index, media ->
+                        MusicRow(
+                            index = index,
+                            media = media,
+                            onPlay = { i -> onPlayList(items, i) },
+                            onDownload = { onDownloadMedia(media) },
+                            onFavorite = { onToggleFavMedia(media) },
+                            onArtist = {},
                         )
-                    }
-                } else {
-                    LazyColumn(
-                        Modifier.weight(1f).fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 4.dp),
-                    ) {
-                        itemsIndexed(items) { index, media ->
-                            Row(
-                                Modifier.fillMaxWidth()
-                                    .clickable { onPlay(items, index) }
-                                    .padding(horizontal = 20.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        media.title,
-                                        fontSize = 14.sp,
-                                        color = Color(0xFFDDDDDD),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        listOfNotNull(media.artist.takeIf { it.isNotEmpty() }, media.album.takeIf { it.isNotEmpty() })
-                                            .joinToString(" · ").ifEmpty { media.source },
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF888888),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                Text(fmt(media.durationMs), fontSize = 11.sp, color = Color(0xFF666666))
-                                if (tab == 0) {
-                                    IconButton(
-                                        onClick = { onUnfavorite(media) },
-                                        modifier = Modifier.size(34.dp),
-                                    ) {
-                                        Icon(
-                                            painterResource(R.drawable.ic_favorite),
-                                            contentDescription = "取消收藏",
-                                            tint = Color(0xFFFF4081),
-                                        )
-                                    }
-                                }
-                            }
-                            HorizontalDivider(color = Color(0x1AFFFFFF))
-                        }
+                        HorizontalDivider(color = Color(0x1AFFFFFF))
                     }
                 }
-                Text(
-                    "点击下方关闭",
-                    fontSize = 12.sp,
-                    color = Color(0xFF555555),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
-                        .padding(vertical = 10.dp),
-                )
             }
         }
     }
@@ -1117,6 +1349,288 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 6.dp),
         )
+    }
+
+    /** 歌单页面（Tab 1）：导入入口 + 官方榜 + 推荐分类 + 分类歌单。 */
+    @Composable
+    private fun SheetContent(
+        ui: UiState,
+        modifier: Modifier = Modifier,
+        onOpenTag: (String) -> Unit,
+        onOpenSheet: (MusicSheet) -> Unit,
+        onOpenTop: (MusicSheet) -> Unit,
+        onOpenImport: () -> Unit,
+    ) {
+        Column(modifier) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("歌单", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE0E0E0))
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onOpenImport, modifier = Modifier.height(34.dp)) { Text("导入歌单", fontSize = 13.sp) }
+            }
+            if (ui.sheetsLoading) {
+                Box(Modifier.fillMaxWidth().padding(top = 24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(30.dp))
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 4.dp)) {
+                    // 官方榜
+                    ui.topGroups.forEach { group ->
+                        item(key = "g-" + group.name) {
+                            SheetGroupHeader(group.name)
+                        }
+                        item(key = "gl-" + group.name) {
+                            LazyRow(contentPadding = PaddingValues(horizontal = 12.dp)) {
+                                items(group.items.size, key = { i -> "top-" + group.items[i].id }) { i ->
+                                    val sheet = group.items[i]
+                                    SheetCard(
+                                        sheet = sheet,
+                                        subtitle = sheet.description.ifEmpty { "官方榜" },
+                                        onClick = { onOpenTop(sheet) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // 推荐分类
+                    if (ui.sheetTags.isNotEmpty()) {
+                        item(key = "tags") {
+                            Text(
+                                "推荐分类",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFCCCCCC),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
+                        item(key = "tagrow") {
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 12.dp),
+                            ) {
+                                ui.sheetTags.forEach { tag ->
+                                    val selected = tag == ui.activeTag
+                                    Text(
+                                        tag,
+                                        fontSize = 13.sp,
+                                        color = if (selected) Color(0xFF141414) else Color(0xFFCCCCCC),
+                                        modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                                            .background(if (selected) MaterialTheme.colorScheme.primary else Color(0x26FFFFFF))
+                                            .clickable { onOpenTag(tag) }
+                                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                            }
+                        }
+                    }
+                    // 分类歌单
+                    if (ui.activeTag.isNotEmpty()) {
+                        item(key = "cat") {
+                            Text(
+                                (if (ui.tagSheetsLoading) "加载「${ui.activeTag}」歌单…" else "「${ui.activeTag}」歌单"),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFCCCCCC),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
+                        item(key = "catrow") {
+                            LazyRow(contentPadding = PaddingValues(horizontal = 12.dp)) {
+                                items(ui.tagSheets.size, key = { i -> "s-" + ui.tagSheets[i].id + "-" + i }) { i ->
+                                    val sheet = ui.tagSheets[i]
+                                    SheetCard(
+                                        sheet = sheet,
+                                        subtitle = "播放量 " + fmtCount(sheet.playCount),
+                                        onClick = { onOpenSheet(sheet) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (!ui.sheetsLoading && ui.topGroups.isEmpty() && ui.sheetTags.isEmpty()) {
+                        item(key = "empty") {
+                            Box(Modifier.fillMaxWidth().padding(top = 40.dp), contentAlignment = Alignment.Center) {
+                                Text("歌单加载失败，请检查网络或切换音源", fontSize = 13.sp, color = Color(0xFF666666))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun SheetGroupHeader(name: String) {
+        Text(
+            name,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFCCCCCC),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+
+    /** 歌单/榜单卡片（横向滑动列表内）。 */
+    @Composable
+    private fun SheetCard(sheet: MusicSheet, subtitle: String, onClick: () -> Unit) {
+        Column(
+            Modifier.width(136.dp).padding(end = 10.dp)
+                .clickable(onClick = onClick),
+        ) {
+            GlideImage(
+                url = sheet.cover.takeIf { it.isNotEmpty() },
+                modifier = Modifier.size(136.dp).clip(RoundedCornerShape(6.dp)),
+            )
+            Text(
+                sheet.title,
+                fontSize = 12.sp,
+                color = Color(0xFFDDDDDD),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+            Text(
+                subtitle,
+                fontSize = 10.sp,
+                color = Color(0xFF888888),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+
+    /** 详情视图：歌单详情 / 榜单详情 / 歌手热歌 / 导入结果。返回 + 头部 + 歌曲列表。 */
+    @Composable
+    private fun SheetDetailView(
+        view: SheetView,
+        modifier: Modifier = Modifier,
+        onBack: () -> Unit,
+        onPlay: (Int) -> Unit,
+        onDownload: (MusicMedia) -> Unit,
+        onFavorite: (MusicMedia) -> Unit,
+        onArtist: (MusicMedia) -> Unit,
+    ) {
+        Column(modifier) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "‹ 返回",
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(view.title, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(56.dp)) // 平衡左侧返回键宽度
+            }
+            HorizontalDivider(color = Color(0x22FFFFFF))
+            if (view.loading) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(34.dp))
+                }
+            } else if (view.error.isNotEmpty() && view.items.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text(view.error, fontSize = 13.sp, color = Color(0xFFFF8A80), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    item(key = "head") {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            GlideImage(
+                                url = view.cover.takeIf { it.isNotEmpty() },
+                                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(6.dp)),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(view.title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE8E8E8), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                if (view.subtitle.isNotEmpty()) {
+                                    Text(view.subtitle, fontSize = 11.sp, color = Color(0xFF999999), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Button(onClick = { onPlay(0) }, modifier = Modifier.height(32.dp)) {
+                                    Text("播放全部（${view.items.size}）", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                    itemsIndexed(view.items) { index, media ->
+                        MusicRow(
+                            index = index,
+                            media = media,
+                            onPlay = onPlay,
+                            onDownload = { onDownload(media) },
+                            onFavorite = { onFavorite(media) },
+                            onArtist = onArtist,
+                        )
+                        HorizontalDivider(color = Color(0x14FFFFFF))
+                    }
+                }
+            }
+        }
+    }
+
+    /** 歌单导入弹窗：粘贴网易云歌单/榜单链接（或纯 id）。 */
+    @Composable
+    private fun ImportDialog(
+        onClose: () -> Unit,
+        onOk: (String) -> Unit,
+    ) {
+        var url by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text(
+                    "导入歌单",
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 26.dp, bottom = 6.dp),
+                )
+                Text(
+                    "粘贴网易云歌单/榜单链接（如 music.163.com/playlist?id=xxx）或纯数字 id",
+                    fontSize = 12.sp,
+                    color = Color(0xFF888888),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                )
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                    placeholder = { Text("歌单链接 / id", color = Color(0xFF666666), fontSize = 14.sp) },
+                    maxLines = 2,
+                    keyboardActions = KeyboardActions(onDone = { onOk(url) }),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(24.dp))
+                    Button(onClick = { onOk(url) }) { Text("导入") }
+                }
+                Text(
+                    "点击下方关闭",
+                    fontSize = 12.sp,
+                    color = Color(0xFF555555),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
+                        .padding(vertical = 12.dp),
+                )
+            }
+        }
     }
 
     @Composable

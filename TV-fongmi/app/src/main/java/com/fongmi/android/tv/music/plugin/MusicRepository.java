@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 import com.fongmi.android.tv.music.model.MusicMedia;
+import com.fongmi.android.tv.music.model.MusicSheet;
 import com.github.catvod.net.OkHttp;
 import com.github.catvod.utils.Asset;
 
@@ -208,6 +209,67 @@ public final class MusicRepository {
         return p.source.getLyric(media);
     }
 
+    // ------------------------------------------------------------ 歌单 / 榜单 / 歌手 / 导入
+
+    /** 榜单分组。 */
+    public CompletableFuture<List<MusicSource.SheetGroup>> topLists() {
+        Plugin p = current;
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.topLists();
+    }
+
+    /** 推荐歌单分类标签。 */
+    public CompletableFuture<List<String>> recommendTags() {
+        Plugin p = current;
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.recommendTags();
+    }
+
+    /** 某分类下的推荐歌单（分页）。 */
+    public CompletableFuture<List<MusicSheet>> sheetsByTag(String tag, int page) {
+        Plugin p = current;
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.sheetsByTag(tag, page);
+    }
+
+    /** 歌单详情（按 sheet.source 路由，缺省当前源）。 */
+    public CompletableFuture<List<MusicMedia>> sheetDetail(MusicSheet sheet, int page) {
+        Plugin p = sourceSheetOf(sheet);
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.sheetDetail(sheet, page);
+    }
+
+    /** 榜单详情（按 item.source 路由）。 */
+    public CompletableFuture<List<MusicMedia>> topListDetail(MusicSheet item, int page) {
+        Plugin p = sourceSheetOf(item);
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.topListDetail(item, page);
+    }
+
+    /** 歌手热门歌曲（按 artist.source 路由）。 */
+    public CompletableFuture<List<MusicMedia>> artistSongs(MusicSheet artist, int page) {
+        Plugin p = sourceSheetOf(artist);
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.artistSongs(artist, page);
+    }
+
+    /** 导入歌单（URL → 歌曲列表）。 */
+    public CompletableFuture<List<MusicMedia>> importSheet(String urlLike) {
+        Plugin p = current;
+        if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        return p.source.importSheet(urlLike);
+    }
+
+    /** 所有已加载插件是否暗示了歌单相关能力（UI 决定展示歌单 Tab 前置条件）。 */
+    public boolean anyHasSheetAbility() {
+        synchronized (this) {
+            for (Plugin p : plugins) {
+                if (p.source.hasMethod("getTopLists") || p.source.hasMethod("getMusicSheetInfo")) return true;
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------ 内部
 
     /** 加载一个导入插件（本地文件在缓存或刚下载），成功返回 true。 */
@@ -277,6 +339,19 @@ public final class MusicRepository {
     /** 按 media.source 路由插件；空/未命中回退当前源。 */
     private Plugin sourceOf(MusicMedia media) {
         String s = media == null ? "" : media.source;
+        if (!s.isEmpty()) {
+            synchronized (this) {
+                for (Plugin p : plugins) {
+                    if (s.equals(p.source.platform())) return p;
+                }
+            }
+        }
+        return current;
+    }
+
+    /** 按 sheet.source 路由插件（歌单/榜单/歌手）；空/未命中回退当前源。 */
+    private Plugin sourceSheetOf(MusicSheet sheet) {
+        String s = sheet == null ? "" : sheet.source;
         if (!s.isEmpty()) {
             synchronized (this) {
                 for (Plugin p : plugins) {
