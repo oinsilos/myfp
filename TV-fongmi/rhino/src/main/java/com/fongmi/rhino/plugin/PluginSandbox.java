@@ -8,7 +8,6 @@ import com.github.catvod.utils.Asset;
 
 import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Function;
-import org.htmlunit.corejs.javascript.InstructionObserver;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
 import org.htmlunit.corejs.javascript.VarScope;
@@ -17,6 +16,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MusicFree 插件沙箱（Rhino 侧实现，契约对齐 RN {@code evalSandbox.ts} 的 {@code IPluginSandbox}）。
@@ -37,9 +37,8 @@ public final class PluginSandbox {
     private volatile Scriptable instance;
     private volatile boolean ready;
     private volatile boolean destroyed;
-    /** 本次脚本执行的硬性截止时间（毫秒，0=不限）。指令计数观察者据此中断失控脚本，
-     *  避免 JS 死循环/超长计算把沙箱线程占死——模拟器/低端机上整机 CPU 被吃满最终拖垮进程（卡退主界面）。 */
-    private volatile long deadline;
+    /** 单次插件调用的超时上限：到点必然以异常结束 future，绝不无限转圈。
+     *  模拟器/低端机上 JS 执行或桥接慢时，宁可快速失败返回错误，也不让 UI 永久等待把进程拖死。 */
     private static final long CALL_TIMEOUT_MS = 30_000L;
     private static final long LOAD_TIMEOUT_MS = 60_000L;
     /**
@@ -97,29 +96,25 @@ public final class PluginSandbox {
     public Scriptable load(final String code) {
         ready();
         try {
+            // 到点抛 TimeoutException，加载不再无限等待（JS 求值慢/卡时快速失败）
             return executor.submit(() -> mark(() -> {
-                deadline = System.currentTimeMillis() + LOAD_TIMEOUT_MS;
-                try {
-                    String content = Transpile.toCommonJs(code);
-                    // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
-                    // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
-                    String wrapped = "(function(){\n'use strict';\nvar __module = { exports: {} };\n"
-                            + "(function(require, __musicfree_require, module, exports, console, env, URL, process) {\n"
-                            + content
-                            + "\n})(__mf_require_js, __mf_require_js, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
-                            + "return __module.exports;\n})();";
-                    Object obj = cx.evaluateString(scope, wrapped, "plugin.js", 1, null);
-                    this.instance = obj instanceof Scriptable ? (Scriptable) obj : (Scriptable) cx.newObject(scope);
-                    // babel 转译产物兼容：exports.default
-                    Object def = ScriptableObject.getProperty(this.instance, "default");
-                    if (def instanceof Scriptable) this.instance = (Scriptable) def;
-                    Object name = ScriptableObject.getProperty(this.instance, "platform");
-                    if (host != null) host.setPluginName(name instanceof CharSequence ? name.toString() : "");
-                    return this.instance;
-                } finally {
-                    deadline = 0;
-                }
-            })).get();
+                String content = Transpile.toCommonJs(code);
+                // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
+                // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
+                String wrapped = "(function(){\n'use strict';\nvar __module = { exports: {} };\n"
+                        + "(function(require, __musicfree_require, module, exports, console, env, URL, process) {\n"
+                        + content
+                        + "\n})(__mf_require_js, __mf_require_js, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
+                        + "return __module.exports;\n})();";
+                Object obj = cx.evaluateString(scope, wrapped, "plugin.js", 1, null);
+                this.instance = obj instanceof Scriptable ? (Scriptable) obj : (Scriptable) cx.newObject(scope);
+                // babel 转译产物兼容：exports.default
+                Object def = ScriptableObject.getProperty(this.instance, "default");
+                if (def instanceof Scriptable) this.instance = (Scriptable) def;
+                Object name = ScriptableObject.getProperty(this.instance, "platform");
+                if (host != null) host.setPluginName(name instanceof CharSequence ? name.toString() : "");
+                return this.instance;
+            })).get(LOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
             if (cause instanceof RuntimeException) throw (RuntimeException) cause;
@@ -131,7 +126,6 @@ public final class PluginSandbox {
     public CompletableFuture<Object> call(final String method, final Object... args) {
         final CompletableFuture<Object> future = new CompletableFuture<>();
         executor.submit(() -> mark(() -> {
-            deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS;
             try {
                 Async.run(cx, scope, instance, method, args).whenComplete((result, error) -> {
                     if (error != null) future.completeExceptionally(error);
@@ -139,11 +133,10 @@ public final class PluginSandbox {
                 });
             } catch (Throwable e) {
                 future.completeExceptionally(e);
-            } finally {
-                deadline = 0;
             }
             return null;
         }));
+        timeout(future, CALL_TIMEOUT_MS, method);
         return future;
     }
 
@@ -180,7 +173,24 @@ public final class PluginSandbox {
             }
             return null;
         }));
+        timeout(future, CALL_TIMEOUT_MS, method);
         return future;
+    }
+
+    /** 独立守护线程兜底超时：到点以 TimeoutException 结束 future，UI 永不无限等待。
+     *  JS 仍在沙箱线程跑的任务后续完成只是 no-op；不占用沙箱单线程（其正在执行 JS）。 */
+    private static void timeout(final CompletableFuture<?> future, final long ms, final String what) {
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                return;
+            }
+            future.completeExceptionally(new java.util.concurrent.TimeoutException(
+                    "rhino " + what + " timeout (>=" + ms + "ms)"));
+        }, "rhino-timeout-" + what);
+        t.setDaemon(true);
+        t.start();
     }
 
     /** 转成 JS 单引号字符串字面量（用于包住 JSON 文本；转义反斜杠/单引号/全部控制字符）。 */
@@ -267,14 +277,6 @@ public final class PluginSandbox {
         cx = Context.enter();
         cx.setOptimizationLevel(-1); // 解释模式：体积与兼容优先
         cx.setLanguageVersion(Context.VERSION_ES6);
-        // 失控脚本保护：解释模式下按指令计数回调，超时抛 Error 中断当前执行，避免沙箱线程被死循环占死
-        cx.setObserver((c, count) -> {
-            long d = deadline;
-            if (d > 0 && System.currentTimeMillis() > d) {
-                throw new Error("rhino script execution timeout (deadline=" + d + ")");
-            }
-        });
-        cx.setInstructionObserverThreshold(50_000);
         scope = (VarScope) cx.initStandardObjects();
         if (!ScriptableObject.hasProperty(scope, "globalThis")) ScriptableObject.putProperty(scope, "globalThis", scope);
         // Global 桥：console/setTimeout/req/_http/加解密/__tick（Promise 微任务泵送）等
