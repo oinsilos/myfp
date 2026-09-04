@@ -22,6 +22,8 @@ import androidx.core.app.NotificationCompat;
 import androidx.media3.common.PlaybackException;
 
 import com.fongmi.android.tv.R;
+import com.fongmi.android.tv.music.core.LrcParser;
+import com.fongmi.android.tv.music.core.MusicLibrary;
 import com.fongmi.android.tv.music.core.MusicPlayer;
 import com.fongmi.android.tv.music.model.MusicMedia;
 import com.fongmi.android.tv.music.model.RepeatMode;
@@ -67,6 +69,11 @@ public final class MusicPlaybackService extends Service {
     private final MusicBinder binder = new MusicBinder();
     private MusicPlayer player;
     private Listener listener;
+
+    /** 通知栏歌词缓存：换歌时异步拉 LRC 解析，进度回调切句节流更新通知。 */
+    private volatile List<LrcParser.Line> lyricLines = null;
+    private volatile String lyricHint = "";
+    private long lastLyricPosMs = -1;
 
     private final BroadcastReceiver actions = new BroadcastReceiver() {
         @Override
@@ -191,7 +198,9 @@ public final class MusicPlaybackService extends Service {
     private Notification buildNotification(boolean playing, MusicMedia media) {
         ensureChannel();
         String title = media == null ? "未在播放" : media.title;
-        String text = media == null ? "" : (media.artist + (media.album != null && !media.album.isEmpty() ? " · " + media.album : ""));
+        String sub = media == null ? "" : (media.artist + (media.album != null && !media.album.isEmpty() ? " · " + media.album : ""));
+        // 通知栏歌词：有当前句则显示歌词，否则歌手/专辑
+        String text = (lyricHint != null && !lyricHint.isEmpty()) ? lyricHint : sub;
         Intent open = new Intent(this, com.fongmi.android.tv.music.ui.MusicActivity.class);
         PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -228,6 +237,39 @@ public final class MusicPlaybackService extends Service {
         return (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
     }
 
+    // ------------------------------------------------------------ 通知栏歌词
+
+    /** 换歌后异步拉 LRC 解析（失败/无词则通知显示歌手专辑）。 */
+    private void loadLyricForNotification(MusicMedia media) {
+        lyricLines = null;
+        lyricHint = "";
+        lastLyricPosMs = -1;
+        if (media == null) return;
+        MusicRepository.get().getLyric(media).whenComplete((lrc, error) -> {
+            List<LrcParser.Line> lines = (lrc == null) ? null : LrcParser.parse(lrc);
+            if (lines == null || lines.isEmpty()) return;
+            if (player == null || player.current() != media) return; // 已切歌，丢弃
+            lyricLines = lines;
+            lyricHint = lines.get(0).text; // 初始显示第一句或空白
+            postNotification();
+        });
+    }
+
+    /** 进度回调切句：歌词行变化才刷新通知（防每 500ms 都 notify）。 */
+    private void updateLyricNotification(long positionMs) {
+        List<LrcParser.Line> lines = lyricLines;
+        if (lines == null || lines.isEmpty()) return;
+        int idx = LrcParser.indexOf(lines, positionMs);
+        if (idx < 0) return;
+        String text = lines.get(idx).text;
+        if (text.isEmpty()) return;
+        // 位置未跨句（500ms 粒度内）且 hint 未变则跳过，避免无谓通知刷新
+        if (Math.abs(positionMs - lastLyricPosMs) < 700 && text.equals(lyricHint)) return;
+        lastLyricPosMs = positionMs;
+        lyricHint = text;
+        postNotification();
+    }
+
     private void postNotification() {
         if (player != null) getNotificationManager().notify(NOTIFY_ID, buildNotification(player.isPlaying(), player.current()));
     }
@@ -238,6 +280,9 @@ public final class MusicPlaybackService extends Service {
 
         @Override
         public void onMusicChanged(MusicMedia media) {
+            // 最近播放记录（换歌即记，与服务无关性 UI 均可）
+            if (media != null) MusicLibrary.get().record(media);
+            loadLyricForNotification(media);
             postNotification();
             if (listener != null) listener.onMusicChanged(media);
         }
@@ -260,6 +305,7 @@ public final class MusicPlaybackService extends Service {
 
         @Override
         public void onProgress(long positionMs, long durationMs) {
+            updateLyricNotification(positionMs);
             if (listener != null) listener.onProgress(positionMs, durationMs);
         }
 

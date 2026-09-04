@@ -71,7 +71,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.bumptech.glide.Glide
 import com.fongmi.android.tv.R
+import com.fongmi.android.tv.music.core.LrcParser
 import com.fongmi.android.tv.music.core.MusicDownloader
+import com.fongmi.android.tv.music.core.MusicLibrary
 import com.fongmi.android.tv.music.model.MusicMedia
 import com.fongmi.android.tv.music.model.RepeatMode
 import com.fongmi.android.tv.music.plugin.MusicRepository
@@ -113,6 +115,11 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var importing by mutableStateOf(false)
         // 下载状态（MusicDownloader 回调递增触发重绘）
         var downloadTick by mutableStateOf(0)
+        // 收藏/最近播放
+        var favorites by mutableStateOf<List<MusicMedia>>(emptyList())
+        var history by mutableStateOf<List<MusicMedia>>(emptyList())
+        var libraryTick by mutableStateOf(0)
+        var libraryDialogVisible by mutableStateOf(false)
     }
 
     private val ui = UiState()
@@ -160,6 +167,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         super.onCreate(savedInstanceState)
         // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
         MusicRepository.get().init(this)
+        MusicLibrary.get().init(this)
+        refreshLibrary()
         MusicDownloader.get().init(this)
         MusicDownloader.get().setListener(object : MusicDownloader.Listener {
             override fun onStateChanged() {
@@ -187,6 +196,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onSearch = { search(it) },
                     onPlayAt = { index -> playAt(index) },
                     onDownloadAt = { index -> downloadAt(index) },
+                    onFavoriteAt = { index -> toggleFavoriteAt(index) },
+                    onOpenLibrary = { ui.libraryDialogVisible = true },
+                    onPlayLibrary = { list, index -> playLibrary(list, index) },
+                    onUnfavLibrary = { media -> toggleFavorite(media) },
                     onToggleLyric = ::toggleLyric,
                     onCycleMode = ::cycleMode,
                     onSeek = ::seekTo,
@@ -327,6 +340,35 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun downloadAt(index: Int) {
         val media = ui.results.getOrNull(index) ?: return
         MusicDownloader.get().download(media)
+    }
+
+    // ------------------------------------------------------------ 收藏/最近播放
+
+    /** 刷新收藏与最近播放（持久化数据 → UI state）。 */
+    private fun refreshLibrary() {
+        ui.favorites = MusicLibrary.get().favorites()
+        ui.history = MusicLibrary.get().history()
+        ui.libraryTick = ui.libraryTick + 1
+    }
+
+    /** 切换当前行收藏状态，并同步到 UI（无序遍历安全）。 */
+    private fun toggleFavoriteAt(index: Int) {
+        val media = ui.results.getOrNull(index) ?: return
+        MusicLibrary.get().toggleFavorite(media)
+        refreshLibrary()
+    }
+
+    /** 切换收藏（收藏/历史弹窗内播放项点击）。 */
+    private fun toggleFavorite(media: MusicMedia) {
+        MusicLibrary.get().toggleFavorite(media)
+        refreshLibrary()
+    }
+
+    /** 播放收藏/历史中的一项（service 队列整表装载，从 index 起播）。 */
+    private fun playLibrary(list: List<MusicMedia>, index: Int) {
+        val s = service ?: return
+        if (list.isEmpty() || index !in list.indices) return
+        s.play(ArrayList(list), index)
     }
 
     private fun friendly(t: Throwable): String {
@@ -538,6 +580,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onSearch: (String) -> Unit,
         onPlayAt: (Int) -> Unit,
         onDownloadAt: (Int) -> Unit,
+        onFavoriteAt: (Int) -> Unit,
+        onOpenLibrary: () -> Unit,
+        onPlayLibrary: (List<MusicMedia>, Int) -> Unit,
+        onUnfavLibrary: (MusicMedia) -> Unit,
         onToggleLyric: () -> Unit,
         onCycleMode: () -> Unit,
         onSeek: (Float) -> Unit,
@@ -553,7 +599,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             Column(Modifier.fillMaxSize().padding(vertical = 8.dp)) {
-                SearchBar(keyword, { keyword = it }) { onSearch(keyword) }
+                SearchBar(keyword, { keyword = it }, onSearch = { onSearch(keyword) }, onOpenLibrary = onOpenLibrary)
                 if (ui.searching) {
                     CircularProgressIndicator(
                         Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(28.dp)
@@ -561,9 +607,11 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 }
                 ResultList(
                     items = ui.results,
+                    libraryTick = ui.libraryTick,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     onPlayAt = onPlayAt,
                     onDownloadAt = onDownloadAt,
+                    onFavoriteAt = onFavoriteAt,
                 )
                 HorizontalDivider(color = Color(0xFF333333))
                 PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources)
@@ -588,13 +636,22 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 onImport = onImportPlugin,
             )
         }
+        if (ui.libraryDialogVisible) {
+            LibraryDialog(
+                favorites = ui.favorites,
+                history = ui.history,
+                onClose = { ui.libraryDialogVisible = false },
+                onPlay = onPlayLibrary,
+                onUnfavorite = onUnfavLibrary,
+            )
+        }
         if (ui.messageVisible) {
             MessageDialog(text = ui.messageText, onClose = onCloseMessage)
         }
     }
 
     @Composable
-    private fun SearchBar(value: String, onChange: (String) -> Unit, onSearch: () -> Unit) {
+    private fun SearchBar(value: String, onChange: (String) -> Unit, onSearch: () -> Unit, onOpenLibrary: () -> Unit) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -611,11 +668,21 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             )
             Spacer(Modifier.width(8.dp))
             Button(onClick = onSearch) { Text("搜索") }
+            Spacer(Modifier.width(2.dp))
+            IconButton(onClick = onOpenLibrary) {
+                Icon(
+                    painterResource(R.drawable.ic_favorite),
+                    contentDescription = "我的音乐",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 
     @Composable
-    private fun ResultList(items: List<MusicMedia>, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit) {
+    private fun ResultList(items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit) {
+        @Suppress("UNUSED_EXPRESSION")
+        libraryTick // 观察收藏变化：切换收藏后重绘心形图标
         LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
             itemsIndexed(items) { index, media ->
                 val vip = media.vip
@@ -658,6 +725,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     }
                     Spacer(Modifier.width(8.dp))
                     Text(fmt(media.durationMs), fontSize = 12.sp, color = Color(0xFF777777))
+                    // 收藏按钮：已收藏红色高亮，点击切换
+                    IconButton(
+                        onClick = { onFavoriteAt(index) },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        val isFav = MusicLibrary.get().isFavorite(media)
+                        Icon(
+                            painterResource(R.drawable.ic_favorite),
+                            contentDescription = "收藏",
+                            tint = if (isFav) Color(0xFFFF4081) else Color(0xFF666666),
+                        )
+                    }
                     // 下载按钮：下载中转圈，完成后变色；VIP 歌标记不可下载
                     if (!vip) {
                         IconButton(
@@ -931,6 +1010,113 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 )
             }
         }
+    }
+
+    /** 我的音乐弹窗：收藏 / 最近播放 双 Tab。点击项整表装载播放；收藏 Tab 可取消收藏。 */
+    @Composable
+    private fun LibraryDialog(
+        favorites: List<MusicMedia>,
+        history: List<MusicMedia>,
+        onClose: () -> Unit,
+        onPlay: (List<MusicMedia>, Int) -> Unit,
+        onUnfavorite: (MusicMedia) -> Unit,
+    ) {
+        var tab by remember { mutableStateOf(0) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text(
+                    "我的音乐",
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    LibraryTab("收藏 (${favorites.size})", tab == 0) { tab = 0 }
+                    Spacer(Modifier.width(16.dp))
+                    LibraryTab("最近播放 (${history.size})", tab == 1) { tab = 1 }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 6.dp))
+                val items = if (tab == 0) favorites else history
+                if (items.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (tab == 0) "暂无收藏" else "暂无播放记录",
+                            fontSize = 13.sp,
+                            color = Color(0xFF666666),
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 4.dp),
+                    ) {
+                        itemsIndexed(items) { index, media ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable { onPlay(items, index) }
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        media.title,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFFDDDDDD),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        listOfNotNull(media.artist.takeIf { it.isNotEmpty() }, media.album.takeIf { it.isNotEmpty() })
+                                            .joinToString(" · ").ifEmpty { media.source },
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF888888),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Text(fmt(media.durationMs), fontSize = 11.sp, color = Color(0xFF666666))
+                                if (tab == 0) {
+                                    IconButton(
+                                        onClick = { onUnfavorite(media) },
+                                        modifier = Modifier.size(34.dp),
+                                    ) {
+                                        Icon(
+                                            painterResource(R.drawable.ic_favorite),
+                                            contentDescription = "取消收藏",
+                                            tint = Color(0xFFFF4081),
+                                        )
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = Color(0x1AFFFFFF))
+                        }
+                    }
+                }
+                Text(
+                    "点击下方关闭",
+                    fontSize = 12.sp,
+                    color = Color(0xFF555555),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
+                        .padding(vertical = 10.dp),
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun LibraryTab(text: String, selected: Boolean, onClick: () -> Unit) {
+        Text(
+            text,
+            fontSize = 14.sp,
+            color = if (selected) MaterialTheme.colorScheme.primary else Color(0xFF888888),
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 6.dp),
+        )
     }
 
     @Composable
