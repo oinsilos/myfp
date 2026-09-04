@@ -70,6 +70,8 @@ public final class MusicRepository {
     private volatile Plugin current;
     private volatile boolean initialised;
     private volatile Context context;
+    /** 内置插件加载完成信号（UI 等此 future 后再发起搜索，避免主线程阻塞引擎初始化）。 */
+    private final CompletableFuture<Void> ready = new CompletableFuture<>();
 
     private MusicRepository() {
     }
@@ -83,24 +85,42 @@ public final class MusicRepository {
         return instance;
     }
 
-    /** 绑定 Context 后首次调用触发插件加载（幂等）。内置同步加载；导入插件异步补载。 */
+    /**
+     * 绑定 Context 后首次调用触发插件加载（幂等）。
+     * 全部在后台线程执行：Rhino 引擎初始化/插件求值可能较慢（低端机、模拟器尤甚），
+     * 不能阻塞 UI 线程（会造成 ANR「点进去就卡死」）。就绪后 {@link #ready()} 完成。
+     */
     public synchronized void init(Context context) {
         if (initialised) return;
-        this.context = context.getApplicationContext();
-        for (String name : BUILTIN) {
-            String code = Asset.read("music/" + name);
-            if (code != null && !code.isEmpty()) {
-                if (addLoaded("内置:" + name, code, true)) Log.d(TAG, "loaded builtin " + name);
-            } else {
-                Log.w(TAG, "builtin missing assets/music/" + name);
-            }
-        }
-        loadImportsAsync();
-        if (current == null && !plugins.isEmpty()) current = plugins.get(0);
         initialised = true;
+        this.context = context.getApplicationContext();
+        io.submit(() -> {
+            try {
+                for (String name : BUILTIN) {
+                    String code = Asset.read("music/" + name);
+                    if (code != null && !code.isEmpty()) {
+                        if (addLoaded("内置:" + name, code, true)) Log.d(TAG, "loaded builtin " + name);
+                    } else {
+                        Log.w(TAG, "builtin missing assets/music/" + name);
+                    }
+                }
+                loadImportsAsync();
+                if (current == null && !plugins.isEmpty()) current = plugins.get(0);
+            } catch (Throwable e) {
+                Log.w(TAG, "init plugins failed", e);
+            } finally {
+                ready.complete(null);
+            }
+        });
     }
 
-    public boolean ready() {
+    /** 内置插件加载完成 future（导入插件为尽力而为，不影响该 future）。 */
+    public CompletableFuture<Void> readyFuture() {
+        return ready;
+    }
+
+    /** init 是否已启动（用于界面早期检查，不建议阻塞等待）。 */
+    public boolean started() {
         return initialised;
     }
 

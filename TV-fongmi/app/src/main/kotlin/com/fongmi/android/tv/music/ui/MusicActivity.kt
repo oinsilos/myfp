@@ -154,6 +154,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
         MusicRepository.get().init(this)
         refreshSourceInfo()
         setContent {
@@ -185,7 +186,14 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             }
         }
         startAndBindService()
-        search("周杰伦")
+        // 先渲染 UI，等插件引擎就绪（readyFuture）后再自动搜索，避免首帧卡顿
+        MusicRepository.get().readyFuture().whenComplete { _, _ ->
+            runOnUiThread {
+                refreshSourceInfo()
+                if (ui.stateText == "idle" || ui.stateText.contains("music ")) ui.stateText = "ready"
+                search("周杰伦")
+            }
+        }
     }
 
     /** 刷新音源列表与当前源显示。 */
