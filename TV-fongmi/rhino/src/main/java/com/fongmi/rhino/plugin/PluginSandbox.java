@@ -8,6 +8,7 @@ import com.github.catvod.utils.Asset;
 
 import org.htmlunit.corejs.javascript.Context;
 import org.htmlunit.corejs.javascript.Function;
+import org.htmlunit.corejs.javascript.InstructionObserver;
 import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
 import org.htmlunit.corejs.javascript.VarScope;
@@ -36,6 +37,11 @@ public final class PluginSandbox {
     private volatile Scriptable instance;
     private volatile boolean ready;
     private volatile boolean destroyed;
+    /** 本次脚本执行的硬性截止时间（毫秒，0=不限）。指令计数观察者据此中断失控脚本，
+     *  避免 JS 死循环/超长计算把沙箱线程占死——模拟器/低端机上整机 CPU 被吃满最终拖垮进程（卡退主界面）。 */
+    private volatile long deadline;
+    private static final long CALL_TIMEOUT_MS = 30_000L;
+    private static final long LOAD_TIMEOUT_MS = 60_000L;
     /**
      * 沙箱线程标记：单线程 executor 的所有任务（含 __tick 泵送的微任务 flush）开始时写入当前线程。
      * stringify 等「submit().get()」路径据此判断是否重入——重入时直接内联执行，
@@ -253,6 +259,14 @@ public final class PluginSandbox {
         cx = Context.enter();
         cx.setOptimizationLevel(-1); // 解释模式：体积与兼容优先
         cx.setLanguageVersion(Context.VERSION_ES6);
+        // 失控脚本保护：解释模式下按指令计数回调，超时抛 Error 中断当前执行，避免沙箱线程被死循环占死
+        cx.setObserver((c, count) -> {
+            long d = deadline;
+            if (d > 0 && System.currentTimeMillis() > d) {
+                throw new Error("rhino script execution timeout (deadline=" + d + ")");
+            }
+        });
+        cx.setInstructionObserverThreshold(50_000);
         scope = (VarScope) cx.initStandardObjects();
         if (!ScriptableObject.hasProperty(scope, "globalThis")) ScriptableObject.putProperty(scope, "globalThis", scope);
         // Global 桥：console/setTimeout/req/_http/加解密/__tick（Promise 微任务泵送）等

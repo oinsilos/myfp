@@ -13,6 +13,9 @@ import androidx.annotation.Nullable;
 import androidx.core.os.HandlerCompat;
 
 import com.fongmi.android.tv.utils.Notify;
+
+import java.io.File;
+
 import com.fongmi.hook.Hook;
 import com.github.catvod.Init;
 import com.google.gson.Gson;
@@ -81,8 +84,30 @@ public class App extends Application implements Application.ActivityLifecycleCal
     @Override
     public void onCreate() {
         super.onCreate();
+        installCrashLog();
         Notify.createChannel();
         registerActivityLifecycleCallbacks(this);
+    }
+
+    /** 崩溃堆栈落盘（filesDir/logs/crash_*.txt），链式保留 Caoc 原处理器。
+     * 模拟器/低端机上进程常被 LMK/OOM/ANR 直接杀死——那种场景 Java 崩溃器不触发，
+     * 这里的日志能辅助区分「Java 崩溃」与「进程被杀」。 */
+    private void installCrashLog() {
+        Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try {
+                File dir = new File(getFilesDir(), "logs");
+                if (dir.exists() || dir.mkdirs()) {
+                    File f = new File(dir, "crash_" + System.currentTimeMillis() + ".txt");
+                    try (java.io.PrintWriter w = new java.io.PrintWriter(new java.io.FileWriter(f))) {
+                        w.println("thread=" + thread.getName() + " time=" + new java.util.Date());
+                        throwable.printStackTrace(w);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            if (prev != null) prev.uncaughtException(thread, throwable);
+        });
     }
 
     @Override
