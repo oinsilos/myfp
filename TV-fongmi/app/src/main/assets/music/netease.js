@@ -83,14 +83,26 @@
         version: '0.2.1',
         appVersion: '^0.0.1',
         fullVersion: '0.2.1',
-        // 搜索：keyword / page(1 起) / type
+        // 搜索：keyword / page(1 起) / type。公开接口带 cookie 提成功率；
+        // 返回空集时自动 weapi cloudsearch 兜底（listen1/落雪同款，风控更松），避免弱网/风控下误报「未找到」。
         async search(keyword, page, type) {
             var resp = await axios.get(SEARCH_URL, {
                 params: { s: keyword, limit: 30, p: page || 1, type: type || 1 },
-                headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
             });
             var result = resp.data && resp.data.result;
             var songs = (result && result.songs) || [];
+            if (!songs.length) {
+                try {
+                    var we = webWeapi({ s: keyword, type: type || 1, limit: 30, offset: ((page || 1) - 1) * 30, total: true });
+                    var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
+                    var wr = await axios.post('https://music.163.com/weapi/cloudsearch/get/pc', body, {
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
+                    });
+                    var ws = wr.data && wr.data.result && wr.data.result.songs;
+                    if (ws && ws.length) songs = ws;
+                } catch (e2) { /* 兜底失败即返回空 */ }
+            }
             // 专辑封面回填：搜索接口的 album 已不带 picUrl（只有 picId），
             // 批量 song/detail 换取 https 直链封面；失败则不阻断搜索（fallback 歌手图）。
             var detailMap = null;

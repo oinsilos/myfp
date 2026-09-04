@@ -89,25 +89,50 @@ public class App extends Application implements Application.ActivityLifecycleCal
         registerActivityLifecycleCallbacks(this);
     }
 
-    /** 崩溃堆栈落盘（filesDir/logs/crash_*.txt），链式保留 Caoc 原处理器。
+    /** 崩溃堆栈落盘（filesDir/logs + 外部共享 logs 双写），链式保留 Caoc 原处理器。
      * 模拟器/低端机上进程常被 LMK/OOM/ANR 直接杀死——那种场景 Java 崩溃器不触发，
-     * 这里的日志能辅助区分「Java 崩溃」与「进程被杀」。 */
+     * 这里的日志能辅助区分「Java 崩溃」与「进程被杀」。
+     * 外部路径（getExternalFilesDir）无需 root，文件管理器/MT管理器即可浏览导出。 */
     private void installCrashLog() {
         Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            String stack = stackTrace(thread, throwable);
+            writeCrashLog(appendLog(new File(getFilesDir(), "logs"), stack));
             try {
-                File dir = new File(getFilesDir(), "logs");
-                if (dir.exists() || dir.mkdirs()) {
-                    File f = new File(dir, "crash_" + System.currentTimeMillis() + ".txt");
-                    try (java.io.PrintWriter w = new java.io.PrintWriter(new java.io.FileWriter(f))) {
-                        w.println("thread=" + thread.getName() + " time=" + new java.util.Date());
-                        throwable.printStackTrace(w);
-                    }
-                }
+                File ext = getExternalFilesDir(null);
+                if (ext != null) writeCrashLog(appendLog(new File(ext, "logs"), stack));
             } catch (Throwable ignored) {
             }
             if (prev != null) prev.uncaughtException(thread, throwable);
         });
+    }
+
+    private static File appendLog(File dir, String stack) {
+        try {
+            if (dir.exists() || dir.mkdirs()) {
+                File f = new File(dir, "crash_" + System.currentTimeMillis() + ".txt");
+                try (java.io.PrintWriter w = new java.io.PrintWriter(new java.io.FileWriter(f))) {
+                    w.print(stack);
+                }
+                return f;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static void writeCrashLog(File f) {
+        if (f != null) android.util.Log.e("CrashLog", "crash log: " + f);
+    }
+
+    private static String stackTrace(Thread thread, Throwable throwable) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("thread=").append(thread.getName())
+                .append(" time=").append(new java.util.Date()).append('\n');
+        java.io.StringWriter sw = new java.io.StringWriter();
+        throwable.printStackTrace(new java.io.PrintWriter(sw));
+        sb.append(sw);
+        return sb.toString();
     }
 
     @Override
