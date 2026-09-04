@@ -156,7 +156,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         super.onCreate(savedInstanceState)
         // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
         MusicRepository.get().init(this)
-        refreshSourceInfo()
+        // 插件未就绪前的占位：显示「加载中…」而不是误导性的 unknown；readyFuture 完成后刷新为真实音源
+        ui.currentSource = "加载中…"
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
@@ -190,16 +191,28 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         MusicRepository.get().readyFuture().whenComplete { _, _ ->
             runOnUiThread {
                 refreshSourceInfo()
+                val p = MusicRepository.get().platform()
+                if (p.isEmpty()) {
+                    // 源加载失败：不发起无谓搜索，状态栏直接展示原因（音源弹窗可见完整列表）
+                    val errs = MusicRepository.get().loadErrors()
+                    ui.stateText = if (errs.isEmpty()) "源加载失败" else "源加载失败：" + errs.first().take(80)
+                    return@runOnUiThread
+                }
                 if (ui.stateText == "idle" || ui.stateText.contains("music ")) ui.stateText = "ready"
                 search("周杰伦")
             }
         }
     }
 
-    /** 刷新音源列表与当前源显示。 */
+    /** 刷新音源列表与当前源显示（插件为加载完成前显示「加载中…」，失败显示「加载失败」并附原因）。 */
     private fun refreshSourceInfo() {
         ui.sources = MusicRepository.get().plugins()
-        ui.currentSource = MusicRepository.get().platform().ifEmpty { "unknown" }
+        val p = MusicRepository.get().platform()
+        ui.currentSource = when {
+            p.isNotEmpty() -> p
+            MusicRepository.get().loadErrors().isNotEmpty() -> "加载失败"
+            else -> "加载中…"
+        }
     }
 
     private fun switchSource(platform: String) {
@@ -785,6 +798,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // 内置/导入插件加载失败时展示具体原因（定位 Rhino/转译/网络问题）
+                val loadErrs = MusicRepository.get().loadErrors()
+                if (loadErrs.isNotEmpty()) {
+                    Text(
+                        "源加载失败：\n" + loadErrs.joinToString("\n"),
+                        fontSize = 11.sp,
+                        color = Color(0xFFFF8A80),
+                        textAlign = TextAlign.Start,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
+                    )
+                    HorizontalDivider(color = Color(0x22FFFFFF))
+                }
                 Column(
                     Modifier.weight(1f).fillMaxWidth()
                         .verticalScroll(rememberScrollState())

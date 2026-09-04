@@ -66,6 +66,8 @@ public final class MusicRepository {
     }
 
     private final List<Plugin> plugins = new ArrayList<>();
+    /** 插件/初始化失败记录（供 UI 展示具体原因，不吞错误）。 */
+    private final List<String> loadErrors = new ArrayList<>();
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private volatile Plugin current;
     private volatile boolean initialised;
@@ -238,8 +240,38 @@ public final class MusicRepository {
             return true;
         } catch (Throwable e) {
             Log.w(TAG, "plugin load failed: " + label, e);
+            recordLoadError(label + ": " + brief(e));
             return false;
         }
+    }
+
+    /** 全部插件的加载失败记录（供音源弹窗/状态栏显示排查原因）。 */
+    public List<String> loadErrors() {
+        synchronized (this) {
+            return new ArrayList<>(loadErrors);
+        }
+    }
+
+    private void recordLoadError(String text) {
+        synchronized (this) {
+            loadErrors.add(text);
+        }
+        // 持久化到外部日志（无 root 也可用文件管理器查看），便于用户回传排查
+        try {
+            Context ctx = context;
+            File dir = ctx == null ? null : new File(ctx.getExternalFilesDir(null), "logs");
+            if (dir != null && (dir.exists() || dir.mkdirs())) {
+                try (java.io.FileWriter w = new java.io.FileWriter(new File(dir, "plugin_load.txt"), true)) {
+                    w.append(String.valueOf(System.currentTimeMillis())).append(' ').append(text).append('\n');
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String brief(Throwable e) {
+        String m = e.getMessage();
+        return (m == null || m.isEmpty()) ? e.toString() : m;
     }
 
     /** 按 media.source 路由插件；空/未命中回退当前源。 */
