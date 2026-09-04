@@ -1,9 +1,8 @@
 package com.fongmi.android.tv.reader;
 
 import org.htmlunit.corejs.javascript.Context;
-import org.htmlunit.corejs.javascript.NativeJSON;
-import org.htmlunit.corejs.javascript.Scriptable;
 import org.htmlunit.corejs.javascript.ScriptableObject;
+import org.htmlunit.corejs.javascript.VarScope;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
@@ -127,10 +126,12 @@ public final class RuleExecutor {
         Context cx = Context.enter();
         try {
             cx.setOptimizationLevel(-1);
-            Scriptable scope = cx.initStandardObjects();
+            // corejs 的 initStandardObjects 返回 VarScope（scope 基类），句式与 rhino 模块 PluginSandbox 一致
+            VarScope scope = (VarScope) cx.initStandardObjects();
             if (bookJson != null && !bookJson.isEmpty()) {
                 try {
-                    Scriptable book = NativeJSON.parse(cx, scope, bookJson, null, 1);
+                    // JSON 字面量即合法 JS 表达式：直接求值注入 book 变量（避开 NativeJSON 私有/版本化 API）
+                    Object book = cx.evaluateString(scope, "(" + bookJson + ")", "bookJson", 1, null);
                     ScriptableObject.putProperty(scope, "book", book);
                 } catch (Exception ignored) {
                 }
