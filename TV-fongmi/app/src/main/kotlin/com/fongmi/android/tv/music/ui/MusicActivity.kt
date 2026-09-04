@@ -76,6 +76,7 @@ import com.fongmi.android.tv.music.model.RepeatMode
 import com.fongmi.android.tv.music.plugin.MusicRepository
 import com.fongmi.android.tv.music.service.MusicPlaybackService
 import com.fongmi.android.tv.utils.Notify
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -278,12 +279,28 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 handler.removeCallbacksAndMessages(null)
                 ui.searching = false
                 if (error != null) {
+                    logSearch("search_error", "kw=$lastKeyword err=${friendly(error)}")
                     Notify.show("搜索失败：" + friendly(error))
                 } else {
                     ui.results = list ?: emptyList()
-                    if (ui.results.isEmpty()) Notify.show("未找到相关歌曲")
+                    if (ui.results.isEmpty()) {
+                        logSearch("search_empty", "kw=$lastKeyword src=${MusicRepository.get().platform()}")
+                        Notify.show("未找到相关歌曲")
+                    }
                 }
             }
+        }
+    }
+
+    /** 搜索链路现场落盘（外部 logs/search.log），便于排查“转圈/未找到”的具体失败原因。 */
+    private fun logSearch(tag: String, detail: String) {
+        try {
+            val dir = getExternalFilesDir(null)?.let { File(it, "logs") } ?: return
+            if (!dir.exists()) dir.mkdirs()
+            File(dir, "search.log").appendText(
+                System.currentTimeMillis().toString() + " [" + tag + "] " + detail + "\n"
+            )
+        } catch (_: Throwable) {
         }
     }
 

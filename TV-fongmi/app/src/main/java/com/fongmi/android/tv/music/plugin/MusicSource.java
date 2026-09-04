@@ -23,12 +23,17 @@ import java.util.concurrent.CompletionException;
 public final class MusicSource {
 
     private final PluginSandbox sandbox = PluginSandbox.create();
-    private boolean loaded;
+    private volatile boolean loaded;
+    /** load 时缓存的插件名/版本（io 线程取一次，之后纯字段读取，避免主线程轮询沙箱线程）。 */
+    private volatile String platform = "";
+    private volatile String version = "";
 
     /** 加载插件源码（唯一入口，失败抛 Runtime）。 */
     public synchronized void load(String pluginJs) {
         if (loaded) return;
         sandbox.load(pluginJs);
+        platform = sandbox.platformName();
+        version = sandbox.versionName();
         loaded = true;
     }
 
@@ -36,14 +41,14 @@ public final class MusicSource {
         return loaded;
     }
 
-    /** 插件名（load 后可用）。 */
+    /** 插件名（load 后可用；缓存读取，不触碰沙箱线程）。 */
     public String platform() {
-        return loaded ? sandbox.platformName() : "";
+        return platform;
     }
 
-    /** 插件版本（load 后可用）。 */
+    /** 插件版本（load 后可用；缓存读取，不触碰沙箱线程）。 */
     public String version() {
-        return loaded ? sandbox.versionName() : "";
+        return version;
     }
 
     /**

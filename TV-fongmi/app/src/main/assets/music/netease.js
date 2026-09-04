@@ -6,64 +6,9 @@
     'use strict';
 
     var axios = require('axios');
-    // weapi 加密宿主库：crypto-js 在 Rhino 走全局副作用（require 返回空对象），big-int 两个环境都返回真对象
-    require('crypto-js');
-    require('big-integer');
-    var CryptoJS = (typeof globalThis !== 'undefined' && globalThis.CryptoJS) ? globalThis.CryptoJS : require('crypto-js');
-    var bigInt = require('big-integer');
 
     var SEARCH_URL = 'https://music.163.com/api/search/get';
     var COMMON_UA = 'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36';
-
-    // ---- 网易云 weapi（与 listen1/落雪同款公式；无需登录取歌词，VIP 歌也能拿词）----
-    var NONCE = '0CoJUm6Qyw8W8jud';
-    var PUBKEY = '010001';
-    var AUTH_IV = '0102030405060708';
-    var MODULUS = '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab' +
-        '17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d' +
-        '05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc' +
-        '6935b3ece0462db0a22b8e7';
-
-    function createSecretKey(size) {
-        var chars = '012345679abcdef'.split('');
-        var out = [];
-        for (var i = 0; i < size; i++) out.push(chars[Math.floor(Math.random() * chars.length)]);
-        return out.join('');
-    }
-
-    function webAesCbc(text, keyStr) {
-        return CryptoJS.AES.encrypt(text, CryptoJS.enc.Utf8.parse(keyStr), {
-            iv: CryptoJS.enc.Utf8.parse(AUTH_IV),
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-        }).toString();
-    }
-
-    function webRsaEncrypt(text) {
-        var hex = [];
-        var reversed = text.split('').reverse().join('');
-        for (var i = 0; i < reversed.length; i++) {
-            var b = reversed.charCodeAt(i).toString(16);
-            hex.push(b.length < 2 ? '0' + b : b);
-        }
-        var enc = bigInt(hex.join(''), 16).modPow(bigInt(PUBKEY, 16), bigInt(MODULUS, 16)).toString(16);
-        while (enc.length < 256) enc = '0' + enc;
-        return enc;
-    }
-
-    function webWeapi(d) {
-        var sk = createSecretKey(16);
-        var params = webAesCbc(webAesCbc(JSON.stringify(d), NONCE), sk);
-        return { params: params, encSecKey: webRsaEncrypt(sk) };
-    }
-
-    function webApiPost(path, d) {
-        var we = webWeapi(d);
-        var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
-        return axios.post('https://music.163.com' + path, body, {
-            headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
-        });
-    }
 
     function outerUrl(songId) {
         return 'https://music.163.com/song/media/outer/url?id=' + songId + '.mp3';
@@ -80,11 +25,12 @@
 
     module.exports = {
         platform: 'netease',
-        version: '0.2.1',
+        version: '0.3.0',
         appVersion: '^0.0.1',
-        fullVersion: '0.2.1',
-        // 搜索：keyword / page(1 起) / type。公开接口带 cookie 提成功率；
-        // 返回空集时自动 weapi cloudsearch 兜底（listen1/落雪同款，风控更松），避免弱网/风控下误报「未找到」。
+        fullVersion: '0.3.0',
+        // 搜索：keyword / page(1 起) / type。公开接口带 cookie 提成功率。
+        // 注意：不做 weapi 搜索兜底——4096-bit RSA 模幂在 Rhino 解释模式+模拟器翻译层下
+        // 要跑几十秒，会把沙箱线程占死导致整机卡死（进音乐页转圈→进程被杀）。空结果直接返回。
         async search(keyword, page, type) {
             var resp = await axios.get(SEARCH_URL, {
                 params: { s: keyword, limit: 30, p: page || 1, type: type || 1 },
@@ -92,17 +38,6 @@
             });
             var result = resp.data && resp.data.result;
             var songs = (result && result.songs) || [];
-            if (!songs.length) {
-                try {
-                    var we = webWeapi({ s: keyword, type: type || 1, limit: 30, offset: ((page || 1) - 1) * 30, total: true });
-                    var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
-                    var wr = await axios.post('https://music.163.com/weapi/cloudsearch/get/pc', body, {
-                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
-                    });
-                    var ws = wr.data && wr.data.result && wr.data.result.songs;
-                    if (ws && ws.length) songs = ws;
-                } catch (e2) { /* 兜底失败即返回空 */ }
-            }
             // 专辑封面回填：搜索接口的 album 已不带 picUrl（只有 picId），
             // 批量 song/detail 换取 https 直链封面；失败则不阻断搜索（fallback 歌手图）。
             var detailMap = null;
@@ -168,35 +103,30 @@
             // 兜底：公开外链（无明显版权问题的 CDN 直链仍可放）
             return { url: outerUrl(songId) };
         },
-        // 歌词：优先 weapi（listen1/落雪同款，未收录/VIP 歌也能返回歌词；带 os/appver cookie 提升成功率），
-        //      失败自动 fallback 公开接口。任一接口拿到有效 LRC 即返回；多个接口都判定无词返回 null；
-        //      全部接口网络异常才抛 Error（UI 可见原因）。
+        // 歌词：公开接口（带 cookie）。不做 weapi——重 RSA 加密在 Rhino 解释模式+模拟器下卡死沙箱线程。
+        // (VIP/未收录歌公开接口返回 uncollected → null，UI 显示「暂无歌词」)
         async getLyric(musicItem) {
             var songId = (musicItem && musicItem.songId) || (musicItem && musicItem.id);
             if (!songId) return null;
-            var attempts = [];
-            var we = webWeapi({ id: String(songId), lv: -1, tv: -1, csrf_token: '' });
-            attempts.push({
-                do: function () {
-                    var body = 'params=' + encodeURIComponent(we.params) + '&encSecKey=' + encodeURIComponent(we.encSecKey);
-                    return axios.post('https://music.163.com/weapi/song/lyric?csrf_token=', body, {
-                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
-                    });
-                }
-            });
-            attempts.push({
-                do: function () {
+            var attempts = [
+                function () {
                     return axios.get('https://music.163.com/api/song/lyric', {
                         params: { id: String(songId), lv: -1, kv: -1, tv: -1, os: 'pc' },
                         headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/', Cookie: 'os=pc; appver=8.9.40' }
                     });
+                },
+                function () {
+                    return axios.get('https://music.163.com/api/song/lyric', {
+                        params: { id: String(songId), lv: -1, kv: -1, tv: -1, os: 'linux' },
+                        headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
+                    });
                 }
-            });
+            ];
             var noLyric = false;
             var last = '';
             for (var i = 0; i < attempts.length; i++) {
                 try {
-                    var resp = await attempts[i].do();
+                    var resp = await attempts[i]();
                     var body = resp.data;
                     if (body && typeof body === 'object') {
                         if (body.nolyric || body.uncollected) {
