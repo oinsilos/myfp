@@ -98,22 +98,27 @@ public final class PluginSandbox {
         ready();
         try {
             return executor.submit(() -> mark(() -> {
-                String content = Transpile.toCommonJs(code);
-                // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
-                // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
-                String wrapped = "(function(){\n'use strict';\nvar __module = { exports: {} };\n"
-                        + "(function(require, __musicfree_require, module, exports, console, env, URL, process) {\n"
-                        + content
-                        + "\n})(__mf_require_js, __mf_require_js, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
-                        + "return __module.exports;\n})();";
-                Object obj = cx.evaluateString(scope, wrapped, "plugin.js", 1, null);
-                this.instance = obj instanceof Scriptable ? (Scriptable) obj : (Scriptable) cx.newObject(scope);
-                // babel 转译产物兼容：exports.default
-                Object def = ScriptableObject.getProperty(this.instance, "default");
-                if (def instanceof Scriptable) this.instance = (Scriptable) def;
-                Object name = ScriptableObject.getProperty(this.instance, "platform");
-                if (host != null) host.setPluginName(name instanceof CharSequence ? name.toString() : "");
-                return this.instance;
+                deadline = System.currentTimeMillis() + LOAD_TIMEOUT_MS;
+                try {
+                    String content = Transpile.toCommonJs(code);
+                    // 与 RN evalSandbox 相同的 8 参注入顺序，保证插件可移植；
+                    // require 走 JS shim（__mf_require_js 查 script scope 槽），避免 Java 函数返回值丢失绑定
+                    String wrapped = "(function(){\n'use strict';\nvar __module = { exports: {} };\n"
+                            + "(function(require, __musicfree_require, module, exports, console, env, URL, process) {\n"
+                            + content
+                            + "\n})(__mf_require_js, __mf_require_js, __module, __module.exports, console, __mf_env, __mf_url, __mf_proc);\n"
+                            + "return __module.exports;\n})();";
+                    Object obj = cx.evaluateString(scope, wrapped, "plugin.js", 1, null);
+                    this.instance = obj instanceof Scriptable ? (Scriptable) obj : (Scriptable) cx.newObject(scope);
+                    // babel 转译产物兼容：exports.default
+                    Object def = ScriptableObject.getProperty(this.instance, "default");
+                    if (def instanceof Scriptable) this.instance = (Scriptable) def;
+                    Object name = ScriptableObject.getProperty(this.instance, "platform");
+                    if (host != null) host.setPluginName(name instanceof CharSequence ? name.toString() : "");
+                    return this.instance;
+                } finally {
+                    deadline = 0;
+                }
             })).get();
         } catch (Exception e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
@@ -126,6 +131,7 @@ public final class PluginSandbox {
     public CompletableFuture<Object> call(final String method, final Object... args) {
         final CompletableFuture<Object> future = new CompletableFuture<>();
         executor.submit(() -> mark(() -> {
+            deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS;
             try {
                 Async.run(cx, scope, instance, method, args).whenComplete((result, error) -> {
                     if (error != null) future.completeExceptionally(error);
@@ -133,6 +139,8 @@ public final class PluginSandbox {
                 });
             } catch (Throwable e) {
                 future.completeExceptionally(e);
+            } finally {
+                deadline = 0;
             }
             return null;
         }));
