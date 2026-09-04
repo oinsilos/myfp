@@ -71,6 +71,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.bumptech.glide.Glide
 import com.fongmi.android.tv.R
+import com.fongmi.android.tv.music.core.MusicDownloader
 import com.fongmi.android.tv.music.model.MusicMedia
 import com.fongmi.android.tv.music.model.RepeatMode
 import com.fongmi.android.tv.music.plugin.MusicRepository
@@ -110,6 +111,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var currentSource by mutableStateOf("netease")
         var sourceDialogVisible by mutableStateOf(false)
         var importing by mutableStateOf(false)
+        // 下载状态（MusicDownloader 回调递增触发重绘）
+        var downloadTick by mutableStateOf(0)
     }
 
     private val ui = UiState()
@@ -157,6 +160,16 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         super.onCreate(savedInstanceState)
         // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
         MusicRepository.get().init(this)
+        MusicDownloader.get().init(this)
+        MusicDownloader.get().setListener(object : MusicDownloader.Listener {
+            override fun onStateChanged() {
+                ui.downloadTick = ui.downloadTick + 1
+            }
+
+            override fun onProgress(key: String, percent: Int) {
+                ui.downloadTick = ui.downloadTick + 1
+            }
+        })
         // 插件未就绪前的占位：显示「加载中…」而不是误导性的 unknown；readyFuture 完成后刷新为真实音源
         ui.currentSource = "加载中…"
         setContent {
@@ -173,6 +186,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     ui = ui,
                     onSearch = { search(it) },
                     onPlayAt = { index -> playAt(index) },
+                    onDownloadAt = { index -> downloadAt(index) },
                     onToggleLyric = ::toggleLyric,
                     onCycleMode = ::cycleMode,
                     onSeek = ::seekTo,
@@ -307,6 +321,12 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun playAt(index: Int) {
         val s = service ?: return
         s.play(ArrayList(ui.results), index)
+    }
+
+    /** 下载第 index 首：交给 MusicDownloader（内部去重/取 URL/进度）。 */
+    private fun downloadAt(index: Int) {
+        val media = ui.results.getOrNull(index) ?: return
+        MusicDownloader.get().download(media)
     }
 
     private fun friendly(t: Throwable): String {
@@ -517,6 +537,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         ui: UiState,
         onSearch: (String) -> Unit,
         onPlayAt: (Int) -> Unit,
+        onDownloadAt: (Int) -> Unit,
         onToggleLyric: () -> Unit,
         onCycleMode: () -> Unit,
         onSeek: (Float) -> Unit,
@@ -542,6 +563,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     items = ui.results,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     onPlayAt = onPlayAt,
+                    onDownloadAt = onDownloadAt,
                 )
                 HorizontalDivider(color = Color(0xFF333333))
                 PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources)
@@ -593,7 +615,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     }
 
     @Composable
-    private fun ResultList(items: List<MusicMedia>, modifier: Modifier, onPlayAt: (Int) -> Unit) {
+    private fun ResultList(items: List<MusicMedia>, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit) {
         LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
             itemsIndexed(items) { index, media ->
                 val vip = media.vip
@@ -603,6 +625,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     media.album.isNotEmpty() -> media.album
                     else -> ""
                 }
+                val downloading = MusicDownloader.get().isRunning(media)
+                val downloaded = MusicDownloader.get().isDone(media)
                 Row(
                     Modifier.fillMaxWidth()
                         .clickable { onPlayAt(index) }
@@ -634,6 +658,26 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     }
                     Spacer(Modifier.width(8.dp))
                     Text(fmt(media.durationMs), fontSize = 12.sp, color = Color(0xFF777777))
+                    // 下载按钮：下载中转圈，完成后变色；VIP 歌标记不可下载
+                    if (!vip) {
+                        IconButton(
+                            onClick = { onDownloadAt(index) },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            if (downloading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(
+                                    painterResource(R.drawable.ic_download),
+                                    contentDescription = "下载",
+                                    tint = if (downloaded) MaterialTheme.colorScheme.primary else Color(0xFF999999),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
