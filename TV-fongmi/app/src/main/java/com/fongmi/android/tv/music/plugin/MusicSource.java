@@ -48,12 +48,16 @@ public final class MusicSource {
 
     /**
      * 搜索。返回可播放列表；插件未实现 search 或结果为空时返回空列表。
+     * 结果逐条回填 source=插件 platform，供多源路由。
      */
     public CompletableFuture<List<MusicMedia>> search(String keyword, int page, int type) {
         String args = new JSONArray().put(keyword == null ? "" : keyword).put(page).put(type).toString();
         return sandbox.callJson("search", args).thenApply(result -> {
             String json = sandbox.stringify(result);
-            return parseSearch(json);
+            List<MusicMedia> list = parseSearch(json);
+            String p = platform();
+            if (!p.isEmpty()) for (MusicMedia m : list) m.source = p;
+            return list;
         });
     }
 

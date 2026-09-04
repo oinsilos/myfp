@@ -92,6 +92,8 @@ public final class MusicPlaybackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // 从通知直接进入时可能没有 Activity 触发，这里先确保插件仓库就绪（幂等）
+        MusicRepository.get().init(getApplicationContext());
         player = new MusicPlayer(this, new PlayerBridge());
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_PLAY_PAUSE);

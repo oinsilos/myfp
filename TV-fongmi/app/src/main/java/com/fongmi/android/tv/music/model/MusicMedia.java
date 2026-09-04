@@ -30,6 +30,8 @@ public final class MusicMedia {
     public String extra;
     /** 是否需付费/VIP（网易云 fee>0），播放时大概率无源，UI 灰显标注。 */
     public boolean vip;
+    /** 来源插件 platform 名（多源路由：换源/歌词回该插件处理；空=用当前源）。 */
+    public String source = "";
 
     public MusicMedia(String id, String title, String artist, String album, long durationMs, String cover, String url, List<String> moreUrls, Map<String, String> headers) {
         this.id = id == null ? "" : id;

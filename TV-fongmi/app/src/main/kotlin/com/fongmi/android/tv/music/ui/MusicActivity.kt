@@ -12,6 +12,8 @@ import android.os.Looper
 import androidx.compose.ui.text.input.ImeAction
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -101,12 +103,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var lyricDialogVisible by mutableStateOf(false)
         var messageVisible by mutableStateOf(false)
         var messageText by mutableStateOf("")
+        // 多音源
+        var sources by mutableStateOf<List<MusicRepository.PluginInfo>>(emptyList())
+        var currentSource by mutableStateOf("netease")
+        var sourceDialogVisible by mutableStateOf(false)
+        var importing by mutableStateOf(false)
     }
 
     private val ui = UiState()
     private var lyricLines: List<LyricLine>? = null
     private var lyricError: String? = null
     private var lastError: String? = null
+    private var lastKeyword = ""
     private var dragging = false
     private var bound = false
     private var service: MusicPlaybackService? = null
@@ -145,7 +153,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MusicRepository.get().init(this)
-        ui.stateText = "music " + MusicRepository.get().platform() + " v" + MusicRepository.get().version()
+        refreshSourceInfo()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
@@ -168,11 +176,50 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onNext = { service?.next() },
                     onCloseLyricDialog = { ui.lyricDialogVisible = false },
                     onCloseMessage = { ui.messageVisible = false },
+                    onOpenSources = { ui.sourceDialogVisible = true },
+                    onSwitchSource = ::switchSource,
+                    onImportPlugin = ::importPlugin,
                 )
             }
         }
         startAndBindService()
         search("周杰伦")
+    }
+
+    /** 刷新音源列表与当前源显示。 */
+    private fun refreshSourceInfo() {
+        ui.sources = MusicRepository.get().plugins()
+        ui.currentSource = MusicRepository.get().platform().ifEmpty { "unknown" }
+    }
+
+    private fun switchSource(platform: String) {
+        val ok = MusicRepository.get().switchTo(platform)
+        ui.sourceDialogVisible = false
+        if (!ok) return
+        refreshSourceInfo()
+        ui.stateText = "ready"
+        // 切换源后自动用上次关键字重搜，避免手动再点一次
+        if (lastKeyword.isNotEmpty()) search(lastKeyword)
+        else Notify.show("已切换到 " + platform)
+    }
+
+    private fun importPlugin(url: String) {
+        if (url.isBlank()) return
+        ui.importing = true
+        MusicRepository.get().importPlugin(url.trim()).whenComplete { ok, error ->
+            runOnUiThread {
+                ui.importing = false
+                refreshSourceInfo()
+                if (error == null && ok == true) {
+                    ui.sourceDialogVisible = false
+                    Notify.show("插件导入成功：" + ui.currentSource)
+                    if (lastKeyword.isNotEmpty()) search(lastKeyword)
+                } else {
+                    ui.sourceDialogVisible = false
+                    showMessage("插件导入失败\n\n" + url.trim())
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -193,6 +240,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     private fun search(keyword: String) {
         if (keyword.isBlank()) return
+        lastKeyword = keyword.trim()
         ui.searching = true
         handler.removeCallbacksAndMessages(null)
         // 兜底：无论底层如何，20s 内必须结束搜索态，绝不无限转圈
@@ -436,6 +484,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onNext: () -> Unit,
         onCloseLyricDialog: () -> Unit,
         onCloseMessage: () -> Unit,
+        onOpenSources: () -> Unit,
+        onSwitchSource: (String) -> Unit,
+        onImportPlugin: (String) -> Unit,
     ) {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -452,7 +503,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onPlayAt = onPlayAt,
                 )
                 HorizontalDivider(color = Color(0xFF333333))
-                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext)
+                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources)
             }
         }
         if (ui.lyricDialogVisible) {
@@ -462,6 +513,16 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 lines = lyricLines ?: emptyList(),
                 positionMs = ui.positionMs,
                 onClose = onCloseLyricDialog,
+            )
+        }
+        if (ui.sourceDialogVisible) {
+            SourceDialog(
+                current = ui.currentSource,
+                sources = ui.sources,
+                importing = ui.importing,
+                onClose = { ui.sourceDialogVisible = false },
+                onSwitch = onSwitchSource,
+                onImport = onImportPlugin,
             )
         }
         if (ui.messageVisible) {
@@ -546,10 +607,27 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onTogglePlay: () -> Unit,
         onPrev: () -> Unit,
         onNext: () -> Unit,
+        onOpenSources: () -> Unit,
     ) {
         var dragFraction by remember { mutableStateOf<Float?>(null) }
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
-            Text(ui.stateText, fontSize = 10.sp, color = Color(0xFF888888), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "音源 " + ui.currentSource + " ▾",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onOpenSources() }.padding(vertical = 2.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    ui.stateText,
+                    fontSize = 10.sp,
+                    color = Color(0xFF888888),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlideImage(
                     url = ui.coverUrl.takeIf { it.isNotEmpty() },
@@ -662,6 +740,98 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    /** 音源切换 + 插件导入弹窗（列表选择当前源；底部 URL 导入）。 */
+    @Composable
+    private fun SourceDialog(
+        current: String,
+        sources: List<MusicRepository.PluginInfo>,
+        importing: Boolean,
+        onClose: () -> Unit,
+        onSwitch: (String) -> Unit,
+        onImport: (String) -> Unit,
+    ) {
+        var url by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text(
+                    "选择音源",
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
+                )
+                Text(
+                    "当前：" + current,
+                    fontSize = 12.sp,
+                    color = Color(0xFF999999),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Column(
+                    Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 32.dp, vertical = 12.dp),
+                ) {
+                    sources.forEach { info ->
+                        val isCur = info.platform == current
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable { onSwitch(info.platform) }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(if (isCur) "●  " else "○  ", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "${info.platform}  v${info.version}",
+                                    fontSize = 14.sp,
+                                    color = if (isCur) Color.White else Color(0xFFCCCCCC),
+                                )
+                                Text(
+                                    (if (info.builtin) "内置 · " else "外部 · ") + info.label,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF777777),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (isCur) Text("使用中", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                        HorizontalDivider(color = Color(0x22FFFFFF))
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("粘贴插件 JS 下载链接", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { onImport(url) }, enabled = !importing) {
+                        Text(if (importing) "导入中…" else "导入")
+                    }
+                }
+                Text(
+                    "点击下方关闭",
+                    fontSize = 12.sp,
+                    color = Color(0xFF555555),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
+                        .padding(vertical = 10.dp),
+                )
             }
         }
     }
