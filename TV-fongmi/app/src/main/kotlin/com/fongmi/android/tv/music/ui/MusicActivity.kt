@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.compose.ui.text.input.ImeAction
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
@@ -121,7 +122,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private val handler = Handler(Looper.getMainLooper())
 
     companion object {
-        private const val SEARCH_TIMEOUT_MS = 20_000L
+        private const val TAG = "MusicActivity"
+        private const val SEARCH_TIMEOUT_MS = 25_000L
         private val LRC_TIME = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2})(?:[.:](\\d{1,3}))?\\]")
         private val PLACEHOLDER_COLOR = Color(0xFF323232)
         private val BG_COLOR = Color(0xFF141414)
@@ -247,6 +249,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         handler.postDelayed({
             if (!ui.searching) return@postDelayed
             ui.searching = false
+            Log.w(TAG, "search timeout; kw=$lastKeyword current=${MusicRepository.get().platform()} searching=$ui.searching")
             Notify.show("搜索超时，请检查网络")
         }, SEARCH_TIMEOUT_MS)
         MusicRepository.get().search(keyword.trim()).whenComplete { list, error ->

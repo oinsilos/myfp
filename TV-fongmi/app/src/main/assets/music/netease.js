@@ -102,6 +102,8 @@
                 if (idcs.length) {
                     var dr = await axios.get('https://music.163.com/api/song/detail', {
                         params: { ids: '[' + idcs.join(',') + ']' },
+                        // 封面回填非关键路径：短超时快速失败降级，避免拖慢搜索（弱网下两个串行请求叠加会撞界面兜底）
+                        timeout: 4000,
                         headers: { 'User-Agent': COMMON_UA, Referer: 'https://music.163.com/' }
                     });
                     var ds = (dr.data && dr.data.songs) || [];
