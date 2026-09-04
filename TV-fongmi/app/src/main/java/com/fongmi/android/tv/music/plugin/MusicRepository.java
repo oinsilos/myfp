@@ -34,7 +34,7 @@ public final class MusicRepository {
     private static final String PREFS = "music_plugins";
     private static final String KEY_IMPORT = "import_urls";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
-    private static final String[] BUILTIN = {"netease.js"};
+    private static final String[] BUILTIN = {"netease.js", "qq.js"};
 
     private static volatile MusicRepository instance;
 
