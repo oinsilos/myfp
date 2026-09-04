@@ -69,34 +69,49 @@
         options.header = headers;
         // 宿主桥 Req 模型只认复数 headers（单数 header 会被忽略），双写保证自定义头（UA/Referer）生效
         options.headers = headers;
+        // 统一走异步 http 桥（OkHttp enqueue，回调再泵回沙箱线程）——并发改造核心：
+        // 原来这里用同步 req()，整个 HTTP 往返期间沙箱单线程被 execute() 阻塞，
+        // 歌单详情等大响应（数百 KB）期间，搜索/播放取 URL/歌词等所有调用只能排队，
+        // 表现就是「点个歌单，之后点什么都转圈/卡住」。
+        // 异步化后：网络 I/O 由 OkHttp 连接池并行执行，沙箱线程只在「发请求」与「收响应回调」
+        // 两个瞬时被占用（非阻塞），多个请求交错推进，单沙箱也能并发跑。
+        // 注意：req()（同步）仅留给必须同步的旧代码，插件契约一律走 http()。
         return new g.Promise(function (resolve, reject) {
-            var res;
-            try {
-                res = g.req ? g.req(url, options) : g.http(url, options);
-            } catch (e) {
-                reject(makeError(String(e && e.message || e), config, null));
-                return;
-            }
-            if (!res || res.content === undefined) {
-                reject(makeError('network error: ' + url, config, null));
-                return;
-            }
-            var code = (res.code === undefined || res.code === '') ? 200 : Number(res.code);
-            var response = {
-                data: parseData(res.content, requestHeaders),
-                status: code,
-                statusText: res.statusText,
-                headers: res.headers || {},
-                config: config,
-                request: null
-            };
-            if (code >= 200 && code < 300) {
-                resolve(response);
+            var call = g.http(url, options);
+            if (call && typeof call.then === 'function') {
+                call.then(
+                    function (res) { settle(res, resolve, reject); },
+                    function (err) {
+                        // http 桥对网络失败会兜底返回 {ok:false,status:500}，按响应处理走 settled；
+                        // 真正的异常（如调用栈错误）才直接 reject。保证不丢错误信息。
+                        if (err && err.ok === false) settle(err, resolve, reject);
+                        else reject(err);
+                    });
             } else {
-                var err = makeError('Request failed with status code ' + code, config, response);
-                reject(err);
+                settle(call, resolve, reject);
             }
         });
+    }
+
+    function settle(res, resolve, reject) {
+        if (!res || res.content === undefined) {
+            reject(makeError('network error: ' + (res && res.url || ''), null, null));
+            return;
+        }
+        var code = (res.code === undefined || res.code === '') ? 200 : Number(res.code);
+        var response = {
+            data: parseData(res.content, res.headers || {}),
+            status: code,
+            statusText: res.statusText,
+            headers: res.headers || {},
+            config: null,
+            request: null
+        };
+        if (code >= 200 && code < 300) {
+            resolve(response);
+        } else {
+            reject(makeError('Request failed with status code ' + code, null, response));
+        }
     }
 
     function create(defaults) {
