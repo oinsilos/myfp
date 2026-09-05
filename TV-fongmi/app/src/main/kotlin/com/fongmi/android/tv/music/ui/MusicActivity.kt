@@ -38,9 +38,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -98,6 +100,7 @@ import com.fongmi.android.tv.music.plugin.MusicRepository
 import com.fongmi.android.tv.music.plugin.MusicSource
 import com.fongmi.android.tv.music.service.MusicPlaybackService
 import com.fongmi.android.tv.reader.ReaderStore
+import com.fongmi.android.tv.ui.activity.HomeActivity
 import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.ui.common.UnifiedBackup
 import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
@@ -144,8 +147,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         // 多音源
         var sources by mutableStateOf<List<MusicRepository.PluginInfo>>(emptyList())
         var currentSource by mutableStateOf("netease")
-        var sourceDialogVisible by mutableStateOf(false)
-        var importing by mutableStateOf(false)
         // 下载状态（MusicDownloader 回调递增触发重绘）
         var downloadTick by mutableStateOf(0)
         // 收藏/最近播放
@@ -214,11 +215,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
     private val audioPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) loadLocalMusic()
         else Notify.show("需要音频读取权限才能扫描本地音乐")
-    }
-
-    /** 本地 JS 插件文件选择器（SAF）。 */
-    private val localPluginPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importLocalPlugin(uri)
     }
 
     /** 歌单文本文件选择器（.txt/.lst 等，每行一个歌名/歌手）。 */
@@ -337,6 +333,12 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         }
     }
 
+    /** 切回本板块时刷新音源列表（源管理在设置 tab 完成，回来要看到最新插件）。 */
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (!hidden) refreshSourceInfo()
+    }
+
     /** 板块视图：Compose 根（fragment 的 onCreateView 一次性渲染，切板块不重建视图）。 */
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         return ComposeView(requireContext()).apply {
@@ -380,8 +382,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                     onCycleSpeed = ::cycleSpeed,
                     onOpenSleep = { ui.sleepDialogVisible = true },
                     onSwitchSource = ::switchSource,
-                    onImportPlugin = ::importPlugin,
-                    onPickLocalPlugin = { localPluginPicker.launch(arrayOf("*/*")) },
                     onPickTextImport = { importTextPicker.launch(arrayOf("text/*")) },
                     onAddPlaylist = ::openPlaylistPicker,
                     onScanLocal = ::requestLocalMusic,
@@ -424,11 +424,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 底部设置 tab 的「音乐音源」入口：切入本板块并弹出音源/插件源管理。 */
-    fun openSourceDialog() {
-        handler.post { ui.sourceDialogVisible = true }
-    }
-
     private fun refreshSourceInfo() {
         ui.sources = MusicRepository.get().plugins()
         val p = MusicRepository.get().platform()
@@ -441,32 +436,12 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
 
     private fun switchSource(platform: String) {
         val ok = MusicRepository.get().switchTo(platform)
-        ui.sourceDialogVisible = false
         if (!ok) return
         refreshSourceInfo()
         ui.stateText = "ready"
         // 切换源后自动用上次关键字重搜，避免手动再点一次
         if (lastKeyword.isNotEmpty()) search(lastKeyword)
         else Notify.show("已切换到 " + platform)
-    }
-
-    private fun importPlugin(url: String) {
-        if (url.isBlank()) return
-        ui.importing = true
-        MusicRepository.get().importPlugin(url.trim()).whenComplete { ok, error ->
-            handler.post {
-                ui.importing = false
-                refreshSourceInfo()
-                if (error == null && ok == true) {
-                    ui.sourceDialogVisible = false
-                    Notify.show("插件导入成功：" + ui.currentSource)
-                    if (lastKeyword.isNotEmpty()) search(lastKeyword)
-                } else {
-                    ui.sourceDialogVisible = false
-                    showMessage("插件导入失败\n\n" + url.trim())
-                }
-            }
-        }
     }
 
     override fun onDestroy() {
@@ -665,33 +640,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         val m = MusicMedia(file.name, file.nameWithoutExtension, "", "", 0, null, Uri.fromFile(file).toString(), null, null)
         m.source = "local"
         playList(listOf(m), 0)
-    }
-
-    /** 读 SAF uri 文本内容（插件 JS）并在后台导入。 */
-    private fun importLocalPlugin(uri: Uri) {
-        Thread {
-            try {
-                val name = queryName(requireContext().contentResolver, uri) ?: "plugin.js"
-                val code = requireContext().contentResolver.openInputStream(uri)?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
-                if (code.isEmpty()) {
-                    handler.post { Notify.show("插件文件读取失败") }
-                    return@Thread
-                }
-                MusicRepository.get().importLocalFile(name, code).whenComplete { ok, _ ->
-                    handler.post {
-                        if (ok == true) {
-                            refreshSourceInfo()
-                            ui.sourceDialogVisible = false
-                            Notify.show("插件导入成功：" + name)
-                        } else {
-                            Notify.show("插件导入失败（无法解析）")
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                handler.post { Notify.show("插件读取失败：" + (e.message ?: "")) }
-            }
-        }.start()
     }
 
     private fun queryName(cr: ContentResolver, uri: Uri): String? {
@@ -1146,8 +1094,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         onCycleSpeed: () -> Unit,
         onOpenSleep: () -> Unit,
         onSwitchSource: (String) -> Unit,
-        onImportPlugin: (String) -> Unit,
-        onPickLocalPlugin: () -> Unit,
         onPickTextImport: () -> Unit,
         onAddPlaylist: (MusicMedia) -> Unit,
         onScanLocal: () -> Unit,
@@ -1250,17 +1196,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                 onClose = onCloseLyricDialog,
             )
         }
-        if (ui.sourceDialogVisible) {
-            SourceDialog(
-                current = ui.currentSource,
-                sources = ui.sources,
-                importing = ui.importing,
-                onClose = { ui.sourceDialogVisible = false },
-                onSwitch = onSwitchSource,
-                onImport = onImportPlugin,
-                onPickLocal = onPickLocalPlugin,
-            )
-        }
         if (ui.importDialogVisible) {
             ImportDialog(
                 onClose = { ui.importDialogVisible = false },
@@ -1306,6 +1241,10 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                 sources = ui.sources,
                 onClose = { ui.sourceSwitchVisible = false },
                 onSwitch = ::switchSource,
+                onGoImport = {
+                    ui.sourceSwitchVisible = false
+                    (requireActivity() as? HomeActivity)?.openMusicSourceManage()
+                },
             )
         }
     }
@@ -1702,146 +1641,35 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 音源切换 + 插件导入弹窗（列表选择当前源；底部 URL 导入）。 */
-    @Composable
-    private fun SourceDialog(
-        current: String,
-        sources: List<MusicRepository.PluginInfo>,
-        importing: Boolean,
-        onClose: () -> Unit,
-        onSwitch: (String) -> Unit,
-        onImport: (String) -> Unit,
-        onPickLocal: () -> Unit,
-    ) {
-        var url by remember { mutableStateOf("") }
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text(
-                    "选择音源",
-                    fontSize = 16.sp,
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
-                )
-                Text(
-                    "当前：" + current,
-                    fontSize = 12.sp,
-                    color = Color(0xFF999999),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                // 内置/导入插件加载失败时展示具体原因（定位 Rhino/转译/网络问题）
-                val loadErrs = MusicRepository.get().loadErrors()
-                if (loadErrs.isNotEmpty()) {
-                    Text(
-                        "源加载失败：\n" + loadErrs.joinToString("\n"),
-                        fontSize = 11.sp,
-                        color = Color(0xFFFF8A80),
-                        textAlign = TextAlign.Start,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
-                    )
-                    HorizontalDivider(color = Color(0x22FFFFFF))
-                }
-                Column(
-                    Modifier.weight(1f).fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 32.dp, vertical = 12.dp),
-                ) {
-                    sources.forEach { info ->
-                        val isCur = info.platform == current
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .clickable { onSwitch(info.platform) }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(if (isCur) "●  " else "○  ", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    "${info.platform}  v${info.version}",
-                                    fontSize = 14.sp,
-                                    color = if (isCur) Color.White else Color(0xFFCCCCCC),
-                                )
-                                Text(
-                                    (if (info.builtin) "内置 · " else "外部 · ") + info.label,
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF777777),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (isCur) Text("使用中", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                        HorizontalDivider(color = Color(0x22FFFFFF))
-                    }
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = { url = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("粘贴插件 JS 下载链接", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 1,
-                        singleLine = true,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = { onImport(url) }, enabled = !importing) {
-                        Text(if (importing) "导入中…" else "导入")
-                    }
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "或选择本地 JS 文件导入",
-                        fontSize = 12.sp,
-                        color = Color(0xFF999999),
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = onPickLocal) { Text("本地文件", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
-                }
-                Text(
-                    "点击下方关闭",
-                    fontSize = 12.sp,
-                    color = Color(0xFF555555),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
-                        .padding(vertical = 10.dp),
-                )
-            }
-        }
-    }
-
-    /** 板块内音源切换弹窗：只列已启用源+点选切换（导入/测试/删除在设置 tab 的「音乐音源」）。
-     *  注意：在内置插件仍在加载时 [sources] 可能为空，提示等待。 */
+    /** 板块内音源切换弹窗（视频板块式紧凑弹窗）：只列音源+点选切换；底部「去设置导入」一键直达管理（导入/测试/删除）。 */
     @Composable
     private fun SourceSwitchDialog(
         current: String,
         sources: List<MusicRepository.PluginInfo>,
         onClose: () -> Unit,
         onSwitch: (String) -> Unit,
+        onGoImport: () -> Unit,
     ) {
         Dialog(
             onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            properties = DialogProperties(usePlatformDefaultWidth = true, decorFitsSystemWindows = false),
         ) {
             Column(
-                Modifier.fillMaxWidth().fillMaxSize().background(Color(0xE6000000))
-                    .padding(horizontal = 40.dp, vertical = 24.dp),
+                Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(14.dp))
+                    .widthIn(max = 420.dp).heightIn(max = 460.dp)
+                    .padding(vertical = 18.dp),
             ) {
                 Text("切换音源", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp))
-                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Text("当前：" + current, fontSize = 12.sp, color = Color(0xFF888888),
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Column(Modifier.weight(1f).fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)) {
                     if (sources.isEmpty()) {
-                        Text("插件源加载中或为空，可在「设置 → 音乐音源」导入", fontSize = 12.sp,
-                            color = Color(0xFF777777))
+                        Text("插件源加载中或为空", fontSize = 12.sp,
+                            color = Color(0xFF777777), modifier = Modifier.padding(vertical = 18.dp))
                     } else {
                         sources.forEach { info ->
                             val isCur = info.platform == current
@@ -1849,7 +1677,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                                 Modifier.fillMaxWidth().clickable {
                                     if (!isCur) onSwitch(info.platform)
                                     onClose()
-                                }.padding(vertical = 12.dp),
+                                }.padding(vertical = 11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(if (isCur) "●  " else "○  ", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
@@ -1857,14 +1685,18 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                                     Text((if (info.builtin) "内置 · " else "外部 · ") + info.label + (if (isCur) "（使用中）" else ""),
                                         fontSize = 14.sp,
                                         color = if (isCur) Color.White else Color(0xFFCCCCCC))
+                                    Text("${info.platform}  v${info.version}", fontSize = 10.sp, color = Color(0xFF666666))
                                 }
                             }
-                            HorizontalDivider(color = Color(0x22FFFFFF))
+                            HorizontalDivider(color = Color(0x16FFFFFF))
                         }
                     }
                 }
-                Text("导入 / 测试 / 删除在「设置 → 音乐音源」", fontSize = 11.sp, color = Color(0xFF666666),
-                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Text("导入 / 测试 / 删除在「设置 → 音乐音源」 ›", fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onGoImport).padding(top = 10.dp))
             }
         }
     }

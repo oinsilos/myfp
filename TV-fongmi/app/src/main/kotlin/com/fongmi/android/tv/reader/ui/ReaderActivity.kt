@@ -37,9 +37,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -91,6 +93,7 @@ import com.fongmi.android.tv.reader.EpubImporter
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
+import com.fongmi.android.tv.ui.activity.HomeActivity
 import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.utils.Notify
 import com.github.catvod.net.OkHttp
@@ -123,10 +126,8 @@ class ReaderFragment : Fragment() {
         var keyword by mutableStateOf("")
         // 书源管理
         var sources by mutableStateOf<List<BookSource>>(emptyList())
-        var sourceDialogVisible by mutableStateOf(false)
         /** 板块内书源入口只做切换（启用/停用点选），导入/测试/删除在「设置 → 书源管理」。 */
         var sourceSwitchVisible by mutableStateOf(false)
-        var importing by mutableStateOf(false)
         // 书籍详情 + 目录
         var book by mutableStateOf<Book?>(null)
         var detailLoading by mutableStateOf(false)
@@ -293,6 +294,12 @@ class ReaderFragment : Fragment() {
         mainHandler.postDelayed(statsTick, 60_000L)
     }
 
+    /** 切回本板块时刷新书源列表（书源管理在设置 tab 完成，回来要看到最新书源）。 */
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (!hidden) refreshSources()
+    }
+
     /** 板块视图：Compose 根（fragment 的 onCreateView 一次性渲染，切板块不重建视图）。 */
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         return ComposeView(requireContext()).apply {
@@ -400,10 +407,7 @@ class ReaderFragment : Fragment() {
                         Notify.show("已删除订阅源")
                     },
                     onOpenSources = { ui.sourceSwitchVisible = true }, // 板块内只做切换；管理在设置 tab
-                    onImport = { importSource(it) },
                     onToggleSource = { toggleSource(it) },
-                    onRemoveSource = { removeSource(it) },
-                    onTestSource = ::testSource,
                 )
             }
             }
@@ -859,11 +863,6 @@ class ReaderFragment : Fragment() {
         mainHandler.post { importLocalBook(uri) }
     }
 
-    /** 底部设置 tab 的「书源管理」入口：切入本板块并弹出书源管理。 */
-    fun openSourceDialog() {
-        mainHandler.post { ui.sourceDialogVisible = true }
-    }
-
     private fun saveProgress() {
         val book = ui.book ?: return
         if (ui.content.isEmpty()) return
@@ -1203,38 +1202,9 @@ class ReaderFragment : Fragment() {
         openChapter(next)
     }
 
-    private fun importSource(text: String) {
-        if (text.isBlank()) return
-        ui.importing = true
-        ReaderRepository.get().importSource(text.trim()).whenComplete { n, _ ->
-            mainHandler.post {
-                ui.importing = false
-                refreshSources()
-                if (n != null && n > 0) {
-                    Notify.show("已导入 $n 个书源")
-                } else {
-                    Notify.show("导入失败：不是合法的书源 JSON/URL")
-                }
-            }
-        }
-    }
-
     private fun toggleSource(url: String) {
         ReaderRepository.get().toggleSource(url)
         refreshSources()
-    }
-
-    private fun removeSource(url: String) {
-        ReaderRepository.get().removeSource(url)
-        refreshSources()
-        Notify.show("已删除该书源")
-    }
-
-    /** 书源连通性测试（用已保存的书源做一次搜索）。 */
-    private fun testSource(url: String) {
-        ReaderRepository.get().testSource(url).whenComplete { ok, _ ->
-            mainHandler.post { Notify.show(if (ok) "测试通过" else "测试失败：无结果或源不可达") }
-        }
     }
 
     /** RSS 订阅源连通性测试：拉一次文章列表，能解析出条目即视为可用。 */
@@ -1366,10 +1336,7 @@ class ReaderFragment : Fragment() {
         onImportOpml: () -> Unit,
         onExportOpml: () -> Unit,
         onOpenSources: () -> Unit,
-        onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
-        onRemoveSource: (String) -> Unit,
-        onTestSource: (String) -> Unit,
     ) {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(Color(0xFF141414))) {
@@ -1505,22 +1472,15 @@ class ReaderFragment : Fragment() {
                 }
             }
         }
-        if (ui.sourceDialogVisible) {
-            SourceDialog(
-                sources = ui.sources,
-                importing = ui.importing,
-                onClose = { ui.sourceDialogVisible = false },
-                onImport = onImport,
-                onToggle = onToggleSource,
-                onRemove = onRemoveSource,
-                onTest = onTestSource,
-            )
-        }
         if (ui.sourceSwitchVisible) {
             SourceSwitchDialog(
                 sources = ui.sources,
                 onClose = { ui.sourceSwitchVisible = false },
                 onToggle = onToggleSource,
+                onGoImport = {
+                    ui.sourceSwitchVisible = false
+                    (requireActivity() as? HomeActivity)?.openReadSourceManage()
+                },
             )
         }
         if (ui.importDialogVisible) {
@@ -2382,7 +2342,7 @@ class ReaderFragment : Fragment() {
             .trim()
     }
 
-    /** 订阅源管理：列表（开关/删除）+ OPML 导入导出 + 添加（名称 + 地址）。 */
+    /** 订阅源管理（视频板块式紧凑弹窗）：列表（开关/测试/删除）+ OPML 导入导出 + 添加（名称 + 地址）。 */
     @Composable
     private fun RssSourceDialog(
         sources: List<RssRepository.RssSource>,
@@ -2398,22 +2358,30 @@ class ReaderFragment : Fragment() {
         var url by remember { mutableStateOf("") }
         Dialog(
             onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            properties = DialogProperties(usePlatformDefaultWidth = true, decorFitsSystemWindows = false),
         ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+            Column(
+                Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(14.dp))
+                    .widthIn(max = 460.dp).heightIn(max = 560.dp)
+                    .padding(vertical = 18.dp),
+            ) {
                 Text("订阅源管理", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp))
-                Text("支持任意 RSS 地址（可直接用 RSSHub 订阅），离线自动缓存已拉取文章", fontSize = 11.sp,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Text("支持任意 RSS 地址（可直接用 RSSHub 订阅）；点按 ●/○ 启用停用", fontSize = 11.sp,
                     color = Color(0xFF888888), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                if (sources.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("暂无订阅源，在下方添加", fontSize = 12.sp, color = Color(0xFF666666))
-                    }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
-                        itemsIndexed(sources) { _, s ->
-                            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Column(
+                    Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp),
+                ) {
+                    if (sources.isEmpty()) {
+                        Text("暂无订阅源，在下方添加", fontSize = 12.sp, color = Color(0xFF777777),
+                            modifier = Modifier.padding(vertical = 18.dp))
+                    } else {
+                        sources.forEach { s ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
                                 Text(if (s.enabled) "●" else "○", fontSize = 13.sp,
                                     color = if (s.enabled) MaterialTheme.colorScheme.primary else Color(0xFF555555),
@@ -2434,7 +2402,8 @@ class ReaderFragment : Fragment() {
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.Center) {
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     TextButton(onClick = onImportOpml) { Text("导入 OPML", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
                     Spacer(Modifier.width(16.dp))
                     TextButton(onClick = onExportOpml) { Text("导出 OPML", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
@@ -2468,8 +2437,6 @@ class ReaderFragment : Fragment() {
                         }) { Text("添加", fontSize = 13.sp) }
                     }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
             }
         }
     }
@@ -2703,34 +2670,40 @@ class ReaderFragment : Fragment() {
         else -> Pair(Color(0xFF141414), Color(0xFFC9C9C9))
     }
 
-    /** 板块内书源切换弹窗：只列书源 + 点按启用/停用（导入/测试/删除在设置 tab 的「书源管理」）。 */
+    /** 板块内书源切换弹窗（视频板块式紧凑弹窗）：只列书源 + 点按启用/停用；底部「去设置导入」一键直达管理（导入/测试/删除）。 */
     @Composable
     private fun SourceSwitchDialog(
         sources: List<BookSource>,
         onClose: () -> Unit,
         onToggle: (String) -> Unit,
+        onGoImport: () -> Unit,
     ) {
         Dialog(
             onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+            properties = DialogProperties(usePlatformDefaultWidth = true, decorFitsSystemWindows = false),
         ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+            Column(
+                Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(14.dp))
+                    .widthIn(max = 460.dp).heightIn(max = 480.dp)
+                    .padding(vertical = 18.dp),
+            ) {
                 Text("切换书源", fontSize = 16.sp, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp))
-                Text("点按启用/停用要用来搜索的书源；已启用源全部参与搜索", fontSize = 11.sp,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Text("点按启用/停用要用来搜索的书源；已启用源全部参与搜索（共 ${sources.count { it.enabled }} 个）", fontSize = 11.sp,
                     color = Color(0xFF888888), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
                     if (sources.isEmpty()) {
                         item {
-                            Text("暂无书源，可到「设置 → 书源管理」导入", fontSize = 12.sp,
+                            Text("暂无书源", fontSize = 12.sp,
                                 color = Color(0xFF777777), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp))
                         }
                     }
                     itemsIndexed(sources) { _, s ->
                         Row(Modifier.fillMaxWidth().clickable { onToggle(s.url) }
-                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                            .padding(vertical = 11.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Text(if (s.enabled) "●  " else "○  ", fontSize = 14.sp,
                                 color = if (s.enabled) MaterialTheme.colorScheme.primary else Color(0xFF555555))
@@ -2744,69 +2717,11 @@ class ReaderFragment : Fragment() {
                         HorizontalDivider(color = Color(0x16FFFFFF))
                     }
                 }
-                Text("导入 / 测试 / 删除在「设置 → 书源管理」", fontSize = 11.sp, color = Color(0xFF666666),
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Text("导入 / 测试 / 删除在「设置 → 书源管理」 ›", fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
-            }
-        }
-    }
-
-    @Composable
-    private fun SourceDialog(
-        sources: List<BookSource>,
-        importing: Boolean,
-        onClose: () -> Unit,
-        onImport: (String) -> Unit,
-        onToggle: (String) -> Unit,
-        onRemove: (String) -> Unit,
-        onTest: (String) -> Unit,
-    ) {
-        var url by remember { mutableStateOf("") }
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text("书源管理", fontSize = 16.sp, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp))
-                Text("支持粘贴 legado bookSource JSON（单个或数组），或书源下载链接", fontSize = 11.sp,
-                    color = Color(0xFF888888), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
-                    itemsIndexed(sources) { _, s ->
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (s.enabled) "●" else "○", fontSize = 13.sp,
-                                color = if (s.enabled) MaterialTheme.colorScheme.primary else Color(0xFF555555),
-                                modifier = Modifier.clickable { onToggle(s.url) })
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(s.name, fontSize = 14.sp, color = if (s.enabled) Color(0xFFDDDDDD) else Color(0xFF777777), maxLines = 1)
-                                Text(s.url, fontSize = 10.sp, color = Color(0xFF666666), maxLines = 1)
-                            }
-                            Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
-                                modifier = Modifier.clickable { onTest(s.url) }.padding(6.dp))
-                            Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80),
-                                modifier = Modifier.clickable { onRemove(s.url) }.padding(6.dp))
-                        }
-                        HorizontalDivider(color = Color(0x16FFFFFF))
-                    }
-                }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = { url = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("粘贴书源 JSON 或链接", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 3,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = { onImport(url) }, enabled = !importing) { Text(if (importing) "导入中…" else "导入", fontSize = 13.sp) }
-                }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onGoImport).padding(top = 10.dp))
             }
         }
     }

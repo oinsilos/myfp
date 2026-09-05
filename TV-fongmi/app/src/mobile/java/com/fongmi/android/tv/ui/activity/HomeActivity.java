@@ -223,18 +223,18 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         else if ("read".equals(tab)) change(3);
     }
 
-    /** 统一设置页「音乐音源」卡片：切入音乐板块并弹出插件源管理。 */
-    public void openMusicSources() {
-        change(2);
-        Fragment f = mManager.getFragment(2);
-        if (f instanceof MusicFragment) ((MusicFragment) f).openSourceDialog();
+    /** 音乐板块内「去设置导入」：切到设置 tab 并自动弹出音乐音源管理弹窗（关闭即留在设置页）。 */
+    public void openMusicSourceManage() {
+        change(1);
+        Fragment f = mManager.getFragment(1);
+        if (f instanceof SharedSettingFragment) ((SharedSettingFragment) f).openMusicSourceDialog();
     }
 
-    /** 统一设置页「书源管理」卡片：切入小说板块并弹出书源管理。 */
-    public void openReadSources() {
-        change(3);
-        Fragment f = mManager.getFragment(3);
-        if (f instanceof ReaderFragment) ((ReaderFragment) f).openSourceDialog();
+    /** 小说板块内「去设置导入」：切到设置 tab 并自动弹出书源管理弹窗（关闭即留在设置页）。 */
+    public void openReadSourceManage() {
+        change(1);
+        Fragment f = mManager.getFragment(1);
+        if (f instanceof SharedSettingFragment) ((SharedSettingFragment) f).openReadSourceDialog();
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
