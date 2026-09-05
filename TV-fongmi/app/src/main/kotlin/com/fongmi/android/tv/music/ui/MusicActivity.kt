@@ -1117,7 +1117,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             Column(Modifier.fillMaxSize().padding(vertical = 8.dp)) {
-                TopTabs(tab = ui.tab, onSelect = onSelectTab)
+                TopTabs(tab = ui.tab, onSelect = onSelectTab, onOpenSources = onOpenSources)
                 val view = ui.sheetView
                 if (view != null) {
                     // 详情视图（歌单/榜单/歌手/导入结果）：覆盖当前 Tab 内容，播放条保持
@@ -1133,18 +1133,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     )
                 } else {
                     when (ui.tab) {
-                        1 -> {
-                            LaunchedEffect(Unit) { onLoadSheets() }
-                            SheetContent(
-                                ui = ui,
-                                modifier = Modifier.weight(1f).fillMaxWidth(),
-                                onOpenTag = onOpenTag,
-                                onOpenSheet = onOpenSheet,
-                                onOpenTop = onOpenTop,
-                                onOpenImport = onOpenImport,
-                            )
-                        }
-                        2 -> MyContent(
+                        1 -> MyContent(
                             ui = ui,
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             onPlayList = onPlayList,
@@ -1168,30 +1157,42 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                             onNewPlaylist = onNewPlaylist,
                             onRenamePlaylist = onRenamePlaylist,
                             onDeletePlaylist = onDeletePlaylist,
+                            onOpenImport = onOpenImport,
                         )
                         else -> {
+                            // 搜索页 = 搜索框 + 结果列表；未搜索时展示歌单内容（榜单/分类），避免页面单调
                             SearchBar(keyword, { keyword = it }) { onSearch(keyword) }
                             if (ui.searching) {
                                 CircularProgressIndicator(
                                     Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(28.dp)
                                 )
+                            } else if (keyword.isNotBlank()) {
+                                ResultList(
+                                    groups = ui.searchGroups,
+                                    items = ui.results,
+                                    libraryTick = ui.libraryTick,
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    onPlayAt = onPlayAt,
+                                    onDownloadAt = onDownloadAt,
+                                    onFavoriteAt = onFavoriteAt,
+                                    onArtist = onOpenArtistOf,
+                                    onAddPlaylist = { idx -> ui.results.getOrNull(idx)?.let(onAddPlaylist) },
+                                )
+                            } else {
+                                LaunchedEffect(Unit) { onLoadSheets() }
+                                SheetContent(
+                                    ui = ui,
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    onOpenTag = onOpenTag,
+                                    onOpenSheet = onOpenSheet,
+                                    onOpenTop = onOpenTop,
+                                )
                             }
-                            ResultList(
-                                groups = ui.searchGroups,
-                                items = ui.results,
-                                libraryTick = ui.libraryTick,
-                                modifier = Modifier.weight(1f).fillMaxWidth(),
-                                onPlayAt = onPlayAt,
-                                onDownloadAt = onDownloadAt,
-                                onFavoriteAt = onFavoriteAt,
-                                onArtist = onOpenArtistOf,
-                                onAddPlaylist = { idx -> ui.results.getOrNull(idx)?.let(onAddPlaylist) },
-                            )
                         }
                     }
                 }
                 HorizontalDivider(color = Color(0xFF333333))
-                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources, onCycleSpeed, onOpenSleep)
+                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onCycleSpeed, onOpenSleep)
             }
         }
         if (ui.lyricDialogVisible) {
@@ -1256,21 +1257,22 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     /** 顶部 Tab：搜索 / 歌单 / 我的音乐。 */
     @Composable
-    private fun TopTabs(tab: Int, onSelect: (Int) -> Unit) {
+    private fun TopTabs(tab: Int, onSelect: (Int) -> Unit, onOpenSources: () -> Unit) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            listOf("搜索", "歌单", "我的音乐").forEachIndexed { index, name ->
+            // 搜索页已合并歌单页内容，顶部仅保留「搜索 / 我的音乐」
+            listOf("搜索", "我的音乐").forEachIndexed { index, name ->
                 TabItem(name, tab == index) { onSelect(index) }
-                if (index < 2) Spacer(Modifier.width(18.dp))
+                if (index < 1) Spacer(Modifier.width(18.dp))
             }
             Spacer(Modifier.weight(1f))
             Text(
-                "音源 " + ui.currentSource,
+                "音源 " + ui.currentSource + " ▾",
                 fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { onSelect(0) },
+                modifier = Modifier.clickable { onOpenSources() }.padding(vertical = 4.dp),
             )
         }
         HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(top = 4.dp))
@@ -1500,7 +1502,6 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onTogglePlay: () -> Unit,
         onPrev: () -> Unit,
         onNext: () -> Unit,
-        onOpenSources: () -> Unit,
         onCycleSpeed: () -> Unit,
         onOpenSleep: () -> Unit,
     ) {
@@ -1508,19 +1509,12 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "音源 " + ui.currentSource + " ▾",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable { onOpenSources() }.padding(vertical = 2.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
                     ui.stateText,
                     fontSize = 10.sp,
                     color = Color(0xFF888888),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1787,6 +1781,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onNewPlaylist: () -> Unit,
         onRenamePlaylist: (String) -> Unit,
         onDeletePlaylist: (String) -> Unit,
+        onOpenImport: () -> Unit,
     ) {
         Column(modifier) {
             // 子页签：收藏 / 最近 / 本地 / 下载 / 歌单
@@ -1818,7 +1813,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     )
                     2 -> LocalTab(ui, onPlayList, onDownloadMedia, onToggleFavMedia, onAddPlaylist, onScanLocal)
                     3 -> DownloadTab(ui, onPlayLocalFile, onCancelDownload, onDeleteDownloaded)
-                    else -> PlaylistsTab(ui, onOpenPlaylist, onNewPlaylist, onRenamePlaylist, onDeletePlaylist)
+                    else -> PlaylistsTab(ui, onOpenPlaylist, onNewPlaylist, onRenamePlaylist, onDeletePlaylist, onOpenImport)
                 }
             }
         }
@@ -2017,11 +2012,15 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onNewPlaylist: () -> Unit,
         onRenamePlaylist: (String) -> Unit,
         onDeletePlaylist: (String) -> Unit,
+        onOpenImport: () -> Unit,
     ) {
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("自建歌单", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFCCCCCC))
                 Spacer(Modifier.weight(1f))
+                // 导入歌单（粘贴网易云歌单/榜单链接）统一收口到歌单管理页
+                Button(onClick = onOpenImport, modifier = Modifier.height(32.dp)) { Text("导入歌单", fontSize = 12.sp) }
+                Spacer(Modifier.width(8.dp))
                 Button(onClick = onNewPlaylist, modifier = Modifier.height(32.dp)) { Text("＋ 新建歌单", fontSize = 12.sp) }
             }
             if (ui.playlists.isEmpty()) {
@@ -2084,7 +2083,6 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onOpenTag: (String) -> Unit,
         onOpenSheet: (MusicSheet) -> Unit,
         onOpenTop: (MusicSheet) -> Unit,
-        onOpenImport: () -> Unit,
     ) {
         Column(modifier) {
             Row(
@@ -2092,8 +2090,6 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("歌单", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE0E0E0))
-                Spacer(Modifier.weight(1f))
-                Button(onClick = onOpenImport, modifier = Modifier.height(34.dp)) { Text("导入歌单", fontSize = 13.sp) }
             }
             if (ui.sheetsLoading) {
                 Box(Modifier.fillMaxWidth().padding(top = 24.dp), contentAlignment = Alignment.Center) {

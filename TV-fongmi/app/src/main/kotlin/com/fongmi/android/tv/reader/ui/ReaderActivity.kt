@@ -55,6 +55,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.fongmi.android.tv.reader.Book
 import com.fongmi.android.tv.reader.BookSource
 import com.fongmi.android.tv.reader.ReaderRepository
+import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.utils.Notify
 
 /**
@@ -81,9 +82,17 @@ class ReaderActivity : AppCompatActivity() {
         var content by mutableStateOf("")
         var contentLoading by mutableStateOf(false)
         var contentError by mutableStateOf("")
+        // 书架（批1：收藏 / 断点续读 / 书签）
+        var shelfMode by mutableStateOf(false)
+        var shelves by mutableStateOf<List<Book>>(emptyList())
+        var bookmarks by mutableStateOf<List<ReaderStore.Bookmark>>(emptyList())
     }
 
     private val ui = UiState()
+    /** 当前章内滚动进度（0~1，WebView 回调实时刷新，退出阅读/切章时落盘）。 */
+    private var currentPercent = 0f
+    /** 待恢复的章内滚动位置（openChapter 从进度库读到后置值；WebView 加载完消费后复位 -1）。 */
+    private var restorePercent = -1f
     /** 搜索兜底：底层（书源网络/规则求值）无论怎样，25s 内必须结束搜索态，绝不无限转圈。 */
     private val uiHandler = Handler(Looper.getMainLooper())
     private val SEARCH_TIMEOUT_MS = 25_000L
@@ -100,7 +109,9 @@ class ReaderActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ReaderRepository.get().init(this)
+        ReaderStore.get().init(this)
         refreshSources()
+        refreshShelves()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
@@ -113,12 +124,24 @@ class ReaderActivity : AppCompatActivity() {
                 ReaderScreen(
                     ui = ui,
                     onSearch = { search(it) },
-                    onOpenBook = { openBook(it) },
+                    onOpenBook = { openBook(it, false) },
+                    onOpenShelfBook = { openBook(it, true) },
                     onBackFromBook = { ui.book = null; ui.reading = false },
                     onOpenChapter = { openChapter(it) },
                     onPrev = { step(-1) },
                     onNext = { step(1) },
-                    onBackFromReader = { ui.reading = false },
+                    onBackFromReader = { leaveReader() },
+                    onToggleShelf = ::toggleShelf,
+                    onOpenShelf = { ui.shelfMode = true },
+                    onBackFromShelf = { ui.shelfMode = false },
+                    onAddBookmark = ::addBookmark,
+                    onOpenBookmark = { openChapter(it) },
+                    onRemoveBookmark = ::removeBookmark,
+                    onRemoveShelf = { url ->
+                        ReaderStore.get().removeFromShelf(url)
+                        refreshShelves()
+                        Notify.show("已移出书架")
+                    },
                     onOpenSources = { ui.sourceDialogVisible = true },
                     onImport = { importSource(it) },
                     onToggleSource = { toggleSource(it) },
@@ -159,9 +182,10 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    private fun openBook(book: Book) {
+    private fun openBook(book: Book, autoContinue: Boolean) {
         ui.book = book
         ui.reading = false
+        ui.shelfMode = false
         ui.detailLoading = true
         ui.detailError = ""
         ReaderRepository.get().detail(book).whenComplete { b, e1 ->
@@ -170,8 +194,21 @@ class ReaderActivity : AppCompatActivity() {
                 runOnUiThread {
                     ui.detailLoading = false
                     ui.book = tb ?: bd
+                    refreshBookmarks()
                     val err: Throwable? = (e2 as? Throwable) ?: (e1 as? Throwable)
                     if (err != null) ui.detailError = "详情/目录失败：" + friendly(err)
+                    // 书架/断点续读：目录就绪后直接跳上次读到的章节
+                    if (autoContinue && ui.reading.not()) {
+                        val book0 = ui.book
+                        if (book0 != null) {
+                            val p = ReaderStore.get().progress(book0.url)
+                            if (p != null && p.chapter in 0 until book0.chapters.size) {
+                                openChapter(p.chapter)
+                            } else if (book0.chapters.isNotEmpty()) {
+                                openChapter(0)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -180,11 +217,16 @@ class ReaderActivity : AppCompatActivity() {
     private fun openChapter(index: Int) {
         val book = ui.book ?: return
         if (index < 0 || index >= book.chapters.size) return
+        if (ui.reading) saveProgress()
         ui.chapterIndex = index
         ui.reading = true
+        currentPercent = 0f
         ui.contentLoading = true
         ui.contentError = ""
         ui.content = ""
+        // 断点续读：该章有保存过位置则 WebView 加载完恢复
+        val p = ReaderStore.get().progress(book.url)
+        restorePercent = if (p != null && p.chapter == index) p.percent else -1f
         ReaderRepository.get().chapter(book.chapters[index].url, book.source).whenComplete { html, e ->
             runOnUiThread {
                 ui.contentLoading = false
@@ -195,6 +237,61 @@ class ReaderActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** 退出阅读页（返回目录）：落盘当前章内进度。 */
+    private fun leaveReader() {
+        saveProgress()
+        ui.reading = false
+    }
+
+    private fun saveProgress() {
+        val book = ui.book ?: return
+        ReaderStore.get().saveProgress(book.url, ui.chapterIndex, currentPercent)
+    }
+
+    private fun refreshShelves() {
+        ui.shelves = ReaderStore.get().shelf()
+    }
+
+    private fun refreshBookmarks() {
+        ui.bookmarks = ui.book?.let { ReaderStore.get().bookmarks(it.url) } ?: emptyList()
+    }
+
+    /** 收藏/移出书架（未收藏则进架，已收藏则移出）。 */
+    private fun toggleShelf(book: Book) {
+        val store = ReaderStore.get()
+        val book0 = ui.book ?: return
+        if (store.inShelf(book0.url)) {
+            store.removeFromShelf(book0.url)
+            Notify.show("已移出书架")
+        } else {
+            store.addToShelf(book0)
+            Notify.show("已加入书架")
+        }
+        refreshShelves()
+    }
+
+    /** 阅读页快捷加书签：记录当前章节 + 章内进度。 */
+    private fun addBookmark() {
+        val book = ui.book ?: return
+        val chapterName = book.chapters.getOrNull(ui.chapterIndex)?.name ?: ""
+        ReaderStore.get().addBookmark(book.url, ui.chapterIndex, chapterName, currentPercent)
+        refreshBookmarks()
+        Notify.show("已添加书签：${chapterName.ifEmpty { "第${ui.chapterIndex + 1}章" }}")
+    }
+
+    /** 删除某书签（按章节号）。 */
+    private fun removeBookmark(chapter: Int) {
+        val book = ui.book ?: return
+        ReaderStore.get().removeBookmark(book.url, chapter)
+        refreshBookmarks()
+    }
+
+    /** 书架/进度/书签 复用的进度文案。 */
+    private fun progressText(url: String, chapters: Int): String {
+        val p = ReaderStore.get().progress(url) ?: return ""
+        return "读到第 ${p.chapter + 1} 章 · ${(p.percent * 100).toInt()}%"
     }
 
     private fun step(delta: Int) {
@@ -247,11 +344,19 @@ class ReaderActivity : AppCompatActivity() {
         ui: UiState,
         onSearch: (String) -> Unit,
         onOpenBook: (Book) -> Unit,
+        onOpenShelfBook: (Book) -> Unit,
         onBackFromBook: () -> Unit,
         onOpenChapter: (Int) -> Unit,
         onPrev: () -> Unit,
         onNext: () -> Unit,
         onBackFromReader: () -> Unit,
+        onToggleShelf: (Book) -> Unit,
+        onOpenShelf: () -> Unit,
+        onBackFromShelf: () -> Unit,
+        onAddBookmark: () -> Unit,
+        onOpenBookmark: (Int) -> Unit,
+        onRemoveBookmark: (Int) -> Unit,
+        onRemoveShelf: (String) -> Unit,
         onOpenSources: () -> Unit,
         onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
@@ -260,16 +365,25 @@ class ReaderActivity : AppCompatActivity() {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(Color(0xFF141414))) {
             Column(Modifier.fillMaxSize().padding(vertical = 8.dp)) {
-                // 顶栏：书源入口 + 阅读态返回
+                // 顶栏：阅读 / 详情 / 书架 / 搜索
+                val currentBook = ui.book
                 if (ui.reading) {
                     ReaderBar(
                         chapterName = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.name ?: "阅读",
                         onBack = onBackFromReader,
                         onPrev = onPrev,
                         onNext = onNext,
+                        onAddBookmark = onAddBookmark,
                     )
-                } else if (ui.book != null) {
-                    BookBar(book = ui.book!!, onBack = onBackFromBook)
+                } else if (currentBook != null) {
+                    BookBar(
+                        book = currentBook,
+                        onBack = onBackFromBook,
+                        inShelf = ReaderStore.get().inShelf(currentBook.url),
+                        onToggleShelf = { onToggleShelf(currentBook) },
+                    )
+                } else if (ui.shelfMode) {
+                    ShelfBar(count = ui.shelves.size, onBack = onBackFromShelf, onOpenSources = onOpenSources)
                 } else {
                     SearchTop(
                         keyword = keyword,
@@ -277,6 +391,8 @@ class ReaderActivity : AppCompatActivity() {
                         onSearch = { onSearch(keyword) },
                         sources = ui.sources,
                         onOpenSources = onOpenSources,
+                        shelfCount = ui.shelves.size,
+                        onOpenShelf = onOpenShelf,
                     )
                 }
                 HorizontalDivider(color = Color(0x22FFFFFF))
@@ -287,12 +403,23 @@ class ReaderActivity : AppCompatActivity() {
                         error = ui.contentError,
                         baseUrl = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url,
                     )
-                } else if (ui.book != null) {
+                } else if (currentBook != null) {
                     BookBody(
-                        book = ui.book!!,
+                        book = currentBook,
                         loading = ui.detailLoading,
                         error = ui.detailError,
+                        inShelf = ReaderStore.get().inShelf(currentBook.url),
+                        bookmarks = ui.bookmarks,
                         onOpenChapter = onOpenChapter,
+                        onToggleShelf = { onToggleShelf(currentBook) },
+                        onOpenBookmark = onOpenBookmark,
+                        onRemoveBookmark = onRemoveBookmark,
+                    )
+                } else if (ui.shelfMode) {
+                    ShelfBody(
+                        shelves = ui.shelves,
+                        onOpenBook = onOpenShelfBook,
+                        onRemove = onRemoveShelf,
                     )
                 } else {
                     SearchBody(
@@ -322,6 +449,8 @@ class ReaderActivity : AppCompatActivity() {
         onSearch: () -> Unit,
         sources: List<BookSource>,
         onOpenSources: () -> Unit,
+        shelfCount: Int,
+        onOpenShelf: () -> Unit,
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -329,6 +458,13 @@ class ReaderActivity : AppCompatActivity() {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenSources).padding(horizontal = 6.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "书架($shelfCount)",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenShelf).padding(horizontal = 6.dp, vertical = 4.dp),
             )
             Spacer(Modifier.width(4.dp))
             OutlinedTextField(
@@ -393,20 +529,83 @@ class ReaderActivity : AppCompatActivity() {
         return url
     }
 
+    /** 书架顶栏：返回搜索 + 标题；右侧保留书源入口。 */
     @Composable
-    private fun BookBar(book: Book, onBack: () -> Unit) {
+    private fun ShelfBar(count: Int, onBack: () -> Unit, onOpenSources: () -> Unit) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
+            Spacer(Modifier.weight(1f))
+            Text("书架 ($count)", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+            Spacer(Modifier.weight(1f))
+            Text("书源", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenSources).padding(horizontal = 6.dp, vertical = 6.dp))
+        }
+    }
+
+    /** 书架列表：点击续读（自动跳到上次读到的章节），行尾可移除。 */
+    @Composable
+    private fun ShelfBody(shelves: List<Book>, onOpenBook: (Book) -> Unit, onRemove: (String) -> Unit) {
+        if (shelves.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("书架空空如也：从搜索结果点开书籍 → 右上角收藏", fontSize = 13.sp, color = Color(0xFF666666))
+            }
+            return
+        }
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+            itemsIndexed(shelves) { _, book ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenBook(book) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(book.name, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
+                        Text(
+                            listOfNotNull(book.author.takeIf { it.isNotEmpty() }, sourceName(book.source), progressText(book.url, -1).takeIf { it.isNotEmpty() })
+                                .joinToString(" · "),
+                            fontSize = 12.sp,
+                            color = Color(0xFF888888),
+                            maxLines = 1,
+                        )
+                    }
+                    Text("移出", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                        modifier = Modifier.clickable { onRemove(book.url) }.padding(horizontal = 8.dp, vertical = 6.dp))
+                }
+                HorizontalDivider(color = Color(0x14FFFFFF))
+            }
+        }
+    }
+
+    @Composable
+    private fun BookBar(book: Book, onBack: () -> Unit, inShelf: Boolean, onToggleShelf: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 返回", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text(book.name, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
             Spacer(Modifier.weight(1f))
-            Spacer(Modifier.width(52.dp))
+            Text(
+                if (inShelf) "✓ 在书架" else "＋ 书架",
+                fontSize = 13.sp,
+                color = if (inShelf) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onToggleShelf).padding(horizontal = 6.dp, vertical = 6.dp),
+            )
         }
     }
 
     @Composable
-    private fun BookBody(book: Book, loading: Boolean, error: String, onOpenChapter: (Int) -> Unit) {
+    private fun BookBody(
+        book: Book,
+        loading: Boolean,
+        error: String,
+        inShelf: Boolean,
+        bookmarks: List<ReaderStore.Bookmark>,
+        onOpenChapter: (Int) -> Unit,
+        onToggleShelf: () -> Unit,
+        onOpenBookmark: (Int) -> Unit,
+        onRemoveBookmark: (Int) -> Unit,
+    ) {
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(32.dp))
@@ -419,16 +618,55 @@ class ReaderActivity : AppCompatActivity() {
             }
             return
         }
+        val progress = ReaderStore.get().progress(book.url)
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
             item {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     Text(book.name, fontSize = 17.sp, color = Color(0xFFF0F0F0))
-                    if (book.author.isNotEmpty()) {
-                        Text(book.author, fontSize = 12.sp, color = Color(0xFF999999), modifier = Modifier.padding(top = 2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (book.author.isNotEmpty()) {
+                            Text(book.author, fontSize = 12.sp, color = Color(0xFF999999), modifier = Modifier.padding(top = 2.dp))
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (inShelf) "✓ 已收藏" else "＋ 收藏到书架",
+                            fontSize = 12.sp,
+                            color = if (inShelf) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable(onClick = onToggleShelf).padding(horizontal = 4.dp),
+                        )
                     }
                     if (book.intro.isNotEmpty()) {
                         Text(book.intro, fontSize = 12.sp, color = Color(0xFFAAAAAA), lineHeight = 18.sp,
                             modifier = Modifier.padding(top = 8.dp))
+                    }
+                    // 断点续读：显示上次读到哪，一键继续
+                    if (progress != null && progress.chapter in 0 until book.chapters.size) {
+                        Text(
+                            "继续阅读：${book.chapters[progress.chapter].name}（${(progress.percent * 100).toInt()}%）",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { onOpenChapter(progress.chapter) }
+                                .padding(top = 8.dp, bottom = 2.dp),
+                        )
+                    }
+                    // 书签列表
+                    if (bookmarks.isNotEmpty()) {
+                        Text("书签 (${bookmarks.size})", fontSize = 13.sp, color = Color(0xFFCCCCCC),
+                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+                        bookmarks.forEach { bm ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${book.chapters.getOrNull(bm.chapter)?.name?.takeIf { it.isNotEmpty() } ?: "第${bm.chapter + 1}章"}（${(bm.percent * 100).toInt()}%）",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF9E9E9E),
+                                    modifier = Modifier.weight(1f).clickable { onOpenBookmark(bm.chapter) }
+                                        .padding(vertical = 4.dp),
+                                    maxLines = 1,
+                                )
+                                Text("×", fontSize = 14.sp, color = Color(0xFFFF8A80),
+                                    modifier = Modifier.clickable { onRemoveBookmark(bm.chapter) }.padding(horizontal = 8.dp))
+                            }
+                        }
                     }
                     Text("目录（${book.chapters.size} 章）", fontSize = 13.sp, color = Color(0xFFCCCCCC),
                         modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
@@ -448,13 +686,21 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     @Composable
-    private fun ReaderBar(chapterName: String, onBack: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit) {
+    private fun ReaderBar(
+        chapterName: String,
+        onBack: () -> Unit,
+        onPrev: () -> Unit,
+        onNext: () -> Unit,
+        onAddBookmark: () -> Unit,
+    ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 目录", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text(chapterName, fontSize = 14.sp, color = Color(0xFFE0E0E0), maxLines = 1)
             Spacer(Modifier.weight(1f))
+            Text("☆ 书签", fontSize = 13.sp, color = Color(0xFFFFD54F),
+                modifier = Modifier.clickable(onClick = onAddBookmark).padding(horizontal = 6.dp, vertical = 6.dp))
             Text("上一章", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onPrev).padding(horizontal = 6.dp, vertical = 6.dp))
             Text("下一章", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
@@ -485,9 +731,26 @@ class ReaderActivity : AppCompatActivity() {
                     layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                     setBackgroundColor(0xFF141414.toInt())
                     webChromeClient = WebChromeClient()
-                    webViewClient = WebViewClient()
+                    // 断点续读：新章节加载完成即恢复到上次滚动位置（一次性消费 restorePercent）
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            if (restorePercent >= 0f) {
+                                val rp = restorePercent
+                                restorePercent = -1f
+                                view?.post {
+                                    val max = (view.contentHeight - view.height).coerceAtLeast(0)
+                                    view.scrollTo(0, (rp * max).toInt())
+                                }
+                            }
+                        }
+                    }
                     settings.javaScriptEnabled = false
                     settings.defaultTextEncodingName = "utf-8"
+                    // 章内滚动进度实时跟踪（保存断点/书签用）
+                    setOnScrollChangeListener { _, scrollY, _, _, _ ->
+                        val max = contentHeight - height
+                        currentPercent = if (max <= 0) 0f else (scrollY.toFloat() / max).coerceIn(0f, 1f)
+                    }
                 }
             },
             update = { web ->
