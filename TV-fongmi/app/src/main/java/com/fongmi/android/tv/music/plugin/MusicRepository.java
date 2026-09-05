@@ -40,7 +40,7 @@ public final class MusicRepository {
     /** 本地文件导入的插件（文件名清单，文件缓存在 filesDir/plugins/，重启无网络也能加载）。 */
     private static final String KEY_LOCAL = "local_plugins";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
-    private static final String[] BUILTIN = {"netease.js"};
+    private static final String[] BUILTIN = {"kuwo_mao.js", "yuanli_kw.js", "maoer_fm.js"};
     /** 单源搜索超时：某源卡死/无响应按空组处理，聚合结果不被拖死。 */
     private static final long SOURCE_TIMEOUT_MS = 12_000L;
     /** 超时护栏专用守护线程池（仅负责 complete，不执行请求）。 */
@@ -219,7 +219,7 @@ public final class MusicRepository {
     public CompletableFuture<List<MusicMedia>> search(String keyword) {
         Plugin p = current;
         if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
-        return p.source.search(keyword == null ? "" : keyword, 1, 1);
+        return p.source.search(keyword == null ? "" : keyword, 1, "music");
     }
 
     /**
@@ -286,7 +286,7 @@ public final class MusicRepository {
         synchronized (this) {
             for (Plugin p : plugins) {
                 if (platform.equals(p.source.platform())) {
-                    CompletableFuture<Boolean> f = p.source.search("测试", 1, 1)
+                    CompletableFuture<Boolean> f = p.source.search("测试", 1, "music")
                             .thenApply(items -> items != null && !items.isEmpty());
                     return withTimeout(f, SOURCE_TIMEOUT_MS, false);
                 }
@@ -308,7 +308,7 @@ public final class MusicRepository {
         String kw = keyword == null ? "" : keyword;
         List<CompletableFuture<Aggregated>> futures = new ArrayList<>();
         for (Plugin p : copy) {
-            CompletableFuture<Aggregated> f = p.source.search(kw, 1, 1).thenApply(items ->
+            CompletableFuture<Aggregated> f = p.source.search(kw, 1, "music").thenApply(items ->
                     (items == null || items.isEmpty()) ? null : new Aggregated(p.label, p.source.platform(), items));
             futures.add(withTimeout(f, SOURCE_TIMEOUT_MS, null));
         }

@@ -64,9 +64,11 @@ public final class MusicSource {
     /**
      * 搜索。返回可播放列表；插件未实现 search 或结果为空时返回空列表。
      * 结果逐条回填 source=插件 platform，供多源路由。
+     * type 对齐 MusicFree 契约（字符串 "music"/"album"/"sheet"），旧数字 type 不再适用。
      */
-    public CompletableFuture<List<MusicMedia>> search(String keyword, int page, int type) {
-        String args = new JSONArray().put(keyword == null ? "" : keyword).put(page).put(type).toString();
+    public CompletableFuture<List<MusicMedia>> search(String keyword, int page, String type) {
+        String t = (type == null || type.isEmpty()) ? "music" : type;
+        String args = new JSONArray().put(keyword == null ? "" : keyword).put(page).put(t).toString();
         return sandbox.callJson("search", args).thenApply(result -> {
             List<MusicMedia> list = parseSearch(sandbox.stringify(result));
             tagSource(list);
@@ -74,9 +76,11 @@ public final class MusicSource {
         });
     }
 
-    /** 拉取播放 URL。返回可直接播放的 url；失败时异常交由上层换源策略处理。 */
+    /** 拉取播放 URL。返回可直接播放的 url；失败时异常交由上层换源策略处理。
+     *  播放器侧未指定音质时默认 standard（插件 quality 契约：low/standard/high/super）。 */
     public CompletableFuture<String> getMediaUrl(MusicMedia media, String quality) {
-        String args = new JSONArray().put(itemObject(media)).put(quality == null ? "" : quality).toString();
+        String q = (quality == null || quality.isEmpty()) ? "standard" : quality;
+        String args = new JSONArray().put(itemObject(media)).put(q).toString();
         return sandbox.callJson("getMediaSource", args)
                 .thenApply(result -> {
                     String json = sandbox.stringify(result);
@@ -104,11 +108,17 @@ public final class MusicSource {
                         String s = result.toString();
                         return (s.isEmpty() || "null".equals(s)) ? null : s;
                     }
-                    // 插件返回对象（如 {lrc: "..."}）：JSON 序列化后提取
+                    // 插件返回对象（如 {rawLrc: "..."} / {lrc: "..."}）：JSON 序列化后提取
                     if (!(result instanceof Scriptable)) return null;
                     String json = sandbox.stringify(result);
                     if (json == null || json.isEmpty() || "null".equals(json)) return null;
                     try {
+                        JSONObject obj = new JSONObject(json);
+                        // MusicFree 插件常见歌词返回形态：{rawLrc: "<LRC 文本>"}
+                        if (obj.has("rawLrc")) {
+                            String lrc = obj.optString("rawLrc");
+                            return (lrc == null || lrc.isEmpty() || "null".equals(lrc)) ? null : lrc;
+                        }
                         return new JSONObject("{\"v\":" + json + "}").getString("v");
                     } catch (JSONException e) {
                         return null;
@@ -195,9 +205,9 @@ public final class MusicSource {
         });
     }
 
-    /** 歌手作品：getArtistWorks(artist, page, "song") → {isEnd, data:[MusicItem]}。 */
+    /** 歌手作品：getArtistWorks(artist, page, "music") → {isEnd, data:[MusicItem]}。 */
     public CompletableFuture<List<MusicMedia>> artistSongs(MusicSheet artist, int page) {
-        String args = new JSONArray().put(sheetObject(artist)).put(page).put("song").toString();
+        String args = new JSONArray().put(sheetObject(artist)).put(page).put("music").toString();
         return sandbox.callJson("getArtistWorks", args).thenApply(result -> {
             List<MusicMedia> list = parseWorks(sandbox.stringify(result));
             tagSource(list);
@@ -277,13 +287,16 @@ public final class MusicSource {
         if (songId.isEmpty()) songId = item.optString("id");
         if (songId.isEmpty()) return null;
         long durationSec = item.optLong("duration", 0);
+        // MusicFree 插件封面字段多为 artwork（酷我/酷狗系），兼容 cover
+        String cover = opt(item, "cover");
+        if (cover.isEmpty()) cover = opt(item, "artwork");
         MusicMedia media = new MusicMedia(
                 songId,
                 opt(item, "title"),
                 opt(item, "artist"),
                 opt(item, "album"),
                 durationSec * 1000,
-                opt(item, "cover"),
+                cover,
                 opt(item, "url"),
                 null,
                 null

@@ -126,6 +126,10 @@
         inst.head = function (url, cfg) { return request(merge(defaults, { method: 'header', url: url }, cfg)); };
         inst.create = function (cfg) { return create(merge(defaults, cfg)); };
         inst.defaults = { method: 'get', timeout: 10000 };
+        // 对齐真实 axios CJS 形态：TS 编译产物（import axios from 'axios' → axios_1.default.get）
+        // 与部分插件 (0, axios_1.default)({...}) 调用风格依赖 .default 属性
+        inst.default = inst;
+        inst.axios = inst;
         return inst;
     }
 

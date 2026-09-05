@@ -146,7 +146,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         var messageText by mutableStateOf("")
         // 多音源
         var sources by mutableStateOf<List<MusicRepository.PluginInfo>>(emptyList())
-        var currentSource by mutableStateOf("netease")
+        var currentSource by mutableStateOf("")
         // 下载状态（MusicDownloader 回调递增触发重绘）
         var downloadTick by mutableStateOf(0)
         // 收藏/最近播放
