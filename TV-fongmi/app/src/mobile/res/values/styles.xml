@@ -1,9 +1,10 @@
 <resources>
 
-    <style name="Theme.Base" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar">
+    <style name="Theme.Base" parent="Theme.Material3.Dark.NoActionBar">
         <item name="android:statusBarColor">@color/transparent</item>
         <item name="android:navigationBarColor">@color/transparent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowBackground">@color/bg_dark</item>
     </style>
 
     <style name="Theme.Splash" parent="Theme.SplashScreen">

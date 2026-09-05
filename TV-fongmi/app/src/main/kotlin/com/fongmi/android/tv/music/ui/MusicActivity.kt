@@ -184,8 +184,8 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         var playlistDialogTarget by mutableStateOf<String?>(null)
         // “我的音乐”子 Tab：0 收藏 / 1 最近 / 2 本地 / 3 下载 / 4 歌单
         var libTab by mutableStateOf(0)
-        // 统一设置弹窗（与小说模块共用：主题/皮肤 + 备份/恢复，单一 JSON）
-        var unifiedSettingsVisible by mutableStateOf(false)
+        // 板块内源切换弹窗（源管理收敛到设置 tab，板块内仅保留切换）
+        var sourceSwitchVisible by mutableStateOf(false)
     }
 
     /** 详情视图（歌单详情 / 榜单详情 / 歌手热歌 / 导入结果 共用）。 */
@@ -224,52 +224,6 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
     /** 歌单文本文件选择器（.txt/.lst 等，每行一个歌名/歌手）。 */
     private val importTextPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importTextPlaylist(uri)
-    }
-
-    /** 统一备份导出（与小说模块共用单一 JSON）。 */
-    private val backupExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) exportBackup(uri)
-    }
-
-    /** 统一备份恢复。 */
-    private val backupImportPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importBackup(uri)
-    }
-
-    /** 导出统一备份：音乐收藏/最近/歌单 + 小说书架/进度/书源/订阅源 单文件。 */
-    private fun exportBackup(uri: Uri) {
-        Thread {
-            try {
-                requireContext().contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
-                    it.write(UnifiedBackup.export())
-                }
-                handler.post { Notify.show("备份完成（音乐收藏/歌单/阅读/订阅）") }
-            } catch (e: Exception) {
-                handler.post { Notify.show("导出失败：" + (e.message ?: "")) }
-            }
-        }.start()
-    }
-
-    /** 恢复统一备份（覆盖音乐收藏/最近/歌单与阅读各库）。 */
-    private fun importBackup(uri: Uri) {
-        Thread {
-            try {
-                val text = requireContext().contentResolver.openInputStream(uri)
-                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
-                if (text.isBlank()) {
-                    handler.post { Notify.show("备份文件为空") }
-                    return@Thread
-                }
-                val ok = UnifiedBackup.import(text)
-                handler.post {
-                    refreshLibrary()
-                    refreshPlaylists()
-                    Notify.show(if (ok) "恢复完成（音乐/阅读/订阅）" else "恢复失败：不是有效的备份文件")
-                }
-            } catch (e: Exception) {
-                handler.post { Notify.show("恢复失败：" + (e.message ?: "")) }
-            }
-        }.start()
     }
 
     /** 文本歌单导入：读文本 → 逐行作为关键词批量聚合搜索 → 结果替换当前搜索列表。 */
@@ -422,7 +376,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                     onNext = { service?.next() },
                     onCloseLyricDialog = { ui.lyricDialogVisible = false },
                     onCloseMessage = { ui.messageVisible = false },
-                    onOpenSources = { ui.sourceDialogVisible = true },
+                    onOpenSources = { ui.sourceSwitchVisible = true }, // 板块内▾只做切换；管理在设置 tab
                     onCycleSpeed = ::cycleSpeed,
                     onOpenSleep = { ui.sleepDialogVisible = true },
                     onSwitchSource = ::switchSource,
@@ -1346,37 +1300,17 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                 onOk = ::submitPlaylistDialog,
             )
         }
-        if (ui.unifiedSettingsVisible) {
-            // 统一设置与阅读模块共用：主题（全局 ThemeStore）+ 备份/恢复（单一 JSON 含音乐本地库）
-            UnifiedSettingsDialog(
-                theme = ThemeStore.get().theme,
-                fontSize = ReaderStore.get().fontSize,
-                lineHeight = ReaderStore.get().lineHeight,
-                onTheme = {
-                    ThemeStore.get().theme = it
-                },
-                onFontSize = {
-                    ReaderStore.get().fontSize = it
-                    ReaderStore.get().saveSettings()
-                },
-                onLineHeight = {
-                    ReaderStore.get().lineHeight = it
-                    ReaderStore.get().saveSettings()
-                },
-                onExport = {
-                    ui.unifiedSettingsVisible = false
-                    backupExportPicker.launch("tv_fongmi_backup.json")
-                },
-                onImport = {
-                    ui.unifiedSettingsVisible = false
-                    backupImportPicker.launch(arrayOf("*/*"))
-                },
-                onClose = { ui.unifiedSettingsVisible = false },
+        if (ui.sourceSwitchVisible) {
+            SourceSwitchDialog(
+                current = ui.currentSource,
+                sources = ui.sources,
+                onClose = { ui.sourceSwitchVisible = false },
+                onSwitch = ::switchSource,
             )
         }
     }
 
-    /** 顶部 Tab：搜索 / 歌单 / 我的音乐。 */
+    /** 顶部 Tab：搜索 / 我的音乐 + 当前音源切换（源管理与导入收敛到设置 tab）。 */
     @Composable
     private fun TopTabs(tab: Int, onSelect: (Int) -> Unit, onOpenSources: () -> Unit) {
         Row(
@@ -1390,17 +1324,10 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
             }
             Spacer(Modifier.weight(1f))
             Text(
-                "设置",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { ui.unifiedSettingsVisible = true }.padding(vertical = 4.dp),
-            )
-            Spacer(Modifier.width(14.dp))
-            Text(
-                "音源 " + ui.currentSource + " ▾",
+                "当前音源 " + ui.currentSource + " ▾",
                 fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { onOpenSources() }.padding(vertical = 4.dp),
+                modifier = Modifier.clickable { onOpenSources() }.padding(vertical = 4.dp, horizontal = 6.dp),
             )
         }
         HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(top = 4.dp))
@@ -1888,6 +1815,56 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }
                         .padding(vertical = 10.dp),
                 )
+            }
+        }
+    }
+
+    /** 板块内音源切换弹窗：只列已启用源+点选切换（导入/测试/删除在设置 tab 的「音乐音源」）。
+     *  注意：在内置插件仍在加载时 [sources] 可能为空，提示等待。 */
+    @Composable
+    private fun SourceSwitchDialog(
+        current: String,
+        sources: List<MusicRepository.PluginInfo>,
+        onClose: () -> Unit,
+        onSwitch: (String) -> Unit,
+    ) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().fillMaxSize().background(Color(0xE6000000))
+                    .padding(horizontal = 40.dp, vertical = 24.dp),
+            ) {
+                Text("切换音源", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp))
+                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    if (sources.isEmpty()) {
+                        Text("插件源加载中或为空，可在「设置 → 音乐音源」导入", fontSize = 12.sp,
+                            color = Color(0xFF777777))
+                    } else {
+                        sources.forEach { info ->
+                            val isCur = info.platform == current
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    if (!isCur) onSwitch(info.platform)
+                                    onClose()
+                                }.padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(if (isCur) "●  " else "○  ", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                                Column(Modifier.weight(1f)) {
+                                    Text((if (info.builtin) "内置 · " else "外部 · ") + info.label + (if (isCur) "（使用中）" else ""),
+                                        fontSize = 14.sp,
+                                        color = if (isCur) Color.White else Color(0xFFCCCCCC))
+                                }
+                            }
+                            HorizontalDivider(color = Color(0x22FFFFFF))
+                        }
+                    }
+                }
+                Text("导入 / 测试 / 删除在「设置 → 音乐音源」", fontSize = 11.sp, color = Color(0xFF666666),
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
         }
     }

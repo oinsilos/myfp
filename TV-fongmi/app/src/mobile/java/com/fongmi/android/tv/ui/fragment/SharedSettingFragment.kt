@@ -27,6 +27,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +47,10 @@ import com.fongmi.android.tv.reader.RssRepository
 import com.fongmi.android.tv.ui.activity.HomeActivity
 import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.ui.common.UnifiedBackup
+import com.fongmi.android.tv.Updater
+import com.fongmi.android.tv.BuildConfig
+import com.fongmi.android.tv.impl.Callback
+import com.fongmi.android.tv.utils.FileUtil
 import com.fongmi.android.tv.utils.Notify
 import java.nio.charset.StandardCharsets
 
@@ -106,24 +111,21 @@ class SharedSettingFragment : Fragment() {
     ) {
         val ts = ThemeStore.get()
         var theme by remember { mutableStateOf(ts.theme) }
-        var fontSize by remember { mutableStateOf(ReaderStore.get().fontSize) }
-        var lineHeight by remember { mutableStateOf(ReaderStore.get().lineHeight) }
-        var sliderValue by remember { mutableStateOf(fontSize.toFloat()) }
         Box(Modifier.fillMaxSize().background(Color(0xFF141414))) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
                 Text("设置", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 4.dp))
-                Text("视频 · 音乐 · 小说 三板块共用；配置源各自板块内管理", fontSize = 11.sp,
+                Text("只放对所有板块的设置；板块专属设置在各自板块内", fontSize = 11.sp,
                     color = Color(0xFF888888), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth())
-                // ---- 板块入口卡片：一层直达各板块设置 ----
+                // ---- 板块入口卡片：源配置管理收敛到这里，板块内仅保留切换 ----
                 Text("板块设置", fontSize = 13.sp, color = Color(0xFF999999),
                     modifier = Modifier.padding(top = 18.dp, bottom = 6.dp))
                 SectionRow("视频设置", "点播 · 播放器 · 弹幕 · 预加载 · 解码", onOpenVideoSettings)
-                SectionRow("音乐音源", "插件源导入 · 切换 · 测试", onOpenMusicSources)
-                SectionRow("书源管理", "书源导入 · 测试 · 订阅源", onOpenReadSources)
+                SectionRow("音乐音源", "插件源导入 · 切换 · 测试（板块内只留切换）", onOpenMusicSources)
+                SectionRow("书源管理", "书源导入 · 测试 · 订阅源（板块内只留切换）", onOpenReadSources)
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
-                // ---- 通用：主题/皮肤 ----
+                // ---- 通用：主题/皮肤（全局） ----
                 Text("主题 / 皮肤", fontSize = 14.sp, color = Color(0xFFDDDDDD))
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
                     for ((key, label) in listOf("dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
@@ -146,43 +148,7 @@ class SharedSettingFragment : Fragment() {
                 Text("护眼（暖色）用于小说正文；视频/音乐播放页恒定深色", fontSize = 11.sp,
                     color = Color(0xFF777777), modifier = Modifier.padding(top = 4.dp))
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
-                // ---- 阅读（仅小说） ----
-                Text("阅读字号（仅小说）  ${fontSize}sp", fontSize = 14.sp, color = Color(0xFFDDDDDD))
-                Slider(
-                    value = sliderValue,
-                    onValueChange = { sliderValue = it },
-                    onValueChangeFinished = {
-                        fontSize = sliderValue.toInt()
-                        val rs = ReaderStore.get()
-                        rs.fontSize = fontSize
-                        rs.saveSettings()
-                    },
-                    valueRange = 12f..30f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("行距（仅小说）", fontSize = 14.sp, color = Color(0xFFDDDDDD))
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                    for (opt in listOf(1.5f, 1.8f, 2.0f, 2.4f)) {
-                        val sel = Math.abs(lineHeight - opt) < 0.01f
-                        Text(
-                            if (opt == opt.toInt().toFloat()) opt.toInt().toString() else opt.toString(),
-                            fontSize = 14.sp,
-                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
-                                .clickable {
-                                    lineHeight = opt
-                                    val rs = ReaderStore.get()
-                                    rs.lineHeight = opt
-                                    rs.saveSettings()
-                                }
-                                .padding(horizontal = 16.dp, vertical = 7.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                }
-                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
-                // ---- 数据：备份 / 恢复 ----
+                // ---- 数据：备份 / 恢复（全局） ----
                 Text("备份 / 恢复", fontSize = 14.sp, color = Color(0xFFDDDDDD))
                 Text("单一 JSON 覆盖书架、进度、书签、设置、书源、订阅源、音乐收藏/歌单",
                     fontSize = 11.sp, color = Color(0xFF888888), modifier = Modifier.padding(top = 4.dp))
@@ -208,6 +174,47 @@ class SharedSettingFragment : Fragment() {
                     Text("选择 .json", fontSize = 12.sp, color = Color(0xFF888888))
                     Spacer(Modifier.width(10.dp))
                     Text("恢复", fontSize = 13.sp, color = Color(0xFF4FC3F7))
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
+                // ---- 通用：缓存 / 版本（全局） ----
+                Text("通用", fontSize = 13.sp, color = Color(0xFF999999),
+                    modifier = Modifier.padding(bottom = 4.dp))
+                var cacheSize by remember { mutableStateOf("…") }
+                LaunchedEffect(Unit) {
+                    FileUtil.getCacheSize(object : Callback() {
+                        override fun success(result: String) { cacheSize = result }
+                    })
+                }
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        FileUtil.clearCache(object : Callback() {
+                            override fun success() {
+                                Notify.show("缓存已清除")
+                                FileUtil.getCacheSize(object : Callback() {
+                                    override fun success(result: String) { cacheSize = result }
+                                })
+                            }
+                        })
+                    }.padding(vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("清除缓存", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text(cacheSize, fontSize = 12.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("清除", fontSize = 13.sp, color = Color(0xFF4FC3F7))
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+                Row(
+                    Modifier.fillMaxWidth().clickable { Updater.create().force().start(requireActivity()) }
+                        .padding(vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("版本 / 更新", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text(BuildConfig.VERSION_NAME, fontSize = 12.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("检查", fontSize = 13.sp, color = Color(0xFF4FC3F7))
                 }
                 Spacer(Modifier.height(24.dp))
             }

@@ -92,8 +92,6 @@ import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
 import com.fongmi.android.tv.ui.common.ThemeStore
-import com.fongmi.android.tv.ui.common.UnifiedBackup
-import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
 import com.fongmi.android.tv.utils.Notify
 import com.github.catvod.net.OkHttp
 import java.nio.charset.StandardCharsets
@@ -126,6 +124,8 @@ class ReaderFragment : Fragment() {
         // 书源管理
         var sources by mutableStateOf<List<BookSource>>(emptyList())
         var sourceDialogVisible by mutableStateOf(false)
+        /** 板块内书源入口只做切换（启用/停用点选），导入/测试/删除在「设置 → 书源管理」。 */
+        var sourceSwitchVisible by mutableStateOf(false)
         var importing by mutableStateOf(false)
         // 书籍详情 + 目录
         var book by mutableStateOf<Book?>(null)
@@ -167,8 +167,6 @@ class ReaderFragment : Fragment() {
         var fulltextHits by mutableStateOf<List<FulltextHit>>(emptyList())
         // 阅读统计弹窗
         var statsVisible by mutableStateOf(false)
-        // 备份 / 恢复 + 主题（统一设置弹窗，动画音乐小说共用同一份备份）
-        var unifiedSettingsVisible by mutableStateOf(false)
         // 缓存管理页：列出已缓存的书，支持单本/全部清除
         var cacheMode by mutableStateOf(false)
         var cacheBooks by mutableStateOf<List<ReaderStore.CachedBook>>(emptyList())
@@ -265,16 +263,6 @@ class ReaderFragment : Fragment() {
         if (uri != null) exportOpmlFile(uri)
     }
 
-    /** 备份导出（阅读库 + 书源 + 订阅源写入单个 JSON）。 */
-    private val backupExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) exportBackup(uri)
-    }
-
-    /** 备份恢复（读取 JSON 覆盖阅读库/书源/订阅源）。 */
-    private val backupImportPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importBackup(uri)
-    }
-
     companion object {
         private const val TAG = "ReaderFragment"
     }
@@ -357,9 +345,6 @@ class ReaderFragment : Fragment() {
                     onOpenFulltext = { ui.fulltextVisible = true },
                     onOpenCacheHit = ::openFromCacheHit,
                     onOpenStats = { ui.statsVisible = true },
-                    onOpenBackup = { ui.unifiedSettingsVisible = true },
-                    onExportBackup = { backupExportPicker.launch("reader_backup.json") },
-                    onImportBackup = { backupImportPicker.launch(arrayOf("*/*")) },
                     onOpenCache = { ui.cacheMode = true; refreshCacheBooks() },
                     onCloseCache = { ui.cacheMode = false },
                     onClearBookCache = { url ->
@@ -414,7 +399,7 @@ class ReaderFragment : Fragment() {
                         }
                         Notify.show("已删除订阅源")
                     },
-                    onOpenSources = { ui.sourceDialogVisible = true },
+                    onOpenSources = { ui.sourceSwitchVisible = true }, // 板块内只做切换；管理在设置 tab
                     onImport = { importSource(it) },
                     onToggleSource = { toggleSource(it) },
                     onRemoveSource = { removeSource(it) },
@@ -1128,44 +1113,6 @@ class ReaderFragment : Fragment() {
         }.start()
     }
 
-    /** 导出统一备份：阅读库 + 书源 + 订阅源 + 音乐收藏/歌单 单文件（与音乐模块共用）。 */
-    private fun exportBackup(uri: Uri) {
-        Thread {
-            try {
-                requireContext().contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
-                    it.write(UnifiedBackup.export())
-                }
-                mainHandler.post { Notify.show("备份完成（书架/进度/书签/设置/书源/订阅源/音乐收藏歌单）") }
-            } catch (e: Exception) {
-                mainHandler.post { Notify.show("导出失败：" + (e.message ?: "")) }
-            }
-        }.start()
-    }
-
-    /** 恢复统一备份：解析 JSON 后逐项覆盖各模块本地库。 */
-    private fun importBackup(uri: Uri) {
-        Thread {
-            try {
-                val text = requireContext().contentResolver.openInputStream(uri)
-                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
-                if (text.isBlank()) {
-                    mainHandler.post { Notify.show("备份文件为空") }
-                    return@Thread
-                }
-                val ok = UnifiedBackup.import(text)
-                refreshSources()
-                refreshRssSources()
-                refreshShelves()
-                refreshRssFavs()
-                mainHandler.post {
-                    Notify.show(if (ok) "恢复完成（阅读/订阅/音乐）" else "恢复失败：不是有效的备份文件")
-                }
-            } catch (e: Exception) {
-                mainHandler.post { Notify.show("恢复失败：" + (e.message ?: "")) }
-            }
-        }.start()
-    }
-
     /** 阅读设置变更：主题写全局 ThemeStore，字号/行距写 ReaderStore（均持久化），并以新样式重载当前章。 */
     private fun applySettings() {
         val s = ReaderStore.get()
@@ -1402,9 +1349,6 @@ class ReaderFragment : Fragment() {
         onOpenFulltext: () -> Unit,
         onOpenCacheHit: (FulltextHit) -> Unit,
         onOpenStats: () -> Unit,
-        onOpenBackup: () -> Unit,
-        onExportBackup: () -> Unit,
-        onImportBackup: () -> Unit,
         onOpenCache: () -> Unit,
         onCloseCache: () -> Unit,
         onClearBookCache: (String) -> Unit,
@@ -1495,7 +1439,6 @@ class ReaderFragment : Fragment() {
                         shelfCount = ui.shelves.size,
                         onOpenShelf = onOpenShelf,
                         onOpenRss = onOpenRss,
-                        onOpenBackup = onOpenBackup,
                     )
                 }
                 HorizontalDivider(color = Color(0x22FFFFFF))
@@ -1573,6 +1516,13 @@ class ReaderFragment : Fragment() {
                 onTest = onTestSource,
             )
         }
+        if (ui.sourceSwitchVisible) {
+            SourceSwitchDialog(
+                sources = ui.sources,
+                onClose = { ui.sourceSwitchVisible = false },
+                onToggle = onToggleSource,
+            )
+        }
         if (ui.importDialogVisible) {
             ImportDialog(
                 onPickLocal = { localBookPicker.launch(arrayOf("*/*")) },
@@ -1608,25 +1558,6 @@ class ReaderFragment : Fragment() {
                     ui.statsVisible = false
                     openBook(Book(url, name, "本地文件", ""), true)
                 },
-            )
-        }
-        if (ui.unifiedSettingsVisible) {
-            UnifiedSettingsDialog(
-                theme = ui.theme,
-                fontSize = ui.fontSize,
-                lineHeight = ui.lineHeight,
-                onTheme = { ui.theme = it; applySettings() },
-                onFontSize = { ui.fontSize = it; applySettings() },
-                onLineHeight = { ui.lineHeight = it; applySettings() },
-                onExport = {
-                    ui.unifiedSettingsVisible = false
-                    onExportBackup()
-                },
-                onImport = {
-                    ui.unifiedSettingsVisible = false
-                    onImportBackup()
-                },
-                onClose = { ui.unifiedSettingsVisible = false },
             )
         }
         if (ui.settingsDialogVisible) {
@@ -1721,7 +1652,6 @@ class ReaderFragment : Fragment() {
         shelfCount: Int,
         onOpenShelf: () -> Unit,
         onOpenRss: () -> Unit,
-        onOpenBackup: () -> Unit,
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -1743,13 +1673,6 @@ class ReaderFragment : Fragment() {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenRss).padding(horizontal = 6.dp, vertical = 4.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                "备份",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onOpenBackup).padding(horizontal = 6.dp, vertical = 4.dp),
             )
             Spacer(Modifier.width(4.dp))
             OutlinedTextField(
@@ -1781,7 +1704,7 @@ class ReaderFragment : Fragment() {
             }
         } else if (results.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("输入书名搜索；书源可在右上角导入/切换", fontSize = 13.sp, color = Color(0xFF666666))
+                Text("输入书名搜索；书源可点上方「书源」切换，导入/删除在「设置 → 书源管理」", fontSize = 13.sp, color = Color(0xFF666666))
             }
         } else {
             LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
@@ -2778,6 +2701,56 @@ class ReaderFragment : Fragment() {
         "sepia" -> Pair(Color(0xFF241B12), Color(0xFFD8C9A8))
         "night" -> Pair(Color(0xFF050505), Color(0xFF8A8A8A))
         else -> Pair(Color(0xFF141414), Color(0xFFC9C9C9))
+    }
+
+    /** 板块内书源切换弹窗：只列书源 + 点按启用/停用（导入/测试/删除在设置 tab 的「书源管理」）。 */
+    @Composable
+    private fun SourceSwitchDialog(
+        sources: List<BookSource>,
+        onClose: () -> Unit,
+        onToggle: (String) -> Unit,
+    ) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("切换书源", fontSize = 16.sp, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp))
+                Text("点按启用/停用要用来搜索的书源；已启用源全部参与搜索", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                    if (sources.isEmpty()) {
+                        item {
+                            Text("暂无书源，可到「设置 → 书源管理」导入", fontSize = 12.sp,
+                                color = Color(0xFF777777), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp))
+                        }
+                    }
+                    itemsIndexed(sources) { _, s ->
+                        Row(Modifier.fillMaxWidth().clickable { onToggle(s.url) }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (s.enabled) "●  " else "○  ", fontSize = 14.sp,
+                                color = if (s.enabled) MaterialTheme.colorScheme.primary else Color(0xFF555555))
+                            Column(Modifier.weight(1f)) {
+                                Text(s.name, fontSize = 14.sp,
+                                    color = if (s.enabled) Color(0xFFDDDDDD) else Color(0xFF777777), maxLines = 1)
+                                Text(if (s.enabled) "正在使用" else "已停用", fontSize = 10.sp,
+                                    color = Color(0xFF666666))
+                            }
+                        }
+                        HorizontalDivider(color = Color(0x16FFFFFF))
+                    }
+                }
+                Text("导入 / 测试 / 删除在「设置 → 书源管理」", fontSize = 11.sp, color = Color(0xFF666666),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
     }
 
     @Composable
