@@ -1,7 +1,13 @@
 # TV
 -keep class androidx.leanback.widget.** { *; }
--keep class com.fongmi.rhino.method.** { *; }
 -keep class com.fongmi.android.tv.bean.** { *; }
+
+# Rhino (htmlunit-core-js fork)：解释器/反射依赖类名定位内部实现，
+# 混淆后插件引擎初始化解构失败（“rhino plugin runtime init failed”），必须整体保留。
+-keep class org.htmlunit.corejs.** { *; }
+-dontwarn org.htmlunit.**
+# Rhino 桥（method/plugin/utils/crawler/bean）：与 JS 引擎交互的统一保留。
+-keep class com.fongmi.rhino.** { *; }
 
 # Gson
 -keep class com.google.gson.** { *; }

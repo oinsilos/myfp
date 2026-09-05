@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -82,6 +84,9 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     private val ui = UiState()
+    /** 搜索兜底：底层（书源网络/规则求值）无论怎样，25s 内必须结束搜索态，绝不无限转圈。 */
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val SEARCH_TIMEOUT_MS = 25_000L
 
     companion object {
         private const val TAG = "ReaderActivity"
@@ -133,8 +138,16 @@ class ReaderActivity : AppCompatActivity() {
         ui.keyword = kw
         ui.searching = true
         ui.results = emptyList()
+        uiHandler.removeCallbacksAndMessages(null)
+        // 兜底：无论底层如何，25s 内必须结束搜索态（书源转圈的最终护栏）
+        uiHandler.postDelayed({
+            if (!ui.searching) return@postDelayed
+            ui.searching = false
+            Notify.show("搜索超时，请检查书源或网络")
+        }, SEARCH_TIMEOUT_MS)
         ReaderRepository.get().search(kw).whenComplete { list, e ->
             runOnUiThread {
+                uiHandler.removeCallbacksAndMessages(null)
                 ui.searching = false
                 if (e != null) {
                     Notify.show("搜索失败：" + friendly(e))

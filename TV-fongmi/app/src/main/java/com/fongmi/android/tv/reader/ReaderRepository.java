@@ -36,6 +36,18 @@ public final class ReaderRepository {
     private static final String PREFS = "reader_sources";
     private static final String KEY_SOURCES = "sources";
     private static final String BUILTIN = "reader/builtin_sources.json";
+    /** 单源搜索超时：源站点无响应/卡死时按空结果结束，避免 allOf 无限等待（书源加载转圈的根因）。 */
+    private static final long SOURCE_TIMEOUT_MS = 12_000L;
+    /** 整次搜索整体超时：兜底之上的兜底，保证 UI 永远能拿到结论。 */
+    private static final long SEARCH_TIMEOUT_MS = 25_000L;
+    /** 详情/目录/正文单页超时：防止卡死任务长期占用 io 线程池（池占满后新搜索排队=转圈）。 */
+    private static final long PAGE_TIMEOUT_MS = 20_000L;
+    /** 超时护栏专用守护线程池（仅负责 complete，不执行请求，避免占用业务 io 线程）。 */
+    private static final ExecutorService timeoutPool = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "reader-timeout");
+        t.setDaemon(true);
+        return t;
+    });
 
     private static volatile ReaderRepository instance;
     private final ExecutorService io = Executors.newFixedThreadPool(4);
@@ -283,15 +295,18 @@ public final class ReaderRepository {
 
     // ------------------------------------------------------------ 网络链路
 
-    /** 搜索（全部启用源并行，汇总结果）。 */
+    /** 搜索（全部启用源并行，汇总结果）。任一源卡死/超时按空结果处理，整次搜索有总时限。 */
     public CompletableFuture<List<Book>> search(String keyword) {
         List<BookSource> list = enabledSources();
         if (list.isEmpty()) return CompletableFuture.completedFuture(Collections.emptyList());
         List<CompletableFuture<List<Book>>> futures = new ArrayList<>();
         for (BookSource s : list.subList(0, Math.min(4, list.size()))) {
-            futures.add(CompletableFuture.supplyAsync(() -> searchOne(s, keyword), io));
+            CompletableFuture<List<Book>> f = CompletableFuture.supplyAsync(() -> searchOne(s, keyword), io);
+            // 单源 12s 兜底：到点强制按空结果结束，allOf 不再被单个卡死源拖住
+            withTimeout(f, SOURCE_TIMEOUT_MS, Collections.emptyList());
+            futures.add(f);
         }
-        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+        CompletableFuture<List<Book>> combined = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                 .thenApply(v -> {
                     List<Book> out = new ArrayList<>();
                     for (CompletableFuture<List<Book>> f : futures) {
@@ -302,6 +317,21 @@ public final class ReaderRepository {
                     }
                     return out;
                 });
+        // 整次搜索总时限：即便上面出现意外，UI 也能在 25s 内拿到结论
+        withTimeout(combined, SEARCH_TIMEOUT_MS, Collections.emptyList());
+        return combined;
+    }
+
+    /** 到点强制完成（底层任务继续执行，OkHttp 30s 超时兜底释放线程），保证调用方永远不被卡死。 */
+    private static <T> void withTimeout(CompletableFuture<T> future, long ms, T fallback) {
+        timeoutPool.execute(() -> {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                return;
+            }
+            future.complete(fallback);
+        });
     }
 
     private List<Book> searchOne(BookSource s, String keyword) {
@@ -357,10 +387,10 @@ public final class ReaderRepository {
         return out;
     }
 
-    /** 详情（简介/封面等）：攻书详情页按 ruleBookInfo 求值。 */
+    /** 详情（简介/封面等）：攻书详情页按 ruleBookInfo 求值。超时/失败原样返回。 */
     public CompletableFuture<Book> detail(Book book) {
         if (book.url == null || book.url.isEmpty()) return CompletableFuture.completedFuture(book);
-        return CompletableFuture.supplyAsync(() -> {
+        CompletableFuture<Book> f = CompletableFuture.supplyAsync(() -> {
             BookSource s = sourceOf(book.source);
             if (s == null || s.ruleBookInfo == null) return book;
             try {
@@ -381,12 +411,14 @@ public final class ReaderRepository {
             }
             return book;
         }, io);
+        withTimeout(f, PAGE_TIMEOUT_MS, book);
+        return f;
     }
 
-    /** 目录：ruleToc 章节列表（URL 与名称）。 */
+    /** 目录：ruleToc 章节列表（URL 与名称）。超时以单章兜底返回。 */
     public CompletableFuture<Book> toc(Book book) {
         if (book.url == null || book.url.isEmpty()) return CompletableFuture.completedFuture(book);
-        return CompletableFuture.supplyAsync(() -> {
+        CompletableFuture<Book> f = CompletableFuture.supplyAsync(() -> {
             BookSource s = sourceOf(book.source);
             if (s == null || s.ruleToc == null) return book;
             try {
@@ -416,14 +448,16 @@ public final class ReaderRepository {
             }
             return book;
         }, io);
+        withTimeout(f, PAGE_TIMEOUT_MS, book);
+        return f;
     }
 
-    /** 正文：ruleContent.content 求值（HTML 片段，WebView 渲染），失败/空抛错供 UI 提示。 */
+    /** 正文：ruleContent.content 求值（HTML 片段，WebView 渲染），失败/空抛错供 UI 提示。超时按空返回。 */
     public CompletableFuture<String> chapter(String chapterUrl, String sourceUrl) {
         if (chapterUrl == null || chapterUrl.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
-        return CompletableFuture.supplyAsync(() -> {
+        CompletableFuture<String> f = CompletableFuture.supplyAsync(() -> {
             BookSource s = sourceOf(sourceUrl);
             try {
                 String raw = OkHttp.string(chapterUrl);
@@ -453,6 +487,8 @@ public final class ReaderRepository {
                 throw new CompletionException(e);
             }
         }, io);
+        withTimeout(f, PAGE_TIMEOUT_MS, null);
+        return f;
     }
 
     private BookSource sourceOf(String url) {

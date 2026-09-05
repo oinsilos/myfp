@@ -73,7 +73,9 @@ public final class PluginSandbox {
             })).get();
             ready = true;
         } catch (Exception e) {
-            throw new RuntimeException("rhino plugin runtime init failed", e);
+            Throwable c = e.getCause() == null ? e : e.getCause();
+            String detail = c == null ? "" : (c.getMessage() == null ? c.toString() : c.getMessage());
+            throw new RuntimeException("rhino plugin runtime init failed: " + detail, e);
         }
     }
 
