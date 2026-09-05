@@ -118,30 +118,6 @@
             </intent-filter>
         </receiver>
 
-        <activity
-            android:name=".music.ui.MusicActivity"
-            android:exported="false"
-            android:theme="@style/Theme.App"
-            android:label="音乐搜索" />
-
-        <activity
-            android:name=".reader.ui.ReaderActivity"
-            android:exported="true"
-            android:theme="@style/Theme.App"
-            android:label="书源阅读">
-            <!-- 打开/分享 txt/epub 文件：直接导入本地书 -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:mimeType="text/plain" />
-                <data android:mimeType="text/*" />
-                <data android:mimeType="application/epub+zip" />
-                <data android:mimeType="application/octet-stream" />
-            </intent-filter>
-        </activity>
-
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />

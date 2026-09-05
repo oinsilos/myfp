@@ -12,11 +12,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
+import android.view.LayoutInflater
 import android.view.Surface
 import android.view.TextureView
-import androidx.activity.compose.setContent
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -69,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -79,6 +81,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.fragment.app.Fragment
 
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
@@ -109,10 +112,11 @@ data class FulltextHit(
 )
 
 /**
- * 阅读（书源）界面：搜索 → 书籍详情/目录 → 正文阅读（Compose 段落排版，断点按段落号恢复）。
+ * 阅读（书源）板块 Fragment：搜索 → 书籍详情/目录 → 正文阅读（Compose 段落排版，断点按段落号恢复）。
  * 书源管理：内置 + 粘贴 JSON/URL 导入；搜索并发跑全部启用书源。
+ * 内嵌于 HomeActivity 底部导航（视频/音乐/小说/设置），隐藏时视图不销毁，切回即原样。
  */
-class ReaderActivity : AppCompatActivity() {
+class ReaderFragment : Fragment() {
 
     private class UiState {
         var results by mutableStateOf<List<Book>>(emptyList())
@@ -198,8 +202,8 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     private val ui = UiState()
-    /** TTS 朗读引擎（本机 TextToSpeech / 在线 HTTP）。 */
-    private val ttsSpeaker = TtsSpeaker(this)
+    /** TTS 朗读引擎（本机 TextToSpeech / 在线 HTTP），fragment attach 后惰性创建。 */
+    private val ttsSpeaker by lazy { TtsSpeaker(requireContext()) }
     /** 切章后等正文就绪继续朗读（自动切章 / 手动上下章）。 */
     private var ttsPendingCont = false
     /** 朗读排队：正文加载完成后自动开始（首次点朗读时正文未就绪）。 */
@@ -264,19 +268,14 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val TAG = "ReaderActivity"
-
-        @JvmStatic
-        fun start(context: Context) {
-            context.startActivity(Intent(context, ReaderActivity::class.java))
-        }
+        private const val TAG = "ReaderFragment"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ReaderRepository.get().init(this)
-        ReaderStore.get().init(this)
-        RssRepository.get().init(this)
+        ReaderRepository.get().init(requireContext())
+        ReaderStore.get().init(requireContext())
+        RssRepository.get().init(requireContext())
         val rdr = ReaderStore.get()
         ui.fontSize = rdr.fontSize
         ui.lineHeight = rdr.lineHeight
@@ -291,9 +290,15 @@ class ReaderActivity : AppCompatActivity() {
         refreshSources()
         refreshShelves()
         refreshRssSources()
-        // 共享/打开导入：其他 App 分享 txt/epub 打开本页，或分享书源文本
-        handleSharedIntent(intent)
-        setContent {
+        // 板块级定时器：RSS 定时刷新 + 阅读时长统计（fragment 只创建一次，隐藏切回不受影响）
+        mainHandler.postDelayed(rssRefreshTick, 30 * 60_000L)
+        mainHandler.postDelayed(statsTick, 60_000L)
+    }
+
+    /** 板块视图：Compose 根（fragment 的 onCreateView 一次性渲染，切板块不重建视图）。 */
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
                 background = Color(0xFF141414),
@@ -406,56 +411,24 @@ class ReaderActivity : AppCompatActivity() {
                     onTestSource = ::testSource,
                 )
             }
-        }
-        mainHandler.postDelayed(rssRefreshTick, 30 * 60_000L)
-        mainHandler.postDelayed(statsTick, 60_000L)
-    }
-
-    /** 单实例模式下再次分享/打开 → 继续走导入流程。 */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleSharedIntent(intent)
-    }
-
-    /** 共享导入：ACTION_SEND/VIEW。
-     *  - 文件 uri（txt/epub）→ 直接导入本地书
-     *  - 纯文本（书源 JSON / 备份 JSON / OPML）→ 自动识别分别导入
-     */
-    private fun handleSharedIntent(intent: Intent) {
-        val action = intent.action ?: return
-        val uri = intent.data
-        if (uri != null) {
-            importLocalBook(uri)
-            return
-        }
-        if (Intent.ACTION_SEND == action) {
-            val shared = intent.getStringExtra(Intent.EXTRA_TEXT)
-            if (!shared.isNullOrBlank()) {
-                val t = shared.trim()
-                when {
-                    t.startsWith("http") && (t.endsWith(".txt") || t.endsWith(".epub")) ->
-                        importRemoteBook(t)
-                    t.contains("bookSourceUrl") -> importSource(t)
-                    t.contains("rss_sources") || t.contains("\"rss\"") -> RssRepository.get().importSources(t)
-                    t.contains("\"shelf\"") -> if (ReaderStore.get().importJson(t)) {
-                        refreshShelves(); Notify.show("已恢复阅读库")
-                    } else Notify.show("导入内容无法识别")
-                    else -> Notify.show("分享内容无法识别为书籍/书源/备份")
-                }
             }
         }
     }
 
-    override fun onDestroy() {
+    override fun onDestroyView() {
+        super.onDestroyView()
         mainHandler.removeCallbacks(rssRefreshTick)
         mainHandler.removeCallbacks(statsTick)
+    }
+
+    override fun onDestroy() {
         ttsSpeaker.release()
         super.onDestroy()
     }
 
-    /** 退到后台/切走时立即落盘进度，保证系统杀进程后也能断点续读。 */
-    override fun onPause() {
-        super.onPause()
+    /** 退到后台时立即落盘进度，保证系统杀进程后也能断点续读（切板块不销毁视图，进度由滚动节流保存）。 */
+    override fun onStop() {
+        super.onStop()
         saveProgress()
     }
 
@@ -477,7 +450,7 @@ class ReaderActivity : AppCompatActivity() {
             Notify.show("搜索超时，请检查书源或网络")
         }, SEARCH_TIMEOUT_MS)
         ReaderRepository.get().search(kw).whenComplete { list, e ->
-            runOnUiThread {
+            mainHandler.post {
                 uiHandler.removeCallbacksAndMessages(null)
                 ui.searching = false
                 if (e != null) {
@@ -537,7 +510,7 @@ class ReaderActivity : AppCompatActivity() {
         ReaderRepository.get().detail(book).whenComplete { b, e1 ->
             val bd = b ?: book
             ReaderRepository.get().toc(bd).whenComplete { tb, e2 ->
-                runOnUiThread {
+                mainHandler.post {
                     ui.detailLoading = false
                     ui.book = tb ?: bd
                     refreshBookmarks()
@@ -596,7 +569,7 @@ class ReaderActivity : AppCompatActivity() {
                 return
             }
             RssRepository.get().body(art).whenComplete { html, _ ->
-                runOnUiThread {
+                mainHandler.post {
                     ui.contentLoading = false
                     if (!html.isNullOrEmpty()) {
                         ui.content = html
@@ -610,7 +583,7 @@ class ReaderActivity : AppCompatActivity() {
             return
         }
         ReaderRepository.get().chapter(book.chapters[index].url, book.source).whenComplete { html, e ->
-            runOnUiThread {
+            mainHandler.post {
                 ui.contentLoading = false
                 if (e != null || html == null) {
                     // 网络失败时也尝试缓存兜底（部分缓存场景）
@@ -696,12 +669,12 @@ class ReaderActivity : AppCompatActivity() {
                         cached++
                         val done = cached
                         val all = total
-                        runOnUiThread { ui.cacheText = "缓存 $done/$all" }
+                        mainHandler.post { ui.cacheText = "缓存 $done/$all" }
                     }
                 } catch (ignored: Exception) {
                 }
             }
-            runOnUiThread {
+            mainHandler.post {
                 ui.cacheText = "已缓存 $cached/$total 章"
                 Notify.show("缓存完成：$cached/$total 章")
             }
@@ -712,33 +685,33 @@ class ReaderActivity : AppCompatActivity() {
     private fun importLocalBook(uri: Uri) {
         Thread {
             try {
-                val name = queryName(contentResolver, uri) ?: "本地书籍"
+                val name = queryName(requireContext().contentResolver, uri) ?: "本地书籍"
                 val chapters: List<Pair<String, String>>
                 if (name.lowercase().endsWith(".epub")) {
-                    val stream = contentResolver.openInputStream(uri)
+                    val stream = requireContext().contentResolver.openInputStream(uri)
                     if (stream == null) {
-                        runOnUiThread { Notify.show("无法打开文件") }
+                        mainHandler.post { Notify.show("无法打开文件") }
                         return@Thread
                     }
                     val parsed = EpubImporter.parse(stream)
                     stream.close()
                     if (parsed.isEmpty()) {
-                        runOnUiThread { Notify.show("EPUB 无有效正文") }
+                        mainHandler.post { Notify.show("EPUB 无有效正文") }
                         return@Thread
                     }
                     chapters = parsed.map { it.title to it.text }
                 } else {
-                    val text = contentResolver.openInputStream(uri)
+                    val text = requireContext().contentResolver.openInputStream(uri)
                         ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                     if (text.isBlank()) {
-                        runOnUiThread { Notify.show("文本内容为空") }
+                        mainHandler.post { Notify.show("文本内容为空") }
                         return@Thread
                     }
                     chapters = splitChapters(text)
                 }
                 runImportChapters(name.removeSuffix(".txt").removeSuffix(".epub").ifEmpty { "本地书籍" }, chapters)
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("导入失败：" + (e.message ?: "")) }
+                mainHandler.post { Notify.show("导入失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -751,7 +724,7 @@ class ReaderActivity : AppCompatActivity() {
         Thread {
             try {
                 if (!url.startsWith("http")) {
-                    runOnUiThread { Notify.show("无效链接，需以 http(s) 开头") }
+                    mainHandler.post { Notify.show("无效链接，需以 http(s) 开头") }
                     return@Thread
                 }
                 val chapters: List<Pair<String, String>>
@@ -774,10 +747,10 @@ class ReaderActivity : AppCompatActivity() {
                     chapters = splitChapters(text)
                     name = urlName.removeSuffix(".txt")
                 }
-                runOnUiThread { ui.remoteImporting = false }
+                mainHandler.post { ui.remoteImporting = false }
                 runImportChapters(name.ifEmpty { "远程书籍" }, chapters)
             } catch (e: Exception) {
-                runOnUiThread {
+                mainHandler.post {
                     ui.remoteImporting = false
                     Notify.show("导入失败（$display）：" + (e.message ?: ""))
                 }
@@ -804,7 +777,7 @@ class ReaderActivity : AppCompatActivity() {
             }
             ReaderStore.get().saveChapterNames(bookUrl, names)
             ReaderStore.get().addToShelf(book)
-            runOnUiThread {
+            mainHandler.post {
                 refreshShelves()
                 Notify.show("已导入「${book.name}」${book.chapters.size} 节")
                 // 覆盖简要信息后直接进书架详情（不再请求网络）
@@ -812,7 +785,7 @@ class ReaderActivity : AppCompatActivity() {
                 ui.shelfMode = false
             }
         } catch (e: Exception) {
-            runOnUiThread { Notify.show("导入失败：" + (e.message ?: "")) }
+            mainHandler.post { Notify.show("导入失败：" + (e.message ?: "")) }
         }
     }
 
@@ -862,23 +835,32 @@ class ReaderActivity : AppCompatActivity() {
         ui.reading = false
     }
 
-    /** 系统返回键：按层级逐级返回，而不是直接退出 App（阅读→详情→列表→搜索）。 */
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    /**
+     * 首页返回键回调：返回 true 表示本板块内部已消费（阅读→详情→列表→搜索 逐级退回）；
+     * 退回板块根状态返回 false，交由 HomeActivity 切回视频板块。
+     */
+    fun processBack(): Boolean {
         when {
-            ui.reading -> leaveReader() // 返回详情页或 RSS 文章列表，进度已保存
+            ui.reading -> { leaveReader(); return true } // 返回详情页或 RSS 文章列表，进度已保存
             ui.book != null && ui.book?.source != "rss" -> { // 详情 → 搜索
                 ui.book = null
                 ui.shelfMode = false
                 ui.cacheMode = false
+                return true
             }
             ui.shelfMode || ui.cacheMode -> { // 书架/缓存 → 搜索
                 ui.shelfMode = false
                 ui.cacheMode = false
+                return true
             }
-            ui.rssMode -> ui.rssMode = false // RSS → 搜索
-            else -> super.onBackPressed()
+            ui.rssMode -> { ui.rssMode = false; return true } // RSS → 搜索
         }
+        return false
+    }
+
+    /** 外部分享/打开 txt|epub 文件：HomeActivity 切到本板块后延迟投递进来走本地导入。 */
+    fun importExternal(uri: Uri) {
+        mainHandler.post { importLocalBook(uri) }
     }
 
     private fun saveProgress() {
@@ -1000,7 +982,7 @@ class ReaderActivity : AppCompatActivity() {
         if (!background) ui.rssArticles = emptyList()
         refreshRssShelfState()
         RssRepository.get().refresh(url).whenComplete { list, _ ->
-            runOnUiThread {
+            mainHandler.post {
                 ui.rssLoading = false
                 val items = list ?: emptyList()
                 if (items.isNotEmpty()) ui.rssArticles = items
@@ -1103,15 +1085,15 @@ class ReaderActivity : AppCompatActivity() {
     private fun importOpmlFile(uri: Uri) {
         Thread {
             try {
-                val text = contentResolver.openInputStream(uri)
+                val text = requireContext().contentResolver.openInputStream(uri)
                     ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                 val n = RssRepository.get().importOpml(text)
-                runOnUiThread {
+                mainHandler.post {
                     refreshRssSources()
                     Notify.show(if (n > 0) "OPML 导入完成：新增 $n 个订阅源" else "OPML 内未找到订阅源")
                 }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("OPML 导入失败：" + (e.message ?: "")) }
+                mainHandler.post { Notify.show("OPML 导入失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -1120,12 +1102,12 @@ class ReaderActivity : AppCompatActivity() {
     private fun exportOpmlFile(uri: Uri) {
         Thread {
             try {
-                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                requireContext().contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
                     it.write(RssRepository.get().exportOpml())
                 }
-                runOnUiThread { Notify.show("已导出订阅源 OPML") }
+                mainHandler.post { Notify.show("已导出订阅源 OPML") }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+                mainHandler.post { Notify.show("导出失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -1134,12 +1116,12 @@ class ReaderActivity : AppCompatActivity() {
     private fun exportBackup(uri: Uri) {
         Thread {
             try {
-                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                requireContext().contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
                     it.write(UnifiedBackup.export())
                 }
-                runOnUiThread { Notify.show("备份完成（书架/进度/书签/设置/书源/订阅源/音乐收藏歌单）") }
+                mainHandler.post { Notify.show("备份完成（书架/进度/书签/设置/书源/订阅源/音乐收藏歌单）") }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+                mainHandler.post { Notify.show("导出失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -1148,10 +1130,10 @@ class ReaderActivity : AppCompatActivity() {
     private fun importBackup(uri: Uri) {
         Thread {
             try {
-                val text = contentResolver.openInputStream(uri)
+                val text = requireContext().contentResolver.openInputStream(uri)
                     ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                 if (text.isBlank()) {
-                    runOnUiThread { Notify.show("备份文件为空") }
+                    mainHandler.post { Notify.show("备份文件为空") }
                     return@Thread
                 }
                 val ok = UnifiedBackup.import(text)
@@ -1159,11 +1141,11 @@ class ReaderActivity : AppCompatActivity() {
                 refreshRssSources()
                 refreshShelves()
                 refreshRssFavs()
-                runOnUiThread {
+                mainHandler.post {
                     Notify.show(if (ok) "恢复完成（阅读/订阅/音乐）" else "恢复失败：不是有效的备份文件")
                 }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("恢复失败：" + (e.message ?: "")) }
+                mainHandler.post { Notify.show("恢复失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -1262,7 +1244,7 @@ class ReaderActivity : AppCompatActivity() {
         if (text.isBlank()) return
         ui.importing = true
         ReaderRepository.get().importSource(text.trim()).whenComplete { n, _ ->
-            runOnUiThread {
+            mainHandler.post {
                 ui.importing = false
                 refreshSources()
                 if (n != null && n > 0) {
@@ -1288,14 +1270,14 @@ class ReaderActivity : AppCompatActivity() {
     /** 书源连通性测试（用已保存的书源做一次搜索）。 */
     private fun testSource(url: String) {
         ReaderRepository.get().testSource(url).whenComplete { ok, _ ->
-            runOnUiThread { Notify.show(if (ok) "测试通过" else "测试失败：无结果或源不可达") }
+            mainHandler.post { Notify.show(if (ok) "测试通过" else "测试失败：无结果或源不可达") }
         }
     }
 
     /** RSS 订阅源连通性测试：拉一次文章列表，能解析出条目即视为可用。 */
     private fun testRssSource(url: String) {
         RssRepository.get().refresh(url).whenComplete { list, _ ->
-            runOnUiThread {
+            mainHandler.post {
                 val n = list?.size ?: 0
                 Notify.show(if (n > 0) "测试通过：拉取到 $n 篇文章" else "测试失败：无文章或源不可达")
             }
@@ -1328,10 +1310,10 @@ class ReaderActivity : AppCompatActivity() {
                     }
                 }
                 // 每本书扫完推送一次进度（增量上屏）
-                runOnUiThread { ui.fulltextHits = found.toList() }
+                mainHandler.post { ui.fulltextHits = found.toList() }
                 if (found.size >= cap) break
             }
-            runOnUiThread {
+            mainHandler.post {
                 ui.fulltextSearching = false
                 if (found.isEmpty()) Notify.show("未在已缓存/本地书籍中找到「$keyword」（远程书需先下载章节）")
             }

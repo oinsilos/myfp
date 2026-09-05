@@ -8,6 +8,7 @@ import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
 
+import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.ui.base.BaseFragment;
 
 import java.util.function.IntFunction;
@@ -28,7 +29,10 @@ public class FragmentStateManager {
         String tag = getTag(position);
         Fragment fragment = fm.findFragmentByTag(tag);
         fragment = (fragment == null) ? factory.apply(position) : fragment;
-        FragmentTransaction ft = fm.beginTransaction().setTransition(TRANSIT_FRAGMENT_OPEN);
+        // 板块切换动画：轻滑淡入（tab_in） + 淡出（tab_out），原生平滑切换
+        FragmentTransaction ft = fm.beginTransaction()
+                .setCustomAnimations(R.anim.tab_in, R.anim.tab_out)
+                .setTransition(TRANSIT_FRAGMENT_OPEN);
         if (fm.findFragmentByTag(tag) == null) ft.add(container.getId(), fragment, tag);
         Fragment current = fm.getPrimaryNavigationFragment();
         if (current != null && current != fragment) ft.hide(current);
@@ -40,8 +44,8 @@ public class FragmentStateManager {
         return "android:switcher:" + position;
     }
 
-    public BaseFragment getFragment(int position) {
-        return (BaseFragment) fm.findFragmentByTag(getTag(position));
+    public Fragment getFragment(int position) {
+        return fm.findFragmentByTag(getTag(position));
     }
 
     public boolean isVisible(int position) {
@@ -50,7 +54,7 @@ public class FragmentStateManager {
     }
 
     public boolean canBack(int position) {
-        BaseFragment fragment = getFragment(position);
-        return fragment != null && fragment.canBack();
+        Fragment fragment = getFragment(position);
+        return fragment instanceof BaseFragment && ((BaseFragment) fragment).canBack();
     }
 }

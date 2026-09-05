@@ -4,7 +4,10 @@ import android.app.PendingIntent;
 import android.app.SearchManager;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.view.MenuItem;
 import android.view.View;
@@ -14,6 +17,7 @@ import androidx.core.content.pm.ShortcutInfoCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.drawable.IconCompat;
 import androidx.core.splashscreen.SplashScreen;
+import androidx.fragment.app.Fragment;
 import androidx.viewbinding.ViewBinding;
 
 import com.fongmi.android.tv.App;
@@ -30,8 +34,8 @@ import com.fongmi.android.tv.event.RefreshEvent;
 import com.fongmi.android.tv.event.ServerEvent;
 import com.fongmi.android.tv.event.StateEvent;
 import com.fongmi.android.tv.impl.Callback;
-import com.fongmi.android.tv.music.ui.MusicActivity;
-import com.fongmi.android.tv.reader.ui.ReaderActivity;
+import com.fongmi.android.tv.music.ui.MusicFragment;
+import com.fongmi.android.tv.reader.ui.ReaderFragment;
 import com.fongmi.android.tv.player.extractor.Source;
 import com.fongmi.android.tv.receiver.ShortcutReceiver;
 import com.fongmi.android.tv.server.Server;
@@ -61,6 +65,8 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     private FragmentStateManager mManager;
     private ActivityHomeBinding mBinding;
     private int orientation;
+    /** 等待交给阅读板块导入的外部书籍文件（分享/打开 txt|epub）。 */
+    private Uri pendingBookUri = null;
 
     @Override
     protected ViewBinding getBinding() {
@@ -71,6 +77,7 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         checkAction(intent);
+        handleTabIntent(intent);
     }
 
     @Override
@@ -87,11 +94,11 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         initFragment(savedInstanceState);
         Updater.create().start(this);
         initConfig();
+        if (savedInstanceState == null) handleTabIntent(getIntent()); // 通知栏/外部拉起直接跳对应板块
     }
 
     @Override
     protected void initEvent() {
-        mBinding.navigation.findViewById(R.id.live).setOnLongClickListener(this::addShortcut);
     }
 
     private void checkAction(Intent intent) {
@@ -106,24 +113,43 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     }
 
     private void checkType(Intent intent) {
-        if ("text/plain".equals(intent.getType()) || UrlUtil.path(intent.getData()).endsWith(".m3u")) {
+        String path = UrlUtil.path(intent.getData());
+        if ("text/plain".equals(intent.getType()) || path.endsWith(".m3u")) {
             FileChooser.getUri(intent, uri -> loadLive(UrlUtil.toLocalUrl(uri)));
+        } else if (path.endsWith(".txt") || path.endsWith(".epub")) {
+            // txt/epub 书籍文件 → 切到小说板块导入
+            pendingBookUri = intent.getData();
+            change(3);
+            deliverPendingBook();
         } else {
             FileChooser.getUri(intent, uri -> VideoActivity.file(this, uri));
         }
     }
 
+    /** 等小说板块 Fragment 创建完后把外部书籍文件交给它导入。 */
+    private void deliverPendingBook() {
+        if (pendingBookUri == null) return;
+        Uri u = pendingBookUri;
+        pendingBookUri = null;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            Fragment f = mManager.getFragment(3);
+            if (f instanceof ReaderFragment) ((ReaderFragment) f).importExternal(u);
+        }, 500);
+    }
+
     private void initFragment(Bundle savedInstanceState) {
         mManager = new FragmentStateManager(mBinding.container, getSupportFragmentManager(), position -> {
-            // 0 视频点播 / 1 统一设置（三板块共用）/ 2 视频专属设置（fongmi 原设置迁移入口）及以下
+            // 0 视频点播 / 1 统一设置（三板块共用）/ 2 音乐板块 / 3 阅读板块 / 4 及以下 视频专属设置（fongmi 原设置迁移）
             return switch (position) {
                 case 0 -> VodFragment.newInstance();
                 case 1 -> SharedSettingFragment.newInstance();
-                case 2 -> SettingFragment.newInstance();
-                case 3 -> SettingPlayerFragment.newInstance();
-                case 4 -> SettingDanmakuFragment.newInstance();
-                case 5 -> SettingPreloadFragment.newInstance();
-                case 6 -> SettingDecodeFragment.newInstance();
+                case 2 -> new MusicFragment();
+                case 3 -> new ReaderFragment();
+                case 4 -> SettingFragment.newInstance();
+                case 5 -> SettingPlayerFragment.newInstance();
+                case 6 -> SettingDanmakuFragment.newInstance();
+                case 7 -> SettingPreloadFragment.newInstance();
+                case 8 -> SettingDecodeFragment.newInstance();
                 default -> null;
             };
         });
@@ -165,7 +191,6 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     private void setNavigation() {
         mBinding.navigation.getMenu().findItem(R.id.vod).setVisible(true);
         mBinding.navigation.getMenu().findItem(R.id.setting).setVisible(true);
-        mBinding.navigation.getMenu().findItem(R.id.live).setVisible(LiveConfig.hasUrl());
         mBinding.navigation.getMenu().findItem(R.id.music).setVisible(true);
         mBinding.navigation.getMenu().findItem(R.id.read).setVisible(true);
     }
@@ -175,16 +200,27 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         return false;
     }
 
-    private boolean addShortcut(View view) {
-        ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(this, getString(R.string.nav_live)).setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher)).setIntent(new Intent(Intent.ACTION_VIEW, null, this, LiveActivity.class)).setShortLabel(getString(R.string.nav_live)).build();
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(this, 0, new Intent(this, ShortcutReceiver.class).setAction(ShortcutReceiver.ACTION), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        ShortcutManagerCompat.requestPinShortcut(this, info, pendingIntent.getIntentSender());
-        return true;
+    public void change(int position) {
+        // 底部导航四项：0 视频 / 1 设置 / 2 音乐 / 3 小说；4+ 为视频专属设置的子页（无导航高亮）
+        if (position == 0 || position == 1 || position == 2 || position == 3) {
+            int id = switch (position) {
+                case 0 -> R.id.vod;
+                case 1 -> R.id.setting;
+                case 2 -> R.id.music;
+                default -> R.id.read;
+            };
+            mBinding.navigation.setSelectedItemId(id);
+        } else {
+            mManager.change(position);
+        }
     }
 
-    public void change(int position) {
-        if (position < 2) mBinding.navigation.setSelectedItemId(position == 0 ? R.id.vod : R.id.setting);
-        else mManager.change(position);
+    /** 通知栏/外部拉起跳转：extra "tab" = music|read 时切到对应板块。 */
+    private void handleTabIntent(Intent intent) {
+        if (intent == null) return;
+        String tab = intent.getStringExtra("tab");
+        if ("music".equals(tab)) change(2);
+        else if ("read".equals(tab)) change(3);
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
@@ -215,17 +251,10 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
 
     @Override
     public boolean onNavigationItemSelected(@NonNull MenuItem item) {
-        if (item.getItemId() == R.id.setting) return mManager.change(1);
         if (item.getItemId() == R.id.vod) return mManager.change(0);
-        if (item.getItemId() == R.id.live) return openLive();
-        if (item.getItemId() == R.id.music) {
-            MusicActivity.start(this);
-            return true;
-        }
-        if (item.getItemId() == R.id.read) {
-            ReaderActivity.start(this);
-            return true;
-        }
+        if (item.getItemId() == R.id.setting) return mManager.change(1);
+        if (item.getItemId() == R.id.music) return mManager.change(2);
+        if (item.getItemId() == R.id.read) return mManager.change(3);
         return false;
     }
 
@@ -244,15 +273,18 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
 
     @Override
     protected void onBackInvoked() {
-        if (!mBinding.navigation.getMenu().findItem(R.id.vod).isVisible()) {
-            setNavigation();
-        } else if (mManager.isVisible(6) || mManager.isVisible(5)) { // 解码/预加载 → 播放器设置
-            change(3);
-        } else if (mManager.isVisible(4) || mManager.isVisible(3)) { // 弹幕/播放器 → 视频专属设置
-            change(2);
-        } else if (mManager.isVisible(2)) { // 视频专属设置 → 统一设置
+        if (mManager.isVisible(8) || mManager.isVisible(7)) { // 解码/预加载 → 播放器设置
+            change(5);
+        } else if (mManager.isVisible(6) || mManager.isVisible(5)) { // 弹幕/播放器 → 视频专属设置
+            change(4);
+        } else if (mManager.isVisible(4)) { // 视频专属设置 → 统一设置
             change(1);
         } else if (mManager.isVisible(1)) { // 统一设置 → 首页
+            change(0);
+        } else if (mManager.isVisible(3)) { // 小说板块：内部逐级退回，退回板块根则切回视频
+            Fragment f = mManager.getFragment(3);
+            if (!(f instanceof ReaderFragment) || !((ReaderFragment) f).processBack()) change(0);
+        } else if (mManager.isVisible(2)) { // 音乐板块 → 首页
             change(0);
         } else if (mManager.canBack(0)) {
             if (PlaybackService.isRunning()) Util.moveToBackground(this);

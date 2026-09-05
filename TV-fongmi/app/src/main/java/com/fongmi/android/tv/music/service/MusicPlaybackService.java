@@ -300,7 +300,10 @@ public final class MusicPlaybackService extends Service {
         String sub = media == null ? "" : (media.artist + (media.album != null && !media.album.isEmpty() ? " · " + media.album : ""));
         // 通知栏歌词：有当前句则显示歌词，否则歌手/专辑
         String text = (lyricHint != null && !lyricHint.isEmpty()) ? lyricHint : sub;
-        Intent open = new Intent(this, com.fongmi.android.tv.music.ui.MusicActivity.class);
+        // 通知点击：回到首页并切到音乐板块（音乐/小说已内嵌为首页板块）
+        Intent open = new Intent(this, com.fongmi.android.tv.ui.activity.HomeActivity.class)
+                .putExtra("tab", "music")
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_music_notify)

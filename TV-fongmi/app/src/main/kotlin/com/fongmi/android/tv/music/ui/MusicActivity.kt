@@ -16,11 +16,14 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Log
 import android.view.KeyEvent
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.input.ImeAction
-import androidx.activity.compose.setContent
-import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.platform.ComposeView
+import androidx.fragment.app.Fragment
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
@@ -108,11 +111,12 @@ import java.util.regex.Pattern
 import org.json.JSONObject
 
 /**
- * 音乐界面（Compose 版）：搜索 → 结果列表 → 点击播放。
- * 状态由 [UiState] 持有（Compose 可观察），播放仍交给 [MusicPlaybackService]（后台前台服务），
- * 本页订阅其回调刷新 UI。替换原 Java + View 实现，保持对外入口/接口不变。
+ * 音乐板块 Fragment（Compose 版）：搜索 → 结果列表 → 点击播放。
+ * 状态由 [UiState] 持有（Compose 可观察），播放交给 [MusicPlaybackService]（后台前台服务），
+ * 本页订阅其回调刷新 UI。内嵌于 HomeActivity 底部导航（视频/音乐/小说/设置），切板块不销毁视图，
+ * 播放服务在 fragment 存活期间一直保持绑定。
  */
-class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
+class MusicFragment : Fragment(), MusicPlaybackService.Listener {
 
     // ------------------------------------------------------------ UI 状态
 
@@ -235,12 +239,12 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun exportBackup(uri: Uri) {
         Thread {
             try {
-                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                requireContext().contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
                     it.write(UnifiedBackup.export())
                 }
-                runOnUiThread { Notify.show("备份完成（音乐收藏/歌单/阅读/订阅）") }
+                handler.post { Notify.show("备份完成（音乐收藏/歌单/阅读/订阅）") }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+                handler.post { Notify.show("导出失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -249,20 +253,20 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun importBackup(uri: Uri) {
         Thread {
             try {
-                val text = contentResolver.openInputStream(uri)
+                val text = requireContext().contentResolver.openInputStream(uri)
                     ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                 if (text.isBlank()) {
-                    runOnUiThread { Notify.show("备份文件为空") }
+                    handler.post { Notify.show("备份文件为空") }
                     return@Thread
                 }
                 val ok = UnifiedBackup.import(text)
-                runOnUiThread {
+                handler.post {
                     refreshLibrary()
                     refreshPlaylists()
                     Notify.show(if (ok) "恢复完成（音乐/阅读/订阅）" else "恢复失败：不是有效的备份文件")
                 }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("恢复失败：" + (e.message ?: "")) }
+                handler.post { Notify.show("恢复失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -271,7 +275,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun importTextPlaylist(uri: Uri) {
         Thread {
             try {
-                val text = contentResolver.openInputStream(uri)
+                val text = requireContext().contentResolver.openInputStream(uri)
                     ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                 val keywords = text.lineSequence()
                     .map { it.trim() }
@@ -280,15 +284,15 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     .distinct()
                     .take(50)
                 if (keywords.isEmpty()) {
-                    runOnUiThread { Notify.show("文本为空：每行放一个歌名（可带 - 歌手）") }
+                    handler.post { Notify.show("文本为空：每行放一个歌名（可带 - 歌手）") }
                     return@Thread
                 }
-                runOnUiThread {
+                handler.post {
                     ui.importDialogVisible = false
                     ui.searching = true
                 }
                 MusicRepository.get().searchMany(keywords).whenComplete { groups, err ->
-                    runOnUiThread {
+                    handler.post {
                         ui.searching = false
                         if (err != null) {
                             Notify.show("导入搜索失败：" + friendly(err))
@@ -305,52 +309,25 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("文本读取失败：" + (e.message ?: "未知错误")) }
+                handler.post { Notify.show("文本读取失败：" + (e.message ?: "未知错误")) }
             }
         }.start()
     }
 
-    /** 遥控器/实体媒体键：播放暂停、上下首（覆盖系统不接管的按键；耳机键经 MediaSession 走服务侧）。 */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_HEADSETHOOK -> {
-                service?.toggle()
-                return true
-            }
-            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> {
-                service?.pause()
-                return true
-            }
-            KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                service?.next()
-                return true
-            }
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                service?.prev()
-                return true
-            }
-        }
-        return super.onKeyDown(keyCode, event)
-    }
+    /** 系统媒体键（耳机/锁屏）经 MediaSession 由服务侧接管，移动端无需在此处理。 */
 
     companion object {
-        private const val TAG = "MusicActivity"
+        private const val TAG = "MusicFragment"
         private const val SEARCH_TIMEOUT_MS = 25_000L
         private val LRC_TIME = Pattern.compile("\\[(\\d{1,2}):(\\d{1,2})(?:[.:](\\d{1,3}))?\\]")
         private val PLACEHOLDER_COLOR = Color(0xFF323232)
         private val BG_COLOR = Color(0xFF141414)
         private val SURFACE_COLOR = Color(0xFF1E1E1E)
-
-        /** 从主界面（HomeActivity）进入音乐模块。 */
-        @JvmStatic
-        fun start(context: Context) {
-            context.startActivity(Intent(context, MusicActivity::class.java))
-        }
     }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-            service = (binder as MusicPlaybackService.MusicBinder).service().bindListener(this@MusicActivity)
+            service = (binder as MusicPlaybackService.MusicBinder).service().bindListener(this@MusicFragment)
             bound = true
             val cur = service?.current()
             if (cur != null) onMusicChanged(cur)
@@ -370,10 +347,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
-        MusicRepository.get().init(this)
-        MusicLibrary.get().init(this)
+        MusicRepository.get().init(requireContext())
+        MusicLibrary.get().init(requireContext())
         refreshLibrary()
-        MusicDownloader.get().init(this)
+        MusicDownloader.get().init(requireContext())
         MusicDownloader.get().setListener(object : MusicDownloader.Listener {
             override fun onStateChanged() {
                 ui.downloadTick = ui.downloadTick + 1
@@ -387,7 +364,27 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         })
         // 插件未就绪前的占位：显示「加载中…」而不是误导性的 unknown；readyFuture 完成后刷新为真实音源
         ui.currentSource = "加载中…"
-        setContent {
+        startAndBindService()
+        // 先渲染 UI，等插件引擎就绪（readyFuture）后再自动搜索（回调经 handler 回主线程）
+        MusicRepository.get().readyFuture().whenComplete { _, _ ->
+            handler.post {
+                refreshSourceInfo()
+                val p = MusicRepository.get().platform()
+                if (p.isEmpty()) {
+                    // 源加载失败：不发起无谓搜索，状态栏直接展示原因（音源弹窗可见完整列表）
+                    val errs = MusicRepository.get().loadErrors()
+                    ui.stateText = if (errs.isEmpty()) "源加载失败" else "源加载失败：" + errs.first().take(80)
+                    return@post
+                }
+                if (ui.stateText == "idle" || ui.stateText.contains("music ")) ui.stateText = "ready"
+            }
+        }
+    }
+
+    /** 板块视图：Compose 根（fragment 的 onCreateView 一次性渲染，切板块不重建视图）。 */
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
                 background = BG_COLOR,
@@ -467,22 +464,6 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     },
                 )
             }
-        }
-        startAndBindService()
-        // 先渲染 UI，等插件引擎就绪（readyFuture）后再自动搜索，避免首帧卡顿
-        MusicRepository.get().readyFuture().whenComplete { _, _ ->
-            runOnUiThread {
-                refreshSourceInfo()
-                val p = MusicRepository.get().platform()
-                if (p.isEmpty()) {
-                    // 源加载失败：不发起无谓搜索，状态栏直接展示原因（音源弹窗可见完整列表）
-                    val errs = MusicRepository.get().loadErrors()
-                    ui.stateText = if (errs.isEmpty()) "源加载失败" else "源加载失败：" + errs.first().take(80)
-                    return@runOnUiThread
-                }
-                if (ui.stateText == "idle" || ui.stateText.contains("music ")) ui.stateText = "ready"
-                // 不默认自动搜索（早期调试遗留行为）：首屏保持空态，由用户输入触发；
-                // 避免插件就绪后立刻抢占沙箱线程解析大响应（歌单/榜单并发加载时的卡顿源）。
             }
         }
     }
@@ -513,7 +494,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         if (url.isBlank()) return
         ui.importing = true
         MusicRepository.get().importPlugin(url.trim()).whenComplete { ok, error ->
-            runOnUiThread {
+            handler.post {
                 ui.importing = false
                 refreshSourceInfo()
                 if (error == null && ok == true) {
@@ -530,16 +511,20 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     override fun onDestroy() {
         if (bound) {
-            service?.unbindListener()
-            unbindService(connection)
+            try {
+                service?.unbindListener()
+                requireActivity().unbindService(connection)
+            } catch (_: Exception) {
+            }
             bound = false
         }
         super.onDestroy()
     }
 
     private fun startAndBindService() {
-        startService(Intent(this, MusicPlaybackService::class.java))
-        bindService(Intent(this, MusicPlaybackService::class.java), connection, Context.BIND_AUTO_CREATE)
+        val ctx = requireContext()
+        ctx.startService(Intent(ctx, MusicPlaybackService::class.java))
+        ctx.bindService(Intent(ctx, MusicPlaybackService::class.java), connection, Context.BIND_AUTO_CREATE)
     }
 
     // ------------------------------------------------------------ 搜索
@@ -557,7 +542,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             Notify.show("搜索超时，请检查网络")
         }, SEARCH_TIMEOUT_MS)
         MusicRepository.get().searchAll(keyword.trim()).whenComplete { groups, error ->
-            runOnUiThread {
+            handler.post {
                 handler.removeCallbacksAndMessages(null)
                 ui.searching = false
                 if (error != null) {
@@ -579,7 +564,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     /** 搜索链路现场落盘（外部 logs/search.log），便于排查“转圈/未找到”的具体失败原因。 */
     private fun logSearch(tag: String, detail: String) {
         try {
-            val dir = getExternalFilesDir(null)?.let { File(it, "logs") } ?: return
+            val dir = requireContext().getExternalFilesDir(null)?.let { File(it, "logs") } ?: return
             if (!dir.exists()) dir.mkdirs()
             File(dir, "search.log").appendText(
                 System.currentTimeMillis().toString() + " [" + tag + "] " + detail + "\n"
@@ -615,8 +600,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         if (ui.localLoading) return
         ui.localLoading = true
         Thread {
-            val list = LocalMusicScanner.scan(applicationContext)
-            runOnUiThread {
+            val list = LocalMusicScanner.scan(requireContext().applicationContext)
+            handler.post {
                 ui.localMusic = list
                 ui.localLoading = false
                 ui.localLoaded = true
@@ -630,7 +615,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         else android.Manifest.permission.READ_EXTERNAL_STORAGE
 
     private fun hasAudioPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, audioPermission()) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(requireContext(), audioPermission()) == PackageManager.PERMISSION_GRANTED
 
     /** 「扫描本地音乐」入口：有权限直接扫，无权限先申请（Android 13+ READ_MEDIA_AUDIO）。 */
     private fun requestLocalMusic() {
@@ -726,14 +711,14 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun importLocalPlugin(uri: Uri) {
         Thread {
             try {
-                val name = queryName(contentResolver, uri) ?: "plugin.js"
-                val code = contentResolver.openInputStream(uri)?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                val name = queryName(requireContext().contentResolver, uri) ?: "plugin.js"
+                val code = requireContext().contentResolver.openInputStream(uri)?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
                 if (code.isEmpty()) {
-                    runOnUiThread { Notify.show("插件文件读取失败") }
+                    handler.post { Notify.show("插件文件读取失败") }
                     return@Thread
                 }
                 MusicRepository.get().importLocalFile(name, code).whenComplete { ok, _ ->
-                    runOnUiThread {
+                    handler.post {
                         if (ok == true) {
                             refreshSourceInfo()
                             ui.sourceDialogVisible = false
@@ -744,7 +729,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { Notify.show("插件读取失败：" + (e.message ?: "")) }
+                handler.post { Notify.show("插件读取失败：" + (e.message ?: "")) }
             }
         }.start()
     }
@@ -803,10 +788,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         val t = MusicRepository.get().recommendTags()
         // 两个请求分别完成即分别刷新对应状态，不再串行嵌套等待
         g.whenComplete { groups, _ ->
-            runOnUiThread { ui.topGroups = groups ?: emptyList() }
+            handler.post { ui.topGroups = groups ?: emptyList() }
         }
         t.whenComplete { tags, _ ->
-            runOnUiThread {
+            handler.post {
                 ui.sheetTags = tags ?: emptyList()
                 ui.sheetsLoading = false
             }
@@ -820,7 +805,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         ui.tagSheetsLoading = true
         ui.tagSheets = emptyList()
         MusicRepository.get().sheetsByTag(tag, 1).whenComplete { list, _ ->
-            runOnUiThread {
+            handler.post {
                 ui.tagSheetsLoading = false
                 ui.tagSheets = list ?: emptyList()
                 if (ui.tagSheets.isEmpty()) Notify.show("「$tag」分类暂无歌单")
@@ -837,7 +822,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         v.loading = true
         ui.sheetView = v
         loader().whenComplete { list, e ->
-            runOnUiThread {
+            handler.post {
                 v.loading = false
                 if (e != null) {
                     v.error = "加载失败：" + friendly(e)
@@ -891,7 +876,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         v.subtitle = url.trim()
         ui.sheetView = v
         MusicRepository.get().importSheet(url.trim()).whenComplete { list, e ->
-            runOnUiThread {
+            handler.post {
                 v.loading = false
                 if (e != null) {
                     v.error = "导入失败：" + friendly(e)
@@ -928,7 +913,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     // ------------------------------------------------------------ 播放回调
 
     override fun onMusicChanged(media: MusicMedia) {
-        runOnUiThread {
+        handler.post {
             ui.current = media
             ui.coverUrl = media?.cover ?: ""
             ui.durationMs = media?.durationMs ?: 0L
@@ -938,11 +923,11 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     }
 
     override fun onPlayingChanged(playing: Boolean) {
-        runOnUiThread { ui.playing = playing }
+        handler.post { ui.playing = playing }
     }
 
     override fun onStateChanged(state: Int) {
-        runOnUiThread {
+        handler.post {
             // 错误一闪而过问题：onPlayerError 后状态切 IDLE，会覆盖错误文本。
             // 有未读错误时，IDLE 状态保留错误文本，等下一首歌开始播放才清空。
             ui.stateText = when {
@@ -962,7 +947,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         if (why.isEmpty()) why = error.message ?: "未知"
         if (why.length > 120) why = why.substring(0, 120) + "…"
         lastError = "err " + error.errorCode + ": " + why + "\n" + url
-        runOnUiThread { ui.stateText = lastError!! }
+        handler.post { ui.stateText = lastError!! }
     }
 
     /** 取 cause 链顶层的具体异常原因（跳过笼统的 "Source error"）。 */
@@ -989,7 +974,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     }
 
     override fun onProgress(positionMs: Long, durationMs: Long) {
-        runOnUiThread {
+        handler.post {
             ui.durationMs = durationMs
             if (!dragging) {
                 ui.positionMs = positionMs
@@ -1000,22 +985,22 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     override fun onSourceFailed(media: MusicMedia, message: String) {
         val why = message.ifEmpty { "未知错误" }
-        runOnUiThread { Notify.show("播放失败：" + media.title + "（$why）") }
+        handler.post { Notify.show("播放失败：" + media.title + "（$why）") }
     }
 
     override fun onSleepTimerChanged(untilMs: Long) {
-        runOnUiThread { ui.sleepUntil = untilMs }
+        handler.post { ui.sleepUntil = untilMs }
     }
 
     override fun onSleepTriggered() {
-        runOnUiThread {
+        handler.post {
             ui.sleepUntil = -1L
             Notify.show("睡眠定时已触发，播放已暂停")
         }
     }
 
     override fun onSpeedChanged(speed: Float) {
-        runOnUiThread { ui.speed = speed }
+        handler.post { ui.speed = speed }
     }
 
     /** 倍速循环：0.75x → 1.0x → 1.25x → 1.5x → 2.0x。 */
@@ -1077,17 +1062,17 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         ui.lyricHint = if (media == null) "暂无歌词" else "加载歌词…"
         if (media == null) return
         MusicRepository.get().getLyric(media).whenComplete { lrc, error ->
-            runOnUiThread {
+            handler.post {
                 if (error != null) {
                     lyricError = friendly(error)
                     val brief = if (lyricError!!.length > 24) lyricError!!.substring(0, 24) + "…" else lyricError!!
                     ui.lyricHint = "歌词失败:$brief"
-                    return@runOnUiThread
+                    return@post
                 }
                 val lines = parseLrc(lrc)
                 if (lines.isEmpty()) {
                     ui.lyricHint = "该歌暂无歌词"
-                    return@runOnUiThread
+                    return@post
                 }
                 lyricLines = lines
                 ui.lyricHint = "点击显示歌词"

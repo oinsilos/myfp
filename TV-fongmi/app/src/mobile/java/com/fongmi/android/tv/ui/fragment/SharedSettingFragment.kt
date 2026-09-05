@@ -75,7 +75,7 @@ class SharedSettingFragment : Fragment() {
                     onSurface = Color(0xFFE0E0E0),
                     secondary = Color(0xFF999999),
                 )) {
-                    SharedSettingContent(onOpenVideoSettings = { (activity as? HomeActivity)?.change(2) })
+                    SharedSettingContent(onOpenVideoSettings = { (activity as? HomeActivity)?.change(4) })
                 }
             }
         }
