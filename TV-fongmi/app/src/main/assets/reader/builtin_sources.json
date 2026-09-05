@@ -1,17 +1,24 @@
 [
   {
-    "bookSourceUrl": "https://zh.wikisource.org",
-    "bookSourceName": "维基文库（公版图书）",
-    "searchUrl": "https://zh.wikisource.org/w/api.php?action=query&list=search&srlimit=20&format=json&origin=*&srsearch={{key}}",
+    "bookSourceUrl": "https://www.gutenberg.org",
+    "bookSourceName": "Project Gutenberg（公版图书）",
+    "searchUrl": "https://www.gutenberg.org/ebooks/search/?query={{key}}",
     "ruleSearch": {
-      "bookList": "@json:$.query.search",
-      "bookName": "@json:$.title",
-      "author": "@js:(book.title.indexOf('：')>0)?book.title.split('：')[0]:''",
-      "bookUrl": "@js:'https://zh.wikisource.org/wiki/'+encodeURIComponent(book.title)",
-      "coverUrl": ""
+      "bookList": "li.booklink",
+      "bookName": "span.title@text",
+      "author": "span.subtitle@text",
+      "bookUrl": "a.link@attr:href",
+      "coverUrl": "img.cover-thumb@attr:src"
     },
-    "ruleBookInfo": { "intro": "@js:''" },
-    "ruleToc": { "chapterName": "@this@text", "chapterUrl": "@this@attr:href" },
-    "ruleContent": { "content": ".mw-parser-output" }
+    "ruleBookInfo": {
+      "intro": "@css:meta[name=\"description\"]@attr:content",
+      "coverUrl": "@css:meta[property=\"og:image\"]@attr:content"
+    },
+    "ruleToc": {
+      "chapterList": "a[href$='.txt.utf-8']",
+      "chapterName": "@js:'全文'",
+      "chapterUrl": "@this@attr:href"
+    },
+    "ruleContent": { "content": "@plain" }
   }
 ]

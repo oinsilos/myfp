@@ -495,7 +495,8 @@ class ReaderActivity : AppCompatActivity() {
                     web.tag = content.hashCode()
                     val html = "<html><head><meta charset=\"utf-8\"><style>" +
                             "body{background:#141414;color:#C9C9C9;font-size:17px;line-height:1.9;" +
-                            "padding:4px 14px 24px;word-wrap:break-word;overflow-wrap:break-word;}" +
+                            "padding:4px 14px 24px;word-wrap:break-word;overflow-wrap:break-word;" +
+                            "white-space:pre-wrap;}" +
                             "p{margin:6px 0;}img{max-width:100%;height:auto;}h1,h2,h3{color:#F0F0F0;}" +
                             "a{color:#4FC3F7;}</style></head><body>" + content + "</body></html>"
                     web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)

@@ -40,8 +40,10 @@ public final class ReaderRepository {
     private static final long SOURCE_TIMEOUT_MS = 12_000L;
     /** 整次搜索整体超时：兜底之上的兜底，保证 UI 永远能拿到结论。 */
     private static final long SEARCH_TIMEOUT_MS = 25_000L;
-    /** 详情/目录/正文单页超时：防止卡死任务长期占用 io 线程池（池占满后新搜索排队=转圈）。 */
+    /** 详情/目录单页超时：防止卡死任务长期占用 io 线程池（池占满后新搜索排队=转圈）。 */
     private static final long PAGE_TIMEOUT_MS = 20_000L;
+    /** 正文单页超时：公版书全文页（如 Gutenberg txt，可达 1~2MB）拉取更慢，单独放宽。 */
+    private static final long CHAPTER_TIMEOUT_MS = 30_000L;
     /** 超时护栏专用守护线程池（仅负责 complete，不执行请求，避免占用业务 io 线程）。 */
     private static final ExecutorService timeoutPool = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "reader-timeout");
@@ -129,15 +131,16 @@ public final class ReaderRepository {
         }
     }
 
-    /** 内置兜底源（assets 缺失时保证可搜索/测试闭环）。 */
+    /** 内置兜底源（assets 缺失时保证可搜索/测试闭环），与 builtin_sources.json 保持一致。 */
     private BookSource demoSource() {
         return BookSource.parse("{\n"
-                + "  \"bookSourceUrl\": \"https://zh.wikisource.org\",\n"
-                + "  \"bookSourceName\": \"维基文库(内置)\",\n"
-                + "  \"searchUrl\": \"https://zh.wikisource.org/w/api.php?action=query&list=search&srlimit=20&format=json&origin=*&srsearch={{key}}\",\n"
-                + "  \"ruleSearch\": {\"bookList\": \"@json:$.query.search\", \"bookName\": \"@json:$.title\", \"bookUrl\": \"@js:'https://zh.wikisource.org/wiki/'+encodeURIComponent(book.title)\"},\n"
-                + "  \"ruleToc\": {\"chapterName\": \"@this@text\", \"chapterUrl\": \"@this@attr:href\"},\n"
-                + "  \"ruleContent\": {\"content\": \".mw-parser-output\"}\n"
+                + "  \"bookSourceUrl\": \"https://www.gutenberg.org\",\n"
+                + "  \"bookSourceName\": \"Project Gutenberg(内置)\",\n"
+                + "  \"searchUrl\": \"https://www.gutenberg.org/ebooks/search/?query={{key}}\",\n"
+                + "  \"ruleSearch\": {\"bookList\": \"li.booklink\", \"bookName\": \"span.title@text\", \"author\": \"span.subtitle@text\", \"bookUrl\": \"a.link@attr:href\", \"coverUrl\": \"img.cover-thumb@attr:src\"},\n"
+                + "  \"ruleBookInfo\": {\"intro\": \"@css:meta[name=\\\"description\\\"]@attr:content\"},\n"
+                + "  \"ruleToc\": {\"chapterList\": \"a[href$='.txt.utf-8']\", \"chapterName\": \"@js:'全文'\", \"chapterUrl\": \"@this@attr:href\"},\n"
+                + "  \"ruleContent\": {\"content\": \"@plain\"}\n"
                 + "}");
     }
 
@@ -462,10 +465,16 @@ public final class ReaderRepository {
             try {
                 String raw = OkHttp.string(chapterUrl);
                 if (raw == null || raw.isEmpty()) return null;
+                String contentRule = (s != null && s.ruleContent != null) ? s.ruleContent.content : "";
+                // @plain：整页按纯文本处理（如 Gutenberg txt），保留换行、剥离项目头尾声明
+                if ("@plain".equals(contentRule != null ? contentRule.trim() : "")) {
+                    String body = stripBoilerplate(raw);
+                    if (body.isEmpty()) return null;
+                    return TextUtils.htmlEncode(body);
+                }
                 Document doc = Jsoup.parse(raw, chapterUrl);
                 String content = "";
-                if (s != null && s.ruleContent != null && !TextUtils.isEmpty(s.ruleContent.content)) {
-                    String contentRule = s.ruleContent.content;
+                if (!TextUtils.isEmpty(contentRule)) {
                     Elements nodes = RuleExecutor.select(contentRule, doc);
                     if (!nodes.isEmpty()) {
                         Element first = nodes.first();
@@ -487,8 +496,23 @@ public final class ReaderRepository {
                 throw new CompletionException(e);
             }
         }, io);
-        withTimeout(f, PAGE_TIMEOUT_MS, null);
+        withTimeout(f, CHAPTER_TIMEOUT_MS, null);
         return f;
+    }
+
+    /** 剥离如 Gutenberg txt 这类公版文本页头尾的官方声明（START/END OF THE PROJECT GUTENBERG EBOOK）。 */
+    private static String stripBoilerplate(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        String startCue = "*** START OF THE PROJECT GUTENBERG EBOOK";
+        String endCue = "*** END OF THE PROJECT GUTENBERG EBOOK";
+        int s = raw.indexOf(startCue);
+        int e = raw.indexOf(endCue);
+        if (s < 0 && e < 0) return raw;
+        int from = s < 0 ? 0 : s + startCue.length();
+        int to = e < 0 ? raw.length() : e;
+        String body = raw.substring(from, to);
+        body = body.replaceAll("(?m)^\\*{3}\\s*(START|END) OF THE PROJECT GUTENBERG EBOOK.*$", "");
+        return body.trim();
     }
 
     private BookSource sourceOf(String url) {

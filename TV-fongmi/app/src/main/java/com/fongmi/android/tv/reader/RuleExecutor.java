@@ -43,7 +43,10 @@ public final class RuleExecutor {
             String[] steps = rule.split("@");
             Elements nodes = new Elements();
             String sel = steps[0].trim();
-            if (sel.equals("this")) {
+            // 兼容 legado 习惯写法 "@this@attr:href"：首段为空且次段是 this → 当前元素上下文
+            if (sel.isEmpty() && steps.length > 1 && steps[1].trim().equals("this")) {
+                nodes.add(ctx);
+            } else if (sel.equals("this")) {
                 nodes.add(ctx);
             } else {
                 if (sel.startsWith("css:")) sel = sel.substring(4).trim();

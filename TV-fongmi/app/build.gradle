@@ -78,6 +78,8 @@ android {
     lint {
         disable 'UnsafeOptInUsageError'
         disable 'ExpiredTargetSdkVersion'
+        // release 构建跳过 lintVital：6G 沙箱内存下 lint 守护进程常导致 Gradle 守护进程被 OOM 杀死
+        checkReleaseBuilds = false
     }
 
     compileOptions {
