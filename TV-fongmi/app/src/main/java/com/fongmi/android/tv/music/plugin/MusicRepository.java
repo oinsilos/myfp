@@ -36,6 +36,27 @@ public final class MusicRepository {
     private static final String KEY_IMPORT = "import_urls";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
     private static final String[] BUILTIN = {"netease.js"};
+    /** 单源搜索超时：某源卡死/无响应按空组处理，聚合结果不被拖死。 */
+    private static final long SOURCE_TIMEOUT_MS = 12_000L;
+    /** 超时护栏专用守护线程池（仅负责 complete，不执行请求）。 */
+    private static final ExecutorService timeoutPool = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "music-source-timeout");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** 聚合搜索结果分组：一个插件（音源）的搜索结果集合。 */
+    public static final class Aggregated {
+        public final String label;
+        public final String platform;
+        public final List<MusicMedia> items;
+
+        Aggregated(String label, String platform, List<MusicMedia> items) {
+            this.label = label;
+            this.platform = platform;
+            this.items = items == null ? Collections.emptyList() : items;
+        }
+    }
 
     private static volatile MusicRepository instance;
 
@@ -193,6 +214,50 @@ public final class MusicRepository {
         Plugin p = current;
         if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
         return p.source.search(keyword == null ? "" : keyword, 1, 1);
+    }
+
+    /**
+     * 聚合搜索：全部已加载插件并行搜索（每源带超时护栏，空结果/卡死源剔除），
+     * 按插件分组返回，满足「像 fongmi 点播那样一搜多源汇总」的需求。
+     */
+    public CompletableFuture<List<Aggregated>> searchAll(String keyword) {
+        List<Plugin> copy;
+        synchronized (this) {
+            copy = new ArrayList<>(plugins);
+        }
+        if (copy.isEmpty()) return CompletableFuture.completedFuture(Collections.emptyList());
+        String kw = keyword == null ? "" : keyword;
+        List<CompletableFuture<Aggregated>> futures = new ArrayList<>();
+        for (Plugin p : copy) {
+            CompletableFuture<Aggregated> f = p.source.search(kw, 1, 1).thenApply(items ->
+                    (items == null || items.isEmpty()) ? null : new Aggregated(p.label, p.source.platform(), items));
+            futures.add(withTimeout(f, SOURCE_TIMEOUT_MS, null));
+        }
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    List<Aggregated> out = new ArrayList<>();
+                    for (CompletableFuture<Aggregated> f : futures) {
+                        try {
+                            Aggregated a = f.get();
+                            if (a != null) out.add(a);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    return out;
+                });
+    }
+
+    /** 到点强制 complete（底层任务继续跑，OkHttp 30s 超时兜底回收线程），聚合绝不无限等待。 */
+    private static <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long ms, T fallback) {
+        timeoutPool.execute(() -> {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                return;
+            }
+            future.complete(fallback);
+        });
+        return future;
     }
 
     /** 拉取播放 URL（按 media.source 路由，缺省当前源）。 */

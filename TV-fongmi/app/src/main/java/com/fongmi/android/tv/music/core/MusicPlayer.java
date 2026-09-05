@@ -82,6 +82,8 @@ public final class MusicPlayer {
     private ExoPlayer player;
     private MusicMedia current;
     private int failCount;
+    /** 倍速（0.75x~2.0x），随队列换曲保持（startPlaying/rebind 后重放）。 */
+    private float speed = 1.0f;
 
     public MusicPlayer(Context context, Callback callback) {
         this.context = context.getApplicationContext();
@@ -114,6 +116,17 @@ public final class MusicPlayer {
     public void toggle() {
         if (player == null) return;
         player.setPlayWhenReady(!player.getPlayWhenReady());
+    }
+
+    /** 设置播放倍速（0.5~2.0 常用，值域由调用方约束）。 */
+    public void setSpeed(float speed) {
+        this.speed = speed;
+        if (player != null) player.setPlaybackSpeed(speed);
+    }
+
+    /** 当前播放倍速。 */
+    public float speed() {
+        return speed;
     }
 
     public void seekTo(long positionMs) {
@@ -246,6 +259,7 @@ public final class MusicPlayer {
         player = new ExoPlayer.Builder(context)
                 .setMediaSourceFactory(sourceFactory)
                 .build();
+        player.setPlaybackSpeed(speed);
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
         player.setHandleAudioBecomingNoisy(true);
         player.addListener(new Player.Listener() {
@@ -292,6 +306,7 @@ public final class MusicPlayer {
         current = media;
         player.setMediaItem(buildItem(media));
         player.prepare();
+        player.setPlaybackSpeed(speed);
         player.setPlayWhenReady(true);
         callback.onMusicChanged(media);
     }
@@ -343,6 +358,7 @@ public final class MusicPlayer {
         ensurePlayer();
         player.setMediaItem(buildItem(current));
         player.prepare();
+        player.setPlaybackSpeed(speed);
         player.setPlayWhenReady(true);
     }
 

@@ -104,6 +104,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
 
     private class UiState {
         var results by mutableStateOf<List<MusicMedia>>(emptyList())
+        // 聚合搜索分组：一个音源一组（单源时为空列表，退化为平铺）
+        var searchGroups by mutableStateOf<List<MusicRepository.Aggregated>>(emptyList())
         var searching by mutableStateOf(false)
         var current by mutableStateOf<MusicMedia?>(null)
         var playing by mutableStateOf(false)
@@ -113,6 +115,10 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var coverUrl by mutableStateOf("")
         var lyricHint by mutableStateOf("暂无歌词")
         var mode by mutableStateOf(RepeatMode.LIST)
+        var speed by mutableStateOf(1f)
+        // 睡眠定时：ui.sleepUntil = 触发时刻 epoch 毫秒；<0 未设置
+        var sleepUntil by mutableStateOf(-1L)
+        var sleepDialogVisible by mutableStateOf(false)
         var lyricDialogVisible by mutableStateOf(false)
         var messageVisible by mutableStateOf(false)
         var messageText by mutableStateOf("")
@@ -183,6 +189,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             bound = true
             val cur = service?.current()
             if (cur != null) onMusicChanged(cur)
+            // 换绑同步：倍速与睡眠定时以服务当前态为准
+            onSpeedChanged(service?.speed() ?: 1f)
+            onSleepTimerChanged(service?.sleepUntilMillis() ?: -1L)
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -248,6 +257,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onCloseLyricDialog = { ui.lyricDialogVisible = false },
                     onCloseMessage = { ui.messageVisible = false },
                     onOpenSources = { ui.sourceDialogVisible = true },
+                    onCycleSpeed = ::cycleSpeed,
+                    onOpenSleep = { ui.sleepDialogVisible = true },
                     onSwitchSource = ::switchSource,
                     onImportPlugin = ::importPlugin,
                 )
@@ -341,7 +352,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             Log.w(TAG, "search timeout; kw=$lastKeyword current=${MusicRepository.get().platform()} searching=$ui.searching")
             Notify.show("搜索超时，请检查网络")
         }, SEARCH_TIMEOUT_MS)
-        MusicRepository.get().search(keyword.trim()).whenComplete { list, error ->
+        MusicRepository.get().searchAll(keyword.trim()).whenComplete { groups, error ->
             runOnUiThread {
                 handler.removeCallbacksAndMessages(null)
                 ui.searching = false
@@ -349,7 +360,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     logSearch("search_error", "kw=$lastKeyword err=${friendly(error)}")
                     Notify.show("搜索失败：" + friendly(error))
                 } else {
-                    ui.results = list ?: emptyList()
+                    val g = groups ?: emptyList()
+                    ui.searchGroups = g
+                    ui.results = g.flatMap { it.items }
                     if (ui.results.isEmpty()) {
                         logSearch("search_empty", "kw=$lastKeyword src=${MusicRepository.get().platform()}")
                         Notify.show("未找到相关歌曲")
@@ -632,6 +645,55 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         runOnUiThread { Notify.show("播放失败：" + media.title + "（$why）") }
     }
 
+    override fun onSleepTimerChanged(untilMs: Long) {
+        runOnUiThread { ui.sleepUntil = untilMs }
+    }
+
+    override fun onSleepTriggered() {
+        runOnUiThread {
+            ui.sleepUntil = -1L
+            Notify.show("睡眠定时已触发，播放已暂停")
+        }
+    }
+
+    override fun onSpeedChanged(speed: Float) {
+        runOnUiThread { ui.speed = speed }
+    }
+
+    /** 倍速循环：0.75x → 1.0x → 1.25x → 1.5x → 2.0x。 */
+    private fun cycleSpeed() {
+        val speeds = floatArrayOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+        val cur = ui.speed
+        var next = speeds[0]
+        for (s in speeds) {
+            if (s > cur + 0.001f) {
+                next = s
+                break
+            }
+        }
+        service?.setSpeed(next)
+        ui.speed = next
+        // 内核（服务侧）未建播放器时可能短暂不同步，onSpeedChanged 会纠正
+        Notify.show("倍速 ${fmtSpeed(next)}x")
+    }
+
+    /** 选择睡眠定时（毫秒；0 取消）。 */
+    private fun setSleepTimer(ms: Long) {
+        service?.setSleepTimer(ms)
+        if (ms <= 0) Notify.show("睡眠定时已关闭")
+        else Notify.show("将在 ${sleepTimeText(System.currentTimeMillis() + ms)} 暂停播放")
+    }
+
+    private fun fmtSpeed(v: Float): String = if (v == v.toInt().toFloat()) v.toInt().toString() else v.toString()
+
+    /** epoch 毫秒 → "HH:mm" 墙钟。 */
+    private fun sleepTimeText(untilMs: Long): String {
+        @Suppress("DEPRECATION")
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = untilMs
+        return String.format(Locale.getDefault(), "%02d:%02d", cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+    }
+
     private fun cycleMode() {
         val s = service ?: return
         val cur = s.mode()
@@ -778,6 +840,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onCloseLyricDialog: () -> Unit,
         onCloseMessage: () -> Unit,
         onOpenSources: () -> Unit,
+        onCycleSpeed: () -> Unit,
+        onOpenSleep: () -> Unit,
         onSwitchSource: (String) -> Unit,
         onImportPlugin: (String) -> Unit,
     ) {
@@ -825,6 +889,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                                 )
                             }
                             ResultList(
+                                groups = ui.searchGroups,
                                 items = ui.results,
                                 libraryTick = ui.libraryTick,
                                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -837,7 +902,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     }
                 }
                 HorizontalDivider(color = Color(0xFF333333))
-                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources)
+                PlayerBar(ui, onToggleLyric, onCycleMode, onSeek, onTogglePlay, onPrev, onNext, onOpenSources, onCycleSpeed, onOpenSleep)
             }
         }
         if (ui.lyricDialogVisible) {
@@ -867,6 +932,13 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
         if (ui.messageVisible) {
             MessageDialog(text = ui.messageText, onClose = onCloseMessage)
+        }
+        if (ui.sleepDialogVisible) {
+            SleepDialog(
+                current = ui.sleepUntil,
+                onClose = { ui.sleepDialogVisible = false },
+                onSelect = ::setSleepTimer,
+            )
         }
     }
 
@@ -925,19 +997,56 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     }
 
     @Composable
-    private fun ResultList(items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit, onArtist: (MusicMedia) -> Unit) {
+    private fun ResultList(groups: List<MusicRepository.Aggregated>, items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit, onArtist: (MusicMedia) -> Unit) {
         @Suppress("UNUSED_EXPRESSION")
         libraryTick // 观察收藏变化：切换收藏后重绘心形图标
         LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
-            itemsIndexed(items) { index, media ->
-                MusicRow(
-                    index = index,
-                    media = media,
-                    onPlay = onPlayAt,
-                    onDownload = onDownloadAt,
-                    onFavorite = onFavoriteAt,
-                    onArtist = onArtist,
-                )
+            if (groups.size > 1) {
+                // 聚合搜索：按音源分组，每组一个标题头 + 歌曲行
+                var offset = 0
+                groups.filter { it.items.isNotEmpty() }.forEach { g ->
+                    item(key = "grp_" + g.platform) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                g.label,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text("${g.items.size} 首", fontSize = 11.sp, color = Color(0xFF777777))
+                        }
+                    }
+                    g.items.forEachIndexed { i, media ->
+                        val idx = offset + i
+                        item(key = "grp_" + g.platform + "_" + i) {
+                            MusicRow(
+                                index = idx,
+                                media = media,
+                                onPlay = onPlayAt,
+                                onDownload = onDownloadAt,
+                                onFavorite = onFavoriteAt,
+                                onArtist = onArtist,
+                            )
+                        }
+                    }
+                    offset += g.items.size
+                }
+            } else {
+                itemsIndexed(items) { index, media ->
+                    MusicRow(
+                        index = index,
+                        media = media,
+                        onPlay = onPlayAt,
+                        onDownload = onDownloadAt,
+                        onFavorite = onFavoriteAt,
+                        onArtist = onArtist,
+                    )
+                }
             }
         }
     }
@@ -1059,6 +1168,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onPrev: () -> Unit,
         onNext: () -> Unit,
         onOpenSources: () -> Unit,
+        onCycleSpeed: () -> Unit,
+        onOpenSleep: () -> Unit,
     ) {
         var dragFraction by remember { mutableStateOf<Float?>(null) }
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
@@ -1117,6 +1228,20 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     fontSize = 12.sp,
                     color = Color(0xFFBBBBBB),
                     modifier = Modifier.clickable { onCycleMode() },
+                )
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    "倍速 ${ui.speed}x",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onCycleSpeed() },
+                )
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    if (ui.sleepUntil > 0) "定时 ${sleepTimeText(ui.sleepUntil)}" else "定时",
+                    fontSize = 12.sp,
+                    color = if (ui.sleepUntil > 0) MaterialTheme.colorScheme.primary else Color(0xFFBBBBBB),
+                    modifier = Modifier.clickable { onOpenSleep() },
                 )
                 Spacer(Modifier.weight(1f))
                 Text(timeText(ui.positionMs) + " / " + timeText(ui.durationMs), fontSize = 11.sp, color = Color(0xFF777777))
@@ -1654,6 +1779,61 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 Text(text, fontSize = 16.sp, color = Color(0xFFDDDDDD), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 48.dp))
                 Spacer(Modifier.height(24.dp))
                 Text("点击任意处关闭", fontSize = 12.sp, color = Color(0xFF666666))
+            }
+        }
+    }
+
+    /** 睡眠定时弹窗：关闭 / 10/15/30/60/90 分钟后暂停播放。 */
+    @Composable
+    private fun SleepDialog(current: Long, onClose: () -> Unit, onSelect: (Long) -> Unit) {
+        val options = arrayOf(
+            "关闭定时" to 0L,
+            "10 分钟后" to 10 * 60_000L,
+            "15 分钟后" to 15 * 60_000L,
+            "30 分钟后" to 30 * 60_000L,
+            "60 分钟后" to 60 * 60_000L,
+            "90 分钟后" to 90 * 60_000L,
+        )
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Box(Modifier.fillMaxSize().background(Color(0xE6000000)).clickable { onClose() }, contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier
+                        .background(SURFACE_COLOR, RoundedCornerShape(12.dp))
+                        .padding(vertical = 16.dp)
+                        .clickable(enabled = false) {},
+                ) {
+                    Text(
+                        "睡眠定时",
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(start = 20.dp, bottom = 6.dp),
+                    )
+                    if (current > 0) {
+                        Text(
+                            "当前：${sleepTimeText(current)}（${timeText(current - System.currentTimeMillis())}后）暂停",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 20.dp, bottom = 8.dp),
+                        )
+                    }
+                    options.forEach { (label, ms) ->
+                        Text(
+                            label,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSelect(ms)
+                                    onClose()
+                                }
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                        )
+                    }
+                }
             }
         }
     }

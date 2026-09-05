@@ -58,6 +58,15 @@ public final class MusicPlaybackService extends Service {
         void onProgress(long positionMs, long durationMs);
 
         void onSourceFailed(MusicMedia media, String message);
+
+        /** 睡眠定时变化（untilMs 为触发时刻 epoch 毫秒；<0 表示已关闭）。 */
+        void onSleepTimerChanged(long untilMs);
+
+        /** 睡眠定时触发（服务已暂停播放）。 */
+        void onSleepTriggered();
+
+        /** 倍速变化（换绑/服务内部同步用）。 */
+        void onSpeedChanged(float speed);
     }
 
     public final class MusicBinder extends Binder {
@@ -69,6 +78,21 @@ public final class MusicPlaybackService extends Service {
     private final MusicBinder binder = new MusicBinder();
     private MusicPlayer player;
     private Listener listener;
+    /** 倍速（播放器懒创建前暂存，首次播放时由 play 同步）。 */
+    private volatile float speed = 1.0f;
+
+    /** 睡眠定时：到点暂停播放（不断服务，通知保持可再次进入）。 */
+    private final Handler sleepHandler = new Handler(Looper.getMainLooper());
+    private volatile long sleepUntilMs = -1;
+    private final Runnable sleepTick = new Runnable() {
+        @Override
+        public void run() {
+            if (player != null) player.pause();
+            sleepUntilMs = -1;
+            postNotification();
+            if (listener != null) listener.onSleepTriggered();
+        }
+    };
 
     /** 通知栏歌词缓存：换歌时异步拉 LRC 解析，进度回调切句节流更新通知。 */
     private volatile List<LrcParser.Line> lyricLines = null;
@@ -123,6 +147,7 @@ public final class MusicPlaybackService extends Service {
 
     @Override
     public void onDestroy() {
+        sleepHandler.removeCallbacks(sleepTick);
         unregisterReceiver(actions);
         stopForeground(STOP_FOREGROUND_REMOVE);
         if (player != null) player.release();
@@ -135,6 +160,7 @@ public final class MusicPlaybackService extends Service {
     /** 装载队列并播放（列表首曲顺延播出的场景，index 为起始曲）。 */
     public void play(List<MusicMedia> items, int index) {
         if (player == null) return;
+        player.setSpeed(speed);
         player.setQueue(items, index);
         enterForeground();
     }
@@ -161,6 +187,31 @@ public final class MusicPlaybackService extends Service {
 
     public RepeatMode mode() {
         return player == null ? RepeatMode.LIST : player.mode();
+    }
+
+    /** 设置倍速（透传播放内核；播放器懒创建前先存值，首次播放时同步）。 */
+    public void setSpeed(float speed) {
+        this.speed = speed;
+        if (player != null) player.setSpeed(speed);
+        if (listener != null) listener.onSpeedChanged(speed());
+    }
+
+    /** 当前倍速。 */
+    public float speed() {
+        return player == null ? speed : player.speed();
+    }
+
+    /** 设置睡眠定时（毫秒）；0/负数取消。 */
+    public void setSleepTimer(long ms) {
+        sleepHandler.removeCallbacks(sleepTick);
+        sleepUntilMs = ms > 0 ? System.currentTimeMillis() + ms : -1;
+        if (ms > 0) sleepHandler.postDelayed(sleepTick, ms);
+        if (listener != null) listener.onSleepTimerChanged(sleepUntilMs);
+    }
+
+    /** 睡眠定时触发时刻（epoch 毫秒），未设置为 -1。 */
+    public long sleepUntilMillis() {
+        return sleepUntilMs;
     }
 
     /** 插件换源失败后由上层重新拉取 URL 并回填（走内核 onNeedReloadUrl 契约）。 */
