@@ -40,7 +40,7 @@ public final class MusicRepository {
     /** 本地文件导入的插件（文件名清单，文件缓存在 filesDir/plugins/，重启无网络也能加载）。 */
     private static final String KEY_LOCAL = "local_plugins";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
-    private static final String[] BUILTIN = {"kuwo_mao.js", "yuanli_kw.js", "maoer_fm.js"};
+    private static final String[] BUILTIN = {"kuwo_mao.js", "maoer_fm.js"};
     /** 单源搜索超时：某源卡死/无响应按空组处理，聚合结果不被拖死。 */
     private static final long SOURCE_TIMEOUT_MS = 12_000L;
     /** 超时护栏专用守护线程池（仅负责 complete，不执行请求）。 */
@@ -462,6 +462,13 @@ public final class MusicRepository {
 
     /** 尝试加载插件源码；成功时登记到列表（首个插件自动成为当前源）。幂等失败返回 false。 */
     private boolean addLoaded(String label, String code, boolean builtin) {
+        // jsjiami 系列混淆插件带源码自校验：宿主转译（async→generator）后校验必然失败，
+        // 解密循环死循环导致该插件加载卡死 60s（音乐页"加载崩溃"的根因）。直接拒绝。
+        if (code != null && code.contains("jsjiami.com.v")) {
+            Log.w(TAG, "reject obfuscated plugin: " + label);
+            recordLoadError(label + ": 混淆插件(jsjiami)不受支持，请换用开源插件");
+            return false;
+        }
         try {
             MusicSource source = new MusicSource();
             source.load(code);

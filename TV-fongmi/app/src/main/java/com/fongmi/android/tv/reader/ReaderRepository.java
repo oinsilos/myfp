@@ -400,7 +400,7 @@ public final class ReaderRepository {
         List<BookSource> list = enabledSources();
         if (list.isEmpty()) return CompletableFuture.completedFuture(Collections.emptyList());
         List<CompletableFuture<List<Book>>> futures = new ArrayList<>();
-        for (BookSource s : list.subList(0, Math.min(4, list.size()))) {
+        for (BookSource s : list) {
             CompletableFuture<List<Book>> f = CompletableFuture.supplyAsync(() -> searchOne(s, keyword), io);
             // 单源 12s 兜底：到点强制按空结果结束，allOf 不再被单个卡死源拖住
             withTimeout(f, SOURCE_TIMEOUT_MS, Collections.emptyList());
