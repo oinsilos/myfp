@@ -1,6 +1,5 @@
 package com.fongmi.android.tv.reader.ui
 
-import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -10,10 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
-import android.view.ViewGroup
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -41,6 +36,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -58,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,7 +68,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
@@ -88,7 +84,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 阅读（书源）界面：搜索 → 书籍详情/目录 → WebView 正文阅读。
+ * 阅读（书源）界面：搜索 → 书籍详情/目录 → 正文阅读（Compose 段落排版，断点按段落号恢复）。
  * 书源管理：内置 + 粘贴 JSON/URL 导入；搜索并发跑全部启用书源。
  */
 class ReaderActivity : AppCompatActivity() {
@@ -132,15 +128,15 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     private val ui = UiState()
-    /** 当前章内滚动进度（0~1，WebView 回调实时刷新，退出阅读/切章时落盘）。 */
-    private var currentPercent = 0f
+    /** 当前章首可见段落号（LazyColumn 滚动实时更新，退出/切章时落盘）。 */
+    private var currentParaIndex = 0
+    /** 当前章段落总数（正文到达后按 htmlToParagraphs 计算）。 */
+    private var currentParaCount = 0
     /** 滚动进度节流落盘时间戳（2s 最多写一次，进程被杀也能续读）。 */
     private var lastAutoSaveAt = 0L
-    /** 最近一次 WebView 加载正文对应的章节号（切章瞬间防旧章滚动污染新章进度）。 */
-    private var loadedChapterIndex = -1
+    /** 待恢复的段落号（openChapter 从进度库读到后置值；阅读页首次布局消费后复位 -1）。 */
+    private var restorePara = -1
     private val mainHandler = Handler(Looper.getMainLooper())
-    /** 待恢复的章内滚动位置（openChapter 从进度库读到后置值；WebView 加载完消费后复位 -1）。 */
-    private var restorePercent = -1f
     /** 搜索兜底：底层（书源网络/规则求值）无论怎样，25s 内必须结束搜索态，绝不无限转圈。 */
     private val uiHandler = Handler(Looper.getMainLooper())
     private val SEARCH_TIMEOUT_MS = 25_000L
@@ -194,7 +190,7 @@ class ReaderActivity : AppCompatActivity() {
                     onAddBookmark = ::addBookmark,
                     onOpenBookmark = { ch ->
                         val bm = ui.bookmarks.firstOrNull { it.chapter == ch }
-                        openChapter(ch, bm?.percent ?: -1f)
+                        openChapter(ch, bm?.para ?: -1)
                     },
                     onRemoveBookmark = ::removeBookmark,
                     onRemoveShelf = { url ->
@@ -310,22 +306,23 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    private fun openChapter(index: Int, restore: Float = -1f) {
+    private fun openChapter(index: Int, restore: Int = -1) {
         val book = ui.book ?: return
         if (index < 0 || index >= book.chapters.size) return
         if (ui.reading) saveProgress()
         ui.chapterIndex = index
         ui.reading = true
-        currentPercent = 0f
+        currentParaIndex = 0
+        currentParaCount = 0
         ui.contentLoading = true
         ui.contentError = ""
         ui.content = ""
-        // 断点续读：该章有保存过位置则 WebView 加载完恢复；书签跳转用书签位置
-        if (restore >= 0f) {
-            restorePercent = restore
+        // 断点续读：优先传入的段落号（书签跳转）；否则读进度库中该章的段落号
+        if (restore >= 0) {
+            restorePara = restore
         } else {
             val p = ReaderStore.get().progress(book.url)
-            restorePercent = if (p != null && p.chapter == index) p.percent else -1f
+            restorePara = if (p != null && p.chapter == index) p.para else -1
         }
         // 章节缓存优先：命中本地直接显示，不请求网络
         val cached = ReaderStore.get().cachedChapter(book.url, index)
@@ -462,7 +459,8 @@ class ReaderActivity : AppCompatActivity() {
 
     private fun saveProgress() {
         val book = ui.book ?: return
-        ReaderStore.get().saveProgress(book.url, ui.chapterIndex, currentPercent)
+        if (ui.content.isEmpty()) return
+        ReaderStore.get().saveProgressPara(book.url, ui.chapterIndex, currentParaIndex, currentParaCount)
     }
 
     /** 滚动中节流保存进度（2s 一次），防止进程被杀时丢失断点；同时刷新阅读页进度条。 */
@@ -470,7 +468,7 @@ class ReaderActivity : AppCompatActivity() {
         val now = System.currentTimeMillis()
         if (now - lastAutoSaveAt < 2000L) return
         lastAutoSaveAt = now
-        ui.readPercent = currentPercent
+        ui.readPercent = if (currentParaCount <= 0) 0f else (currentParaIndex.toFloat() / currentParaCount).coerceIn(0f, 1f)
         mainHandler.post { saveProgress() }
     }
 
@@ -510,11 +508,13 @@ class ReaderActivity : AppCompatActivity() {
         refreshShelves()
     }
 
-    /** 阅读页快捷加书签：记录当前章节 + 章内进度。 */
+    /** 阅读页快捷加书签：记录当前章节 + 章内段落号。 */
     private fun addBookmark() {
         val book = ui.book ?: return
         val chapterName = book.chapters.getOrNull(ui.chapterIndex)?.name ?: ""
-        ReaderStore.get().addBookmark(book.url, ui.chapterIndex, chapterName, currentPercent)
+        ReaderStore.get().addBookmarkPara(
+            book.url, ui.chapterIndex, chapterName, currentParaIndex, currentParaCount
+        )
         refreshBookmarks()
         Notify.show("已添加书签：${chapterName.ifEmpty { "第${ui.chapterIndex + 1}章" }}")
     }
@@ -638,7 +638,6 @@ class ReaderActivity : AppCompatActivity() {
                         loading = ui.contentLoading,
                         content = ui.content,
                         error = ui.contentError,
-                        baseUrl = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url,
                     )
                 } else if (ui.cacheMode) {
                     CacheBody(
@@ -1105,9 +1104,13 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    /**
+     * 正文阅读（对齐 legado/国内小说 App 的做法：不用 WebView，Compose 自己排版文本）。
+     * - 段落是渲染与定位的最小单位：断点/书签存“章内段落号”，打开时 scrollToItem 精确恢复，与字号/布局无关
+     * - 字号/行距/主题实时应用到 Text，进度条按段落比例
+     */
     @Composable
-    private fun ReaderBody(loading: Boolean, content: String, error: String, baseUrl: String?) {
+    private fun ReaderBody(loading: Boolean, content: String, error: String) {
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(32.dp))
@@ -1121,111 +1124,72 @@ class ReaderActivity : AppCompatActivity() {
             }
             return
         }
-        val fs = ui.fontSize
-        val lh = ui.lineHeight
-        val theme = ui.theme
-        val (bgHex, fgHex) = themeColors()
-        // 渲染标识：正文内容 + 字号 + 行距 + 主题 任一变化都触发重载（设置变更后样式即时生效）
-        val renderKey = content.hashCode().toString() + "|$fs|$lh|$theme"
-        Column(Modifier.fillMaxSize()) {
-            // 章内进度条（滚动节流刷新，断点位置一目了然）
+        val fs = ui.fontSize.coerceIn(12, 30)
+        val lineSize = (fs * ui.lineHeight).coerceAtLeast(fs + 2f).sp
+        val (bg, fg) = themeColors()
+        val paras = remember(content) { htmlToParagraphs(content) }
+        val listState = rememberLazyListState()
+        // 渲染标识：正文 + 字号 + 行距 + 主题任一变化 → 恢复同一段落位置（设置变更重排等价保留进度）
+        val renderKey = content.hashCode().toString() + "|$fs|${ui.lineHeight}|${ui.theme}"
+        Column(Modifier.fillMaxSize().background(bg)) {
             LinearProgressIndicator(
                 progress = { ui.readPercent },
                 modifier = Modifier.fillMaxWidth().height(3.dp),
             )
-            AndroidView(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                        webChromeClient = WebChromeClient()
-                        // 断点续读：仅当加载完成的页面确为“当前最终正文”时才恢复滚动位置。
-                        // （旧实现会在空内容/中间态加载完成时提前消费 restorePercent，导致真正正文永不滚动）
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                val cur = ui.content
-                                val curKey = cur.hashCode().toString() + "|" + ui.fontSize + "|" + ui.lineHeight + "|" + ui.theme
-                                val v = view
-                                if (cur.isNotEmpty() && v != null && v.tag == curKey && restorePercent >= 0f) {
-                                    val rp = restorePercent
-                                    restorePercent = -1f
-                                    v.post { scrollToPercent(v, rp) }
-                                }
-                            }
-                        }
-                        settings.javaScriptEnabled = false
-                        settings.defaultTextEncodingName = "utf-8"
-                        // 章内滚动进度实时跟踪 + 节流落盘（切章瞬间旧章滚动不污染新章进度，见 loadedChapterIndex）
-                        setOnScrollChangeListener { _, scrollY, _, _, _ ->
-                            val max = contentHeight - height
-                            currentPercent = if (max <= 0) 0f else (scrollY.toFloat() / max).coerceIn(0f, 1f)
-                            if (loadedChapterIndex == ui.chapterIndex) maybeAutoSaveProgress()
-                        }
-                    }
-                },
-                update = { web ->
-                    if (web.tag != renderKey) {
-                        web.tag = renderKey
-                        try {
-                            web.setBackgroundColor(android.graphics.Color.parseColor(bgHex))
-                        } catch (ignored: Throwable) {
-                        }
-                        val html = wrapHtml(content, bgHex, fgHex, fs, lh, baseUrl)
-                        // 断点/书签恢复只在最终正文上消费一次，加载完成后等布局稳定再滚动（超长窗口兜底）
-                        if (content.isNotEmpty() && restorePercent >= 0f) {
-                            val rp = restorePercent
-                            restorePercent = -1f
-                            web.postDelayed({ scrollToPercent(web, rp) }, 120)
-                        }
-                        loadedChapterIndex = ui.chapterIndex
-                        web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
-                    }
-                },
-            )
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                itemsIndexed(paras) { index, paragraph ->
+                    Text(
+                        text = paragraph.ifEmpty { " " },
+                        fontSize = fs.sp,
+                        lineHeight = lineSize,
+                        color = fg,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp),
+                    )
+                }
+            }
+        }
+        // 初次布局 / 内容或设置变化时：一次性恢复到目标段落（消费 restorePara）
+        LaunchedEffect(paras, renderKey) {
+            val rp = restorePara
+            if (rp in paras.indices) {
+                restorePara = -1
+                listState.scrollToItem(rp)
+            }
+            currentParaIndex = listState.firstVisibleItemIndex
+            currentParaCount = paras.size
+            ui.readPercent = if (paras.isEmpty()) 0f else (currentParaIndex.toFloat() / paras.size)
+        }
+        // 滚动跟踪：首可见段落号变化 → 节流保存断点
+        LaunchedEffect(paras) {
+            snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
+                if (idx != currentParaIndex) {
+                    currentParaIndex = idx
+                    maybeAutoSaveProgress()
+                }
+            }
         }
     }
 
+    /** HTML 正文 → 段落列表：块级/换行标签转换行，剥除其余标签，解码常用实体。 */
+    private fun htmlToParagraphs(html: String): List<String> {
+        var s = html ?: return emptyList()
+        s = Regex("(?i)<(br|/p|/div|/h[1-6]|/li|/section)\\s*/?>").replace(s, "\n")
+        s = Regex("(?i)<img[^>]*>").replace(s, "[图片]\n")
+        s = Regex("(?i)<[^>]+>").replace(s, "")
+        s = s.replace("&nbsp;", " ")
+            .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", "\"").replace("&#39;", "'")
+            .replace("&ldquo;", "“").replace("&rdquo;", "”")
+            .replace("&hellip;", "…").replace("&mdash;", "—")
+        val out = s.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        return if (out.isEmpty()) listOf("") else out
+    }
+
     /** 主题 → (背景色, 前景色)。 */
-    private fun themeColors(): Pair<String, String> = when (ui.theme) {
-        "sepia" -> Pair("#241B12", "#D8C9A8")
-        "night" -> Pair("#050505", "#8A8A8A")
-        else -> Pair("#141414", "#C9C9C9")
-    }
-
-    /** 按阅读设置（字号/行距/主题）打包正文 HTML。 */
-    private fun wrapHtml(content: String, bg: String, fg: String, fs: Int, lh: Float, baseUrl: String?): String {
-        val size = if (fs in 12..30) fs else 17
-        val height = if (lh in 1.2f..3.0f) lh else 1.9f
-        return "<html><head><meta charset=\"utf-8\"><style>" +
-                "body{background:$bg;color:$fg;font-size:${size}px;line-height:$height;" +
-                "padding:4px 14px 24px;word-wrap:break-word;overflow-wrap:break-word;white-space:pre-wrap;}" +
-                "p{margin:6px 0;}img{max-width:100%;height:auto;}h1,h2,h3{color:#F0F0F0;}a{color:#4FC3F7;}" +
-                "</style></head><body>" + content + "</body></html>"
-    }
-
-    /**
-     * 滚动到章内百分比。WebView 的 contentHeight 在 loadDataWithBaseURL 后异步就绪，
-     * 直接滚动多半拿到的还是 0 → 断点恢复失败。这里等 contentHeight 连续 3 次采样一致
-     * （布局稳定）再滚动，最长给 30s（首帧 WebView 冷启动 + 大章节解析都够）。
-     */
-    private fun scrollToPercent(web: WebView, percent: Float) {
-        var tries = 0
-        var lastH = -1
-        var stable = 0
-        web.post(object : Runnable {
-            override fun run() {
-                val h = web.contentHeight
-                if (h > 0 && h == lastH) stable++
-                else stable = 0
-                lastH = h
-                if (stable >= 3) {
-                    val max = (h - web.height).coerceAtLeast(0)
-                    if (max > 0) web.scrollTo(0, (percent * max).toInt())
-                } else if (++tries < 300) {
-                    web.postDelayed(this, 100)
-                }
-            }
-        })
+    private fun themeColors(): Pair<Color, Color> = when (ui.theme) {
+        "sepia" -> Pair(Color(0xFF241B12), Color(0xFFD8C9A8))
+        "night" -> Pair(Color(0xFF050505), Color(0xFF8A8A8A))
+        else -> Pair(Color(0xFF141414), Color(0xFFC9C9C9))
     }
 
     @Composable

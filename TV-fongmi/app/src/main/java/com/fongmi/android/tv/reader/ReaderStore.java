@@ -46,29 +46,35 @@ public final class ReaderStore {
     /** 主题：dark 深色 / sepia 暖黄 / night 夜间。 */
     public String theme = "dark";
 
-    /** 阅读进度（章节号 + 章内 0~1 进度）。 */
+    /** 阅读进度：章节号 + 章内首可见段落号 + 段落比例（展示用）。 */
     public static final class Progress {
         public final int chapter;
         public final float percent;
+        /** 章内首可见段落号；-1 表示旧数据（无段落位置，只能从头续）。 */
+        public final int para;
 
-        Progress(int chapter, float percent) {
+        Progress(int chapter, float percent, int para) {
             this.chapter = chapter;
             this.percent = percent;
+            this.para = para;
         }
     }
 
-    /** 书签（某本书内一个位置）。 */
+    /** 书签（某本书内一个位置）：章号 + 章内段落号。 */
     public static final class Bookmark {
         public final int chapter;
         public final String chapterName;
         public final float percent;
         public final long time;
+        /** 章内段落号；-1 为旧数据。 */
+        public final int para;
 
-        Bookmark(int chapter, String chapterName, float percent, long time) {
+        Bookmark(int chapter, String chapterName, float percent, long time, int para) {
             this.chapter = chapter;
             this.chapterName = chapterName == null ? "" : chapterName;
             this.percent = percent;
             this.time = time;
+            this.para = para;
         }
     }
 
@@ -308,20 +314,22 @@ public final class ReaderStore {
             int chapter = o.optInt("chapter", -1);
             if (chapter < 0) return null;
             float percent = (float) o.optDouble("percent", 0.0);
-            return new Progress(chapter, percent);
+            int para = o.optInt("para", -1);
+            return new Progress(chapter, percent, para);
         } catch (Exception e) {
             return null;
         }
     }
 
-    /** 记录进度（percent 0~1，越界自动夹取）。 */
-    public void saveProgress(String bookUrl, int chapter, float percent) {
-        if (prefs == null || bookUrl == null || bookUrl.isEmpty() || chapter < 0) return;
+    /** 记录进度：章号 + 章内首可见段落号（percent 由此推导，供列表/详情页展示）。 */
+    public void saveProgressPara(String bookUrl, int chapter, int para, int totalPara) {
+        if (prefs == null || bookUrl == null || bookUrl.isEmpty() || chapter < 0 || para < 0) return;
         try {
             JSONObject map = new JSONObject(prefs.getString(KEY_PROGRESS, "{}"));
             JSONObject o = new JSONObject();
             o.put("chapter", chapter);
-            o.put("percent", Math.max(0f, Math.min(1f, percent)));
+            o.put("para", para);
+            o.put("percent", totalPara > 0 ? Math.max(0f, Math.min(1f, (float) para / totalPara)) : 0f);
             map.put(bookUrl, o);
             prefs.edit().putString(KEY_PROGRESS, map.toString()).apply();
         } catch (Exception e) {
@@ -342,7 +350,7 @@ public final class ReaderStore {
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o = arr.optJSONObject(i);
                 if (o == null) continue;
-                out.add(new Bookmark(o.optInt("chapter", 0), o.optString("name"), (float) o.optDouble("percent", 0.0), o.optLong("time", 0)));
+                out.add(new Bookmark(o.optInt("chapter", 0), o.optString("name"), (float) o.optDouble("percent", 0.0), o.optLong("time", 0), o.optInt("para", -1)));
             }
         } catch (Exception e) {
             Log.w(TAG, "read bookmarks failed", e);
@@ -350,9 +358,10 @@ public final class ReaderStore {
         return out;
     }
 
-    /** 添加书签（同一本书同一章节去重置顶）。 */
-    public void addBookmark(String bookUrl, int chapter, String chapterName, float percent) {
+    /** 添加书签（同一本书同一章去重置顶）：章号 + 章内段落号。 */
+    public void addBookmarkPara(String bookUrl, int chapter, String chapterName, int para, int totalPara) {
         if (prefs == null || bookUrl == null || bookUrl.isEmpty() || chapter < 0) return;
+        float percent = totalPara > 0 ? Math.max(0f, Math.min(1f, (float) para / totalPara)) : 0f;
         try {
             JSONObject map = new JSONObject(prefs.getString(KEY_BOOKMARKS, "{}"));
             JSONArray arr = map.optJSONArray(bookUrl);
@@ -364,7 +373,8 @@ public final class ReaderStore {
                 JSONObject o = arr.optJSONObject(i);
                 if (o != null && o.optInt("chapter") == chapter) {
                     o.put("name", chapterName == null ? "" : chapterName);
-                    o.put("percent", Math.max(0f, Math.min(1f, percent)));
+                    o.put("percent", percent);
+                    o.put("para", para);
                     o.put("time", System.currentTimeMillis());
                     replaced = true;
                 }
@@ -374,7 +384,8 @@ public final class ReaderStore {
                 JSONObject n = new JSONObject();
                 n.put("chapter", chapter);
                 n.put("name", chapterName == null ? "" : chapterName);
-                n.put("percent", Math.max(0f, Math.min(1f, percent)));
+                n.put("percent", percent);
+                n.put("para", para);
                 n.put("time", System.currentTimeMillis());
                 updated.put(n);
             }
