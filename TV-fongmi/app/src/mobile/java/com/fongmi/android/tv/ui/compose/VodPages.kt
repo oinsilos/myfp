@@ -366,9 +366,9 @@ fun VodSearchPage(activity: ComponentActivity, keyword: String?, onBack: () -> U
                     LazyVerticalGrid(GridCells.Fixed(gridCols()), Modifier.fillMaxSize()) {
                         items(shown) { v ->
                             VodCard(
-                                name = v.getName(),
-                                pic = v.getPic().ifEmpty { null },
-                                remark = v.getRemarks(),
+                                name = v.getName() ?: "",
+                                pic = v.getPic()?.takeIf { it.isNotEmpty() },
+                                remark = v.getRemarks() ?: "",
                                 progress = null,
                                 delete = false,
                                 onClick = { openVod(activity, v) },
@@ -454,9 +454,9 @@ fun VodKeepPage(activity: ComponentActivity, onBack: () -> Unit) {
             LazyVerticalGrid(GridCells.Fixed(gridCols()), Modifier.fillMaxSize()) {
                 items(items) { keep ->
                     VodCard(
-                        name = keep.getVodName(),
-                        pic = keep.getVodPic().ifEmpty { null },
-                        remark = keep.getSiteName(),
+                        name = keep.getVodName() ?: "",
+                        pic = keep.getVodPic()?.takeIf { it.isNotEmpty() },
+                        remark = keep.getSiteName() ?: "",
                         progress = null,
                         delete = deleteMode,
                         onClick = {
@@ -569,9 +569,9 @@ fun VodHistoryPage(activity: ComponentActivity, onBack: () -> Unit) {
                 }
                 items(others) { h ->
                     VodCard(
-                        name = h.getVodName(),
-                        pic = h.getVodPic().ifEmpty { null },
-                        remark = h.getVodRemarks(),
+                        name = h.getVodName() ?: "",
+                        pic = h.getVodPic()?.takeIf { it.isNotEmpty() },
+                        remark = h.getVodRemarks() ?: "",
                         progress = h.progressRatio(),
                         delete = deleteMode,
                         onClick = {
@@ -598,7 +598,7 @@ private fun ContinueCard(h: History, delete: Boolean, onClick: () -> Unit) {
             .clickable(onClick = onClick),
     ) {
         Box {
-            VodCover(h.getVodPic().ifEmpty { null }, h.getVodName(),
+            VodCover(h.getVodPic()?.takeIf { it.isNotEmpty() }, h.getVodName() ?: "",
                 Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)))
             if (delete) {
                 Box(
@@ -618,7 +618,7 @@ private fun ContinueCard(h: History, delete: Boolean, onClick: () -> Unit) {
             }
         }
         Spacer(Modifier.height(5.dp))
-        Text(h.getVodName(), fontSize = 13.sp, color = Color(0xFFE0E0E0), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(h.getVodName() ?: "", fontSize = 13.sp, color = Color(0xFFE0E0E0), maxLines = 1, overflow = TextOverflow.Ellipsis)
         val ratio = h.progressRatio()
         Spacer(Modifier.height(3.dp))
         LinearProgressIndicator(
@@ -626,7 +626,7 @@ private fun ContinueCard(h: History, delete: Boolean, onClick: () -> Unit) {
             modifier = Modifier.fillMaxWidth().height(3.dp),
         )
         Spacer(Modifier.height(2.dp))
-        Text(h.getVodRemarks(), fontSize = 11.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(h.getVodRemarks() ?: "", fontSize = 11.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

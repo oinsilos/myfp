@@ -598,7 +598,7 @@ class SharedSettingFragment : Fragment() {
         onClose: () -> Unit,
         onOpenPage: (Int) -> Unit,
     ) {
-        var url by remember { mutableStateOf(VodConfig.getUrl()) }
+        var url by remember { mutableStateOf(VodConfig.getUrl() ?: "") }
         var wallTick by remember { mutableStateOf(0) }
         val context = LocalContext.current
         val handler = remember { Handler(Looper.getMainLooper()) }
@@ -633,7 +633,7 @@ class SharedSettingFragment : Fragment() {
                 )
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Text(VodConfig.getDesc(), fontSize = 12.sp, color = Color(0xFF777777),
+                    Text(VodConfig.getDesc() ?: "", fontSize = 12.sp, color = Color(0xFF777777),
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     TextButton(onClick = {
                         if (url.isBlank()) return@TextButton
@@ -644,7 +644,7 @@ class SharedSettingFragment : Fragment() {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text("本站点：", fontSize = 12.sp, color = Color(0xFF999999))
-                    Text(VodConfig.get().getHome().getName().ifEmpty { "未设置" }, fontSize = 12.sp,
+                    Text((VodConfig.get().getHome().getName() ?: "").ifEmpty { "未设置" }, fontSize = 12.sp,
                         color = Color(0xFFDDDDDD), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
                         modifier = Modifier.clickable {
@@ -708,7 +708,7 @@ class SharedSettingFragment : Fragment() {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text("壁纸", fontSize = 13.sp, color = Color(0xFFDDDDDD), modifier = Modifier.weight(1f))
-                    Text(if (wall in 1..4) "内置 $wall/4" else WallConfig.getDesc(), fontSize = 12.sp,
+                    Text(if (wall in 1..4) "内置 $wall/4" else (WallConfig.getDesc() ?: ""), fontSize = 12.sp,
                         color = Color(0xFF999999), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     TextButton(onClick = {
                         Setting.putWall(if (Setting.getWall() == 4) 1 else Setting.getWall() + 1)
