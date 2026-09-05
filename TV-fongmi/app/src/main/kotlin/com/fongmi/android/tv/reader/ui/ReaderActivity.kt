@@ -1664,16 +1664,18 @@ class ReaderFragment : Fragment() {
             }
         } else if (results.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("输入书名搜索；书源可点上方「书源」切换，导入/删除在「设置 → 书源管理」", fontSize = 13.sp, color = Color(0xFF666666))
+                Text("输入书名搜索", fontSize = 13.sp, color = Color(0xFF666666))
             }
         } else {
             LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                 itemsIndexed(results) { _, book ->
                     Row(
                         Modifier.fillMaxWidth().clickable { onOpenBook(book) }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        ReaderCover(book.cover.takeIf { it.isNotEmpty() }, book.name, Modifier.size(44.dp).clip(RoundedCornerShape(4.dp)))
+                        Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(book.name, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
                             Text(
@@ -1886,8 +1888,9 @@ class ReaderFragment : Fragment() {
                         if (newName.isNotBlank()) onPick(newName.trim())
                     }) { Text("移入", fontSize = 13.sp) }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -1918,10 +1921,11 @@ class ReaderFragment : Fragment() {
                 Text("新建后可在书架行尾「⋯」把书移入该分组", fontSize = 11.sp, color = Color(0xFF888888),
                     textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(16.dp))
-                Text("确定", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().clickable { onCreate(name) }.padding(vertical = 8.dp))
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onClose) { Text("取消", fontSize = 13.sp, color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(24.dp))
+                    Button(onClick = { onCreate(name) }) { Text("确定", fontSize = 13.sp) }
+                }
             }
         }
     }
@@ -2663,10 +2667,11 @@ class ReaderFragment : Fragment() {
         return if (out.isEmpty()) listOf("") else out
     }
 
-    /** 主题 → (背景色, 前景色)。 */
-    private fun themeColors(): Pair<Color, Color> = when (ui.theme) {
+    /** 主题 → (背景色, 前景色)；跟随系统时按系统深浅解析（浅色模式用暖白正文）。 */
+    private fun themeColors(): Pair<Color, Color> = when (ThemeStore.get().resolveNovel()) {
         "sepia" -> Pair(Color(0xFF241B12), Color(0xFFD8C9A8))
         "night" -> Pair(Color(0xFF050505), Color(0xFF8A8A8A))
+        "light" -> Pair(Color(0xFFF5F0E6), Color(0xFF3A3A3A))
         else -> Pair(Color(0xFF141414), Color(0xFFC9C9C9))
     }
 
@@ -2764,8 +2769,9 @@ class ReaderFragment : Fragment() {
                     Text("输入", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                 }
                 HorizontalDivider(color = Color(0x16FFFFFF))
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -2798,8 +2804,6 @@ class ReaderFragment : Fragment() {
                         Text(if (importing) "导入中…" else "导入", fontSize = 13.sp)
                     }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
             }
         }
     }
@@ -2858,8 +2862,9 @@ class ReaderFragment : Fragment() {
                         }
                     }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -2907,8 +2912,9 @@ class ReaderFragment : Fragment() {
                         }
                     }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -3010,9 +3016,7 @@ class ReaderFragment : Fragment() {
                         fontSize = 11.sp, color = Color(0xFF666666), modifier = Modifier.padding(top = 8.dp))
                 }
                 Text("停止朗读并关闭", fontSize = 13.sp, color = Color(0xFFFF8A80), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onClose).padding(top = 18.dp))
-                Text("点击下方空白处关闭面板", fontSize = 11.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp))
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onClose).padding(top = 18.dp, bottom = 6.dp))
             }
         }
     }
@@ -3170,7 +3174,7 @@ class ReaderFragment : Fragment() {
                     // 主题
                     Text("主题", fontSize = 14.sp, color = Color(0xFFDDDDDD))
                     Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                        for ((key, label) in listOf("dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
+                        for ((key, label) in listOf("system" to "跟随系统", "dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
                             val selected = theme == key
                             Text(
                                 label,
@@ -3179,7 +3183,7 @@ class ReaderFragment : Fragment() {
                                 modifier = Modifier.clip(RoundedCornerShape(6.dp))
                                     .background(if (selected) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
                                     .clickable { onTheme(key) }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    .padding(horizontal = 13.dp, vertical = 6.dp),
                             )
                             Spacer(Modifier.width(8.dp))
                         }
@@ -3187,13 +3191,14 @@ class ReaderFragment : Fragment() {
                     // 本地 TXT 切章：内置默认正则即可，不再提供设置项
                     Spacer(Modifier.height(16.dp))
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
 
-    /** 封面桥：优先 Glide 加载封面，无封面/失败时用色块 + 书名首字占位。 */
+    /** 封面桥：Glide 异步加载封面并淡入，无封面/失败时用色块 + 书名首字占位。 */
     @Composable
     private fun ReaderCover(url: String?, name: String, modifier: Modifier = Modifier) {
         val context = LocalContext.current

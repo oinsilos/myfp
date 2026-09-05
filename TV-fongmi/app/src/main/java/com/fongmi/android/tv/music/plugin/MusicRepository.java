@@ -280,6 +280,21 @@ public final class MusicRepository {
         }
     }
 
+    /** 连通性测试：对指定 platform 插件搜索一次固定关键词，能拿到非空响应即视为可用。 */
+    public CompletableFuture<Boolean> testPlatform(String platform) {
+        if (platform == null || platform.isEmpty()) return CompletableFuture.completedFuture(false);
+        synchronized (this) {
+            for (Plugin p : plugins) {
+                if (platform.equals(p.source.platform())) {
+                    CompletableFuture<Boolean> f = p.source.search("测试", 1, 1)
+                            .thenApply(items -> items != null && !items.isEmpty());
+                    return withTimeout(f, SOURCE_TIMEOUT_MS, false);
+                }
+            }
+        }
+        return CompletableFuture.completedFuture(false);
+    }
+
     /**
      * 聚合搜索：全部已加载插件并行搜索（每源带超时护栏，空结果/卡死源剔除），
      * 按插件分组返回，满足「像 fongmi 点播那样一搜多源汇总」的需求。

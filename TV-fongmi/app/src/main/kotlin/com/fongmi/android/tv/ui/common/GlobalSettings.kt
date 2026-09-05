@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -152,7 +153,7 @@ public fun UnifiedSettingsPage(
         Text("主题 / 皮肤", fontSize = 14.sp, color = Color(0xFFDDDDDD),
             modifier = Modifier.padding(top = 14.dp))
         Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-            for ((key, label) in listOf("dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
+            for ((key, label) in listOf("system" to "跟随系统", "dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
                 val sel = theme == key
                 Text(
                     label,
@@ -221,10 +222,8 @@ public fun UnifiedSettingsPage(
             Text("恢复", fontSize = 13.sp, color = Color(0xFF4FC3F7))
         }
         HorizontalDivider(color = Color(0x16FFFFFF))
-        // 源连通性测试说明（不并入统一设置）
-        Text("源连通性测试保留在各板块内：小说 → 书源/订阅源管理；音乐 → 插件源管理",
-            fontSize = 11.sp, color = Color(0xFF777777), modifier = Modifier.padding(top = 12.dp))
-        Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onClose).padding(vertical = 16.dp))
+        TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+        }
     }
 }

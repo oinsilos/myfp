@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,26 +45,38 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.Fragment
+import com.fongmi.android.tv.api.config.VodConfig
+import com.fongmi.android.tv.api.config.WallConfig
+import com.fongmi.android.tv.bean.Config
+import com.fongmi.android.tv.event.ConfigEvent
+import com.fongmi.android.tv.event.RefreshEvent
 import com.fongmi.android.tv.music.core.MusicLibrary
 import com.fongmi.android.tv.music.plugin.MusicRepository
 import com.fongmi.android.tv.reader.BookSource
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
+import com.fongmi.android.tv.setting.PlayerSetting
+import com.fongmi.android.tv.setting.Setting
 import com.fongmi.android.tv.ui.activity.HomeActivity
 import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.ui.common.UnifiedBackup
 import com.fongmi.android.tv.Updater
 import com.fongmi.android.tv.BuildConfig
+import com.fongmi.android.tv.R
 import com.fongmi.android.tv.impl.Callback
 import com.fongmi.android.tv.utils.FileUtil
 import com.fongmi.android.tv.utils.Notify
+import com.github.catvod.bean.Doh
+import com.github.catvod.net.OkHttp
 import java.nio.charset.StandardCharsets
 
 /**
@@ -95,6 +108,7 @@ class SharedSettingFragment : Fragment() {
     /** 管理弹窗显隐：提为 Fragment 级状态，供音乐/小说板块「去设置导入」跳转后直接打开对应弹窗。 */
     private val musicSourceVisible = mutableStateOf(false)
     private val readSourceVisible = mutableStateOf(false)
+    private val videoSettingVisible = mutableStateOf(false)
 
     /** 板块内「去设置导入」跳转：音乐音源管理弹窗。 */
     fun openMusicSourceDialog() {
@@ -164,7 +178,7 @@ class SharedSettingFragment : Fragment() {
                     secondary = Color(0xFF999999),
                 )) {
                     SharedSettingContent(
-                        onOpenVideoSettings = { (activity as? HomeActivity)?.change(4) },
+                        onOpenVideoSettings = { videoSettingVisible.value = true },
                     )
                 }
             }
@@ -187,14 +201,14 @@ class SharedSettingFragment : Fragment() {
                 // ---- 板块入口卡片：源配置管理收敛到这里，板块内仅保留切换 ----
                 Text("板块设置", fontSize = 13.sp, color = Color(0xFF999999),
                     modifier = Modifier.padding(top = 18.dp, bottom = 6.dp))
-                SectionRow("视频设置", "点播 · 播放器 · 弹幕 · 预加载 · 解码", onOpenVideoSettings)
+                SectionRow("视频设置", "点播源 · DNS · 壁纸 · 无痕 · 播放器 · 弹幕 · 预加载 · 解码", onOpenVideoSettings)
                 SectionRow("音乐音源", "切换 · 插件导入 · 本地 JS（设置内完成，板块里只留切换）") { musicSourceVisible.value = true }
                 SectionRow("书源管理", "切换 · 导入 · 测试 · 删除（设置内完成，板块里只留切换）") { readSourceVisible.value = true }
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
-                // ---- 通用：主题/皮肤（全局） ----
+                // ---- 通用：主题/皮肤（全局，跟随系统为默认） ----
                 Text("主题 / 皮肤", fontSize = 14.sp, color = Color(0xFFDDDDDD))
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                    for ((key, label) in listOf("dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
+                    for ((key, label) in listOf("system" to "跟随系统", "dark" to "深色", "sepia" to "护眼", "night" to "夜间")) {
                         val sel = theme == key
                         Text(
                             label,
@@ -206,12 +220,12 @@ class SharedSettingFragment : Fragment() {
                                     ts.theme = key
                                     theme = key
                                 }
-                                .padding(horizontal = 18.dp, vertical = 7.dp),
+                                .padding(horizontal = 16.dp, vertical = 7.dp),
                         )
                         Spacer(Modifier.width(8.dp))
                     }
                 }
-                Text("护眼（暖色）用于小说正文；视频/音乐播放页恒定深色", fontSize = 11.sp,
+                Text("默认跟随系统深浅；护眼（暖色）用于小说正文；视频/音乐播放页恒定深色", fontSize = 11.sp,
                     color = Color(0xFF777777), modifier = Modifier.padding(top = 4.dp))
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
                 // ---- 数据：备份 / 恢复（全局） ----
@@ -300,6 +314,12 @@ class SharedSettingFragment : Fragment() {
                 onClose = { readSourceVisible.value = false },
             )
         }
+        if (videoSettingVisible.value) {
+            VideoSettingsDialog(
+                onClose = { videoSettingVisible.value = false },
+                onOpenPage = { pos -> (requireActivity() as? HomeActivity)?.change(pos) },
+            )
+        }
     }
 
     /** 音乐音源管理弹窗（视频板块式紧凑弹窗，驻留设置 tab，关闭即回到设置）。 */
@@ -355,6 +375,12 @@ class SharedSettingFragment : Fragment() {
                                         color = if (isCur) Color.White else Color(0xFFCCCCCC))
                                     Text("${info.platform}  v${info.version}", fontSize = 10.sp, color = Color(0xFF666666))
                                 }
+                                Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
+                                    modifier = Modifier.clickable {
+                                        repo.testPlatform(info.platform).whenComplete { ok, _ ->
+                                            handler.post { Notify.show(if (ok == true) "测试通过" else "测试失败：无结果或源不可达") }
+                                        }
+                                    }.padding(horizontal = 8.dp, vertical = 4.dp))
                             }
                             HorizontalDivider(color = Color(0x16FFFFFF))
                         }
@@ -385,12 +411,13 @@ class SharedSettingFragment : Fragment() {
                 }
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Text("或选择本地 JS 文件导入", fontSize = 12.sp, color = Color(0xFF999999),
+                    Text("导入本地 JS 文件", fontSize = 12.sp, color = Color(0xFF999999),
                         modifier = Modifier.weight(1f))
-                    TextButton(onClick = onPickLocal) { Text("本地文件", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                    TextButton(onClick = onPickLocal) { Text("选择文件", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
                 }
-                Text("关闭后返回设置", fontSize = 11.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -479,9 +506,223 @@ class SharedSettingFragment : Fragment() {
                         }
                     }) { Text("导入", fontSize = 13.sp) }
                 }
-                Text("关闭后返回设置", fontSize = 11.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
+        }
+    }
+
+    /** 视频设置弹窗（视频板块式紧凑弹窗，驻留设置 tab）：点播源配置 / DNS / UA / 无痕 / 尺寸 / 壁纸 / 子页入口。 */
+    @Composable
+    private fun VideoSettingsDialog(
+        onClose: () -> Unit,
+        onOpenPage: (Int) -> Unit,
+    ) {
+        var url by remember { mutableStateOf(VodConfig.getUrl()) }
+        var ua by remember { mutableStateOf(Setting.getUa()) }
+        var dnsTick by remember { mutableStateOf(0) }
+        var wallTick by remember { mutableStateOf(0) }
+        val context = LocalContext.current
+        val handler = remember { Handler(Looper.getMainLooper()) }
+        val dohList = remember { Doh.get(context).ifEmpty { VodConfig.get().getDoh() } }
+        val dohNames = remember(dnsTick) { dohList.map { it.getName() } }
+        val dohIndex = remember(dnsTick) { dohList.indexOf(Doh.objectFrom(Setting.getDoh())).coerceAtLeast(0) }
+        val sizeList = remember { context.resources.getStringArray(R.array.select_size).toList() }
+        val wall = remember(wallTick) { Setting.getWall() }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = true, decorFitsSystemWindows = false),
+        ) {
+            Column(
+                Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(14.dp))
+                    .widthIn(max = 460.dp).heightIn(max = 600.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 18.dp),
+            ) {
+                Text("视频设置", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Text("点播源 · DNS · 壁纸 · 无痕 · 尺寸（播放器/弹幕/预加载/解码在下方进入）", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                // ---- 点播源配置 URL ----
+                Text("点播源", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 4.dp))
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    placeholder = { Text("点播源订阅地址 / 本地文件", color = Color(0xFF666666), fontSize = 13.sp) },
+                    maxLines = 1,
+                    singleLine = true,
+                )
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(VodConfig.getDesc(), fontSize = 12.sp, color = Color(0xFF777777),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    TextButton(onClick = {
+                        if (url.isBlank()) return@TextButton
+                        VodConfig.load(Config.find(url.trim(), 0), callback())
+                    }) { Text("保存", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("本站点：", fontSize = 12.sp, color = Color(0xFF999999))
+                    Text(VodConfig.get().getHome().getName().ifEmpty { "未设置" }, fontSize = 12.sp,
+                        color = Color(0xFFDDDDDD), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
+                        modifier = Modifier.clickable {
+                            val site = VodConfig.get().getHome()
+                            if (site.getKey().isEmpty()) {
+                                Notify.show("请先配置点播源")
+                                return@clickable
+                            }
+                            Thread {
+                                val ok = try {
+                                    val api = site.getApi()
+                                    if (api.startsWith("http")) {
+                                        !com.github.catvod.net.OkHttp.string(api).isNullOrBlank()
+                                    } else {
+                                        !com.fongmi.android.tv.api.SiteApi.homeContent(site).getList().isEmpty()
+                                    }
+                                } catch (e: Exception) {
+                                    false
+                                }
+                                handler.post { Notify.show(if (ok) "测试通过" else "测试失败：源不可达") }
+                            }.start()
+                        }.padding(horizontal = 8.dp, vertical = 4.dp))
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
+                // ---- DNS(DoH) ----
+                Text("DNS（DoH）", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, bottom = 2.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+                    dohNames.forEachIndexed { i, name ->
+                        val sel = i == dohIndex
+                        Text(
+                            name,
+                            fontSize = 12.sp,
+                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable {
+                                    dohList.getOrNull(i)?.let {
+                                        OkHttp.dns().setDoh(it)
+                                        Setting.putDoh(it.toString())
+                                        dnsTick++
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
+                // ---- UA ----
+                Text("播放器 UA", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, bottom = 4.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = ua,
+                        onValueChange = { ua = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("自定义 User-Agent，可留空", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        Setting.putUa(ua.trim())
+                        Notify.show("UA 已保存")
+                    }) { Text("保存", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
+                // ---- 无痕 / 尺寸 / 壁纸 ----
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("无痕模式", fontSize = 13.sp, color = Color(0xFFDDDDDD), modifier = Modifier.weight(1f))
+                    val inc = remember { mutableStateOf(Setting.isIncognito()) }
+                    Row(Modifier.clickable {
+                        inc.value = !inc.value
+                        Setting.putIncognito(inc.value)
+                        Notify.show(if (inc.value) "无痕已开启" else "无痕已关闭")
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (inc.value) "● " else "○ ", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                        Text(if (inc.value) "开" else "关", fontSize = 13.sp, color = Color(0xFFCCCCCC))
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("视频尺寸", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, bottom = 2.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+                    sizeList.forEachIndexed { i, name ->
+                        val sel = i == PlayerSetting.getSize()
+                        Text(
+                            name,
+                            fontSize = 12.sp,
+                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable {
+                                    PlayerSetting.putSize(i)
+                                    RefreshEvent.size()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("壁纸", fontSize = 13.sp, color = Color(0xFFDDDDDD), modifier = Modifier.weight(1f))
+                    Text(if (wall in 1..4) "内置 $wall/4" else WallConfig.getDesc(), fontSize = 12.sp,
+                        color = Color(0xFF999999), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    TextButton(onClick = {
+                        Setting.putWall(if (Setting.getWall() == 4) 1 else Setting.getWall() + 1)
+                        Setting.putWallType(0)
+                        ConfigEvent.wall()
+                        wallTick++
+                    }) { Text("切换", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                    TextButton(onClick = {
+                        WallConfig.get().load(object : Callback() {
+                            override fun success() {
+                                handler.post { wallTick++; Notify.show("壁纸已刷新") }
+                            }
+                        })
+                    }) { Text("刷新", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
+                // ---- 子页入口 ----
+                Text("播放器设置 ›", fontSize = 14.sp, color = Color(0xFF4FC3F7),
+                    modifier = Modifier.fillMaxWidth().clickable { onClose(); onOpenPage(5) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp))
+                Text("弹幕设置 ›", fontSize = 14.sp, color = Color(0xFF4FC3F7),
+                    modifier = Modifier.fillMaxWidth().clickable { onClose(); onOpenPage(6) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp))
+                Text("预加载设置 ›", fontSize = 14.sp, color = Color(0xFF4FC3F7),
+                    modifier = Modifier.fillMaxWidth().clickable { onClose(); onOpenPage(7) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp))
+                Text("解码设置 ›", fontSize = 14.sp, color = Color(0xFF4FC3F7),
+                    modifier = Modifier.fillMaxWidth().clickable { onClose(); onOpenPage(8) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp))
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
+            }
+        }
+    }
+
+    private fun callback(): Callback = object : Callback() {
+        override fun success() {
+            requireActivity().runOnUiThread { Notify.show("点播源配置成功") }
+        }
+
+        override fun error(msg: String) {
+            requireActivity().runOnUiThread { Notify.show(msg) }
         }
     }
 

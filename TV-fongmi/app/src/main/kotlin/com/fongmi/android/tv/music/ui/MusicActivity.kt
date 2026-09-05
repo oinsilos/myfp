@@ -2288,14 +2288,9 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                         }
                     }
                 }
-                Text(
-                    "点击下方关闭",
-                    fontSize = 12.sp,
-                    color = Color(0xFF555555),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
-                        .padding(vertical = 12.dp),
-                )
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
             }
         }
     }
@@ -2337,14 +2332,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                     Spacer(Modifier.width(24.dp))
                     Button(onClick = { onOk(value) }) { Text("确定") }
                 }
-                Text(
-                    "点击下方关闭",
-                    fontSize = 12.sp,
-                    color = Color(0xFF555555),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
-                        .padding(vertical = 12.dp),
-                )
+                Spacer(Modifier.height(12.dp))
             }
         }
     }
@@ -2400,14 +2388,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                     Spacer(Modifier.width(12.dp))
                     Button(onClick = { onOk(url) }) { Text("导入") }
                 }
-                Text(
-                    "点击下方关闭",
-                    fontSize = 12.sp,
-                    color = Color(0xFF555555),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
-                        .padding(vertical = 12.dp),
-                )
+                Spacer(Modifier.height(12.dp))
             }
         }
     }
@@ -2425,7 +2406,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
             ) {
                 Text(text, fontSize = 16.sp, color = Color(0xFFDDDDDD), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 48.dp))
                 Spacer(Modifier.height(24.dp))
-                Text("点击任意处关闭", fontSize = 12.sp, color = Color(0xFF666666))
+                TextButton(onClick = onClose) { Text("确定", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
             }
         }
     }

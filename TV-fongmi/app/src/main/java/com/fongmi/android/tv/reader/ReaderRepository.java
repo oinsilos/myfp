@@ -245,7 +245,7 @@ public final class ReaderRepository {
         return n > 0;
     }
 
-    /** 连通性测试：用固定关键词做一次搜索，能解析出结果即视为可用。 */
+    /** 连通性测试：请求一次搜索，只要拿到非空响应即视为可用（不同源对关键词敏感度不同，规则解析到列表仅作加分项，不作为失败依据）。 */
     public CompletableFuture<Boolean> testSource(String sourceUrl) {
         BookSource s = sourceOf(sourceUrl);
         if (s == null) return CompletableFuture.completedFuture(false);
@@ -262,12 +262,17 @@ public final class ReaderRepository {
     private CompletableFuture<Boolean> testParsed(BookSource s) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String rule = s.ruleSearch == null ? "" : s.ruleSearch.bookList;
-                if (rule.isEmpty()) rule = "html";
                 String raw = OkHttp.string(s.fillSearchUrl("测试"));
-                if (raw == null || raw.isEmpty()) return false;
-                JSONArray list = RuleExecutor.jsonArray(rule, raw);
-                return list != null && list.length() > 0;
+                if (raw == null || raw.trim().isEmpty()) return false;
+                // 规则能解析出列表视为强通过；解析失败不代表源不可用（词条无结果即属此类）
+                String rule = s.ruleSearch == null ? "" : s.ruleSearch.bookList;
+                if (rule.isEmpty()) return true;
+                try {
+                    JSONArray list = RuleExecutor.jsonArray(rule, raw);
+                    if (list != null) return list.length() > 0 || raw.trim().length() > 200;
+                } catch (Exception ignored) {
+                }
+                return raw.trim().length() > 100;
             } catch (Exception e) {
                 return false;
             }
