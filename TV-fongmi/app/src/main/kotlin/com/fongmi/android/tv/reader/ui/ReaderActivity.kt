@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -47,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -77,6 +79,7 @@ import com.fongmi.android.tv.reader.Book
 import com.fongmi.android.tv.reader.BookSource
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
+import com.fongmi.android.tv.reader.RssRepository
 import com.fongmi.android.tv.utils.Notify
 import java.nio.charset.StandardCharsets
 import kotlin.math.abs
@@ -125,6 +128,14 @@ class ReaderActivity : AppCompatActivity() {
         var cacheBooks by mutableStateOf<List<ReaderStore.CachedBook>>(emptyList())
         // 章内阅读百分比（滚动节流更新，供阅读页顶部进度条展示）
         var readPercent by mutableStateOf(0f)
+        // RSS 阅读器：独立页签（源管理 + 文章列表 + 复用阅读页）
+        var rssMode by mutableStateOf(false)
+        var rssSources by mutableStateOf<List<RssRepository.RssSource>>(emptyList())
+        var rssActive by mutableStateOf("")
+        var rssArticles by mutableStateOf<List<RssRepository.RssArticle>>(emptyList())
+        var rssLoading by mutableStateOf(false)
+        var rssError by mutableStateOf("")
+        var rssSourceDialogVisible by mutableStateOf(false)
     }
 
     private val ui = UiState()
@@ -159,12 +170,14 @@ class ReaderActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         ReaderRepository.get().init(this)
         ReaderStore.get().init(this)
+        RssRepository.get().init(this)
         val rdr = ReaderStore.get()
         ui.fontSize = rdr.fontSize
         ui.lineHeight = rdr.lineHeight
         ui.theme = rdr.theme
         refreshSources()
         refreshShelves()
+        refreshRssSources()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
@@ -213,6 +226,39 @@ class ReaderActivity : AppCompatActivity() {
                         val n = ReaderStore.get().clearAllCache()
                         refreshCacheBooks()
                         Notify.show("已清除全部缓存（$n 章）")
+                    },
+                    onOpenRss = {
+                        ui.rssMode = true
+                        refreshRssSources()
+                        if (ui.rssActive.isEmpty()) {
+                            ui.rssActive = RssRepository.get().sources().firstOrNull()?.url ?: ""
+                        }
+                        if (ui.rssActive.isNotEmpty() && ui.rssArticles.isEmpty()) loadRssArticles(ui.rssActive)
+                    },
+                    onBackFromRss = { ui.rssMode = false },
+                    onSelectRssSource = ::loadRssArticles,
+                    onOpenRssArticle = ::openRssArticle,
+                    onRssImport = { name, url ->
+                        if (url.isBlank()) {
+                            Notify.show("请输入源名称和地址")
+                        } else {
+                            RssRepository.get().addSource(name, url)
+                            refreshRssSources()
+                            Notify.show("已添加订阅源")
+                        }
+                    },
+                    onToggleRssSource = {
+                        RssRepository.get().toggleSource(it)
+                        refreshRssSources()
+                    },
+                    onRemoveRssSource = {
+                        RssRepository.get().removeSource(it)
+                        refreshRssSources()
+                        if (ui.rssActive == it) {
+                            ui.rssActive = ""
+                            ui.rssArticles = emptyList()
+                        }
+                        Notify.show("已删除订阅源")
                     },
                     onOpenSources = { ui.sourceDialogVisible = true },
                     onImport = { importSource(it) },
@@ -329,6 +375,27 @@ class ReaderActivity : AppCompatActivity() {
         if (cached != null && cached.isNotEmpty()) {
             ui.contentLoading = false
             ui.content = cached
+            return
+        }
+        // RSS 文章：正文来自条目 description（缓存层已覆盖离线续读），不走书源规则
+        if (book.source == "rss") {
+            val art = ui.rssArticles.getOrNull(index)
+            if (art == null) {
+                ui.contentLoading = false
+                ui.contentError = "文章不存在"
+                return
+            }
+            RssRepository.get().body(art).whenComplete { html, _ ->
+                runOnUiThread {
+                    ui.contentLoading = false
+                    if (!html.isNullOrEmpty()) {
+                        ui.content = html
+                        Thread { ReaderStore.get().cacheChapter(book.url, index, html) }.start()
+                    } else {
+                        ui.contentError = "正文为空（未能获取内容）"
+                    }
+                }
+            }
             return
         }
         ReaderRepository.get().chapter(book.chapters[index].url, book.source).whenComplete { html, e ->
@@ -476,6 +543,51 @@ class ReaderActivity : AppCompatActivity() {
         ui.cacheBooks = ReaderStore.get().cachedBooks()
     }
 
+    // ------------------------------------------------------------ RSS
+
+    private fun refreshRssSources() {
+        ui.rssSources = RssRepository.get().sources()
+    }
+
+    /** 拉取订阅源文章列表（失败时回落缓存）。 */
+    private fun loadRssArticles(url: String) {
+        if (url.isEmpty()) return
+        ui.rssActive = url
+        ui.rssLoading = true
+        ui.rssError = ""
+        ui.rssArticles = emptyList()
+        RssRepository.get().refresh(url).whenComplete { list, _ ->
+            runOnUiThread {
+                ui.rssLoading = false
+                val items = list ?: emptyList()
+                ui.rssArticles = items
+                if (items.isEmpty()) {
+                    ui.rssError = if (url.isBlank()) "请先添加订阅源"
+                    else "该源暂无内容（可能网络失败且无缓存）"
+                }
+            }
+        }
+    }
+
+    /** 打开某篇文章：构造虚拟「书」（章节=文章列表），进阅读页。 */
+    private fun openRssArticle(index: Int) {
+        val arts = ui.rssArticles
+        if (index !in arts.indices) return
+        val source = ui.rssSources.firstOrNull { it.url == ui.rssActive }
+        val name = source?.name?.ifEmpty { "RSS" } ?: "RSS"
+        val book = Book("rss://" + abs(ui.rssActive.hashCode()), name, "RSS 源", "")
+        book.source = "rss"
+        for (a in arts) {
+            book.chapters.add(Book.Chapter(a.title.ifEmpty { "文章" }, a.link.ifEmpty { "rss" }))
+        }
+        ui.book = book
+        ui.reading = false
+        ui.shelfMode = false
+        ui.detailLoading = false
+        ui.inShelf = false
+        openChapter(index)
+    }
+
     /** 设置变更：写入 ReaderStore 持久化，并以新样式重载当前章（进度位置保留）。 */
     private fun applySettings() {
         val s = ReaderStore.get()
@@ -596,6 +708,13 @@ class ReaderActivity : AppCompatActivity() {
         onCloseCache: () -> Unit,
         onClearBookCache: (String) -> Unit,
         onClearAllCache: () -> Unit,
+        onOpenRss: () -> Unit,
+        onBackFromRss: () -> Unit,
+        onSelectRssSource: (String) -> Unit,
+        onOpenRssArticle: (Int) -> Unit,
+        onRssImport: (String, String) -> Unit,
+        onToggleRssSource: (String) -> Unit,
+        onRemoveRssSource: (String) -> Unit,
         onOpenSources: () -> Unit,
         onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
@@ -615,6 +734,12 @@ class ReaderActivity : AppCompatActivity() {
                         onAddBookmark = onAddBookmark,
                         onOpenSettings = onOpenSettings,
                     )
+                } else if (ui.rssMode) {
+                    RssBar(
+                        title = ui.rssSources.firstOrNull { it.url == ui.rssActive }?.name ?: "RSS 订阅",
+                        onBack = onBackFromRss,
+                        onManage = { ui.rssSourceDialogVisible = true },
+                    )
                 } else if (ui.cacheMode) {
                     CacheBar(onBack = onCloseCache, onClearAll = onClearAllCache)
                 } else if (currentBook != null) {
@@ -630,6 +755,7 @@ class ReaderActivity : AppCompatActivity() {
                         onOpenSources = onOpenSources,
                         shelfCount = ui.shelves.size,
                         onOpenShelf = onOpenShelf,
+                        onOpenRss = onOpenRss,
                     )
                 }
                 HorizontalDivider(color = Color(0x22FFFFFF))
@@ -638,6 +764,17 @@ class ReaderActivity : AppCompatActivity() {
                         loading = ui.contentLoading,
                         content = ui.content,
                         error = ui.contentError,
+                    )
+                } else if (ui.rssMode) {
+                    RssBody(
+                        sources = ui.rssSources,
+                        active = ui.rssActive,
+                        articles = ui.rssArticles,
+                        loading = ui.rssLoading,
+                        error = ui.rssError,
+                        onSelectSource = onSelectRssSource,
+                        onOpenArticle = onOpenRssArticle,
+                        onManage = { ui.rssSourceDialogVisible = true },
                     )
                 } else if (ui.cacheMode) {
                     CacheBody(
@@ -696,6 +833,15 @@ class ReaderActivity : AppCompatActivity() {
                 onClose = { ui.settingsDialogVisible = false },
             )
         }
+        if (ui.rssSourceDialogVisible) {
+            RssSourceDialog(
+                sources = ui.rssSources,
+                onClose = { ui.rssSourceDialogVisible = false },
+                onAdd = onRssImport,
+                onToggle = onToggleRssSource,
+                onRemove = onRemoveRssSource,
+            )
+        }
     }
 
     @Composable
@@ -707,6 +853,7 @@ class ReaderActivity : AppCompatActivity() {
         onOpenSources: () -> Unit,
         shelfCount: Int,
         onOpenShelf: () -> Unit,
+        onOpenRss: () -> Unit,
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -721,6 +868,13 @@ class ReaderActivity : AppCompatActivity() {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenShelf).padding(horizontal = 6.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "RSS",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenRss).padding(horizontal = 6.dp, vertical = 4.dp),
             )
             Spacer(Modifier.width(4.dp))
             OutlinedTextField(
@@ -1074,6 +1228,180 @@ class ReaderActivity : AppCompatActivity() {
                         modifier = Modifier.clickable { onClear(entry.book.url) }.padding(horizontal = 8.dp, vertical = 6.dp))
                 }
                 HorizontalDivider(color = Color(0x14FFFFFF))
+            }
+        }
+    }
+
+    /** RSS 顶栏：返回搜索 + 源名 + 源管理。 */
+    @Composable
+    private fun RssBar(title: String, onBack: () -> Unit, onManage: () -> Unit) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
+            Spacer(Modifier.weight(1f))
+            Text(title, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            Text("源管理", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onManage).padding(horizontal = 6.dp, vertical = 6.dp))
+        }
+    }
+
+    /** RSS 正文页：源 chips 切换 + 文章列表（标题/时间/摘要），点击进阅读页。 */
+    @Composable
+    private fun RssBody(
+        sources: List<RssRepository.RssSource>,
+        active: String,
+        articles: List<RssRepository.RssArticle>,
+        loading: Boolean,
+        error: String,
+        onSelectSource: (String) -> Unit,
+        onOpenArticle: (Int) -> Unit,
+        onManage: () -> Unit,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                sources.filter { it.enabled }.forEach { s ->
+                    val selected = s.url == active
+                    Text(
+                        s.name,
+                        fontSize = 12.sp,
+                        color = if (selected) Color(0xFF141414) else Color(0xFFCCCCCC),
+                        modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                            .background(if (selected) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                            .clickable { onSelectSource(s.url) }
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                Text("管理", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable(onClick = onManage).padding(horizontal = 4.dp, vertical = 4.dp))
+            }
+            HorizontalDivider(color = Color(0x16FFFFFF), modifier = Modifier.padding(bottom = 4.dp))
+            when {
+                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(30.dp))
+                }
+                articles.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(error.ifEmpty { "暂无文章" }, fontSize = 13.sp, color = Color(0xFF666666),
+                        textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                }
+                else -> LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                    itemsIndexed(articles) { index, art ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { onOpenArticle(index) }
+                                .padding(horizontal = 14.dp, vertical = 9.dp),
+                        ) {
+                            Text(art.title.ifEmpty { "无标题" }, fontSize = 14.sp, color = Color(0xFFE0E0E0),
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (art.pubDate.isNotEmpty()) {
+                                    Text(art.pubDate, fontSize = 11.sp, color = Color(0xFF777777), maxLines = 1)
+                                }
+                                val desc = stripHtml(art.desc)
+                                if (desc.isNotEmpty()) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(desc, fontSize = 11.sp, color = Color(0xFF888888),
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                        HorizontalDivider(color = Color(0x12FFFFFF))
+                    }
+                }
+            }
+        }
+    }
+
+    /** 简易剥标签（列表摘要展示用；正文走 htmlToParagraphs）。 */
+    private fun stripHtml(html: String): String {
+        return Regex("(?i)<[^>]+>").replace(html, " ")
+            .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .trim()
+    }
+
+    /** 订阅源管理：列表（开关/删除）+ 添加（名称 + 地址）。 */
+    @Composable
+    private fun RssSourceDialog(
+        sources: List<RssRepository.RssSource>,
+        onClose: () -> Unit,
+        onAdd: (String, String) -> Unit,
+        onToggle: (String) -> Unit,
+        onRemove: (String) -> Unit,
+    ) {
+        var name by remember { mutableStateOf("") }
+        var url by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("订阅源管理", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 4.dp))
+                Text("支持任意 RSS 地址（可直接用 RSSHub 订阅），离线自动缓存已拉取文章", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                if (sources.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("暂无订阅源，在下方添加", fontSize = 12.sp, color = Color(0xFF666666))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                        itemsIndexed(sources) { _, s ->
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (s.enabled) "●" else "○", fontSize = 13.sp,
+                                    color = if (s.enabled) MaterialTheme.colorScheme.primary else Color(0xFF555555),
+                                    modifier = Modifier.clickable { onToggle(s.url) })
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(s.name, fontSize = 14.sp,
+                                        color = if (s.enabled) Color(0xFFDDDDDD) else Color(0xFF777777), maxLines = 1)
+                                    Text(s.url, fontSize = 10.sp, color = Color(0xFF666666), maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                }
+                                Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                                    modifier = Modifier.clickable { onRemove(s.url) }.padding(6.dp))
+                            }
+                            HorizontalDivider(color = Color(0x16FFFFFF))
+                        }
+                    }
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("源名称（如 IT之家）", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("RSS 地址（如 http://www.ithome.com/rss/）", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        TextButton(onClick = onClose) { Text("关闭", color = Color(0xFF888888)) }
+                        Spacer(Modifier.width(20.dp))
+                        Button(onClick = {
+                            onAdd(name, url)
+                            name = ""
+                            url = ""
+                        }) { Text("添加", fontSize = 13.sp) }
+                    }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
             }
         }
     }
