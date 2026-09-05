@@ -31,6 +31,7 @@ public final class ReaderStore {
     private static final String KEY_PROGRESS = "progress";
     private static final String KEY_BOOKMARKS = "bookmarks";
     private static final String KEY_SETTINGS = "reader_settings";
+    private static final String KEY_RULES = "text_rules";
 
     private static volatile ReaderStore instance;
 
@@ -45,18 +46,132 @@ public final class ReaderStore {
     public float lineHeight = 1.9f;
     /** 主题：dark 深色 / sepia 暖黄 / night 夜间。 */
     public String theme = "dark";
+    /** 本地 TXT 切章正则（txtTocRule，须带一个捕获整个标题的 match；默认匹配「第X章/卷/回/节」）。 */
+    public String txtTocRegex = "第[0-9零一二三四五六七八九十百千万]+[章节卷回部篇集]";
+    /** TTS 朗读语速（0.5~2.0）。 */
+    public float ttsSpeed = 1.0f;
+    /** TTS 引擎："local" 本机 TextToSpeech / "online" 在线 HTTP 朗读。 */
+    public String ttsEngine = "online";
+    /** 在线朗读接口模板（{text} 会被 URL 编码替换；{title} 为章节名）。 */
+    public String ttsOnlineUrl = "https://dict.youdao.com/dictvoice?audio={text}&type=2";
 
-    /** 阅读进度：章节号 + 章内首可见段落号 + 段落比例（展示用）。 */
+    /** 阅读进度：章节号 + 章内首可见段落号 + 段落比例 + 最近阅读时间。 */
     public static final class Progress {
         public final int chapter;
         public final float percent;
         /** 章内首可见段落号；-1 表示旧数据（无段落位置，只能从头续）。 */
         public final int para;
+        /** 最近一次保存进度的时间戳（书架按最近阅读排序用）。 */
+        public final long lastRead;
 
-        Progress(int chapter, float percent, int para) {
+        Progress(int chapter, float percent, int para, long lastRead) {
             this.chapter = chapter;
             this.percent = percent;
             this.para = para;
+            this.lastRead = lastRead;
+        }
+    }
+
+    // ------------------------------------------------------------ 正文规则（净化/高亮/词典）
+
+    /** 高亮规则：正则/关键词 + 颜色（例如 #FFD54F）。 */
+    public static final class HighlightRule {
+        public final String p;
+        public final String c;
+
+        public HighlightRule(String p, String c) {
+            this.p = p == null ? "" : p;
+            this.c = c == null ? "" : c;
+        }
+    }
+
+    /** 词典规则：词 + 释义。 */
+    public static final class DictRule {
+        public final String w;
+        public final String d;
+
+        public DictRule(String w, String d) {
+            this.w = w == null ? "" : w;
+            this.d = d == null ? "" : d;
+        }
+    }
+
+    private List<String> clears = new ArrayList<>();
+    private List<HighlightRule> highlights = new ArrayList<>();
+    private List<DictRule> dicts = new ArrayList<>();
+
+    public List<String> clears() {
+        return clears;
+    }
+
+    public List<HighlightRule> highlights() {
+        return highlights;
+    }
+
+    public List<DictRule> dicts() {
+        return dicts;
+    }
+
+    /** 全量保存正文规则（UI 编辑完成后调用）。 */
+    public void saveRules(List<String> clearRules, List<HighlightRule> highlightRules, List<DictRule> dictRules) {
+        clears = new ArrayList<>(clearRules == null ? new ArrayList<>() : clearRules);
+        highlights = new ArrayList<>(highlightRules == null ? new ArrayList<>() : highlightRules);
+        dicts = new ArrayList<>(dictRules == null ? new ArrayList<>() : dictRules);
+        if (prefs == null) return;
+        try {
+            JSONArray cl = new JSONArray();
+            for (String c : clears) cl.put(c);
+            JSONArray hl = new JSONArray();
+            for (HighlightRule h : highlights) {
+                JSONObject o = new JSONObject();
+                o.put("p", h.p);
+                o.put("c", h.c);
+                hl.put(o);
+            }
+            JSONArray dc = new JSONArray();
+            for (DictRule d : dicts) {
+                JSONObject o = new JSONObject();
+                o.put("w", d.w);
+                o.put("d", d.d);
+                dc.put(o);
+            }
+            JSONObject root = new JSONObject();
+            root.put("clears", cl);
+            root.put("highlights", hl);
+            root.put("dicts", dc);
+            prefs.edit().putString(KEY_RULES, root.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "save rules failed", e);
+        }
+    }
+
+    private void loadRules() {
+        if (prefs == null) return;
+        try {
+            JSONObject root = new JSONObject(prefs.getString(KEY_RULES, "{}"));
+            clears = new ArrayList<>();
+            highlights = new ArrayList<>();
+            dicts = new ArrayList<>();
+            JSONArray cl = root.optJSONArray("clears");
+            if (cl != null) for (int i = 0; i < cl.length(); i++) clears.add(cl.optString(i));
+            JSONArray hl = root.optJSONArray("highlights");
+            if (hl != null) {
+                for (int i = 0; i < hl.length(); i++) {
+                    JSONObject o = hl.optJSONObject(i);
+                    if (o == null) continue;
+                    highlights.add(new HighlightRule(o.optString("p"), o.optString("c")));
+                }
+            }
+            JSONArray dc = root.optJSONArray("dicts");
+            if (dc != null) {
+                for (int i = 0; i < dc.length(); i++) {
+                    JSONObject o = dc.optJSONObject(i);
+                    if (o == null) continue;
+                    dicts.add(new DictRule(o.optString("w"), o.optString("d")));
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "load rules failed", e);
         }
     }
 
@@ -92,6 +207,7 @@ public final class ReaderStore {
         prefs = context.getApplicationContext().getSharedPreferences("reader_library", Context.MODE_PRIVATE);
         cacheRoot = new File(context.getFilesDir(), "reader_cache");
         loadSettings();
+        loadRules();
     }
 
     // ------------------------------------------------------------ 阅读设置
@@ -106,6 +222,14 @@ public final class ReaderStore {
             if (lh >= 1.2f && lh <= 3.0f && !Float.isNaN(lh)) lineHeight = lh;
             String t = o.optString("theme", "dark");
             if ("dark".equals(t) || "sepia".equals(t) || "night".equals(t)) theme = t;
+            String tr = o.optString("txtTocRegex", "");
+            if (!tr.trim().isEmpty()) txtTocRegex = tr.trim();
+            float ts = (float) o.optDouble("ttsSpeed", 1.0);
+            if (ts >= 0.5f && ts <= 2.0f && !Float.isNaN(ts)) ttsSpeed = ts;
+            String te = o.optString("ttsEngine", "");
+            if ("local".equals(te) || "online".equals(te)) ttsEngine = te;
+            String tu = o.optString("ttsOnlineUrl", "");
+            if (!tu.trim().isEmpty()) ttsOnlineUrl = tu.trim();
         } catch (Exception e) {
             Log.w(TAG, "load settings failed", e);
         }
@@ -118,6 +242,10 @@ public final class ReaderStore {
             o.put("fontSize", fontSize);
             o.put("lineHeight", lineHeight);
             o.put("theme", theme);
+            o.put("txtTocRegex", txtTocRegex);
+            o.put("ttsSpeed", ttsSpeed);
+            o.put("ttsEngine", ttsEngine);
+            o.put("ttsOnlineUrl", ttsOnlineUrl);
             prefs.edit().putString(KEY_SETTINGS, o.toString()).apply();
         } catch (Exception e) {
             Log.w(TAG, "save settings failed", e);
@@ -149,6 +277,137 @@ public final class ReaderStore {
     public File cacheFile(String bookUrl, int index) {
         File dir = bookCacheDir(bookUrl);
         return dir == null ? null : new File(dir, index + ".html");
+    }
+
+    /** 章节名索引文件（随缓存目录一起存放，清缓存时一并清除）。 */
+    private File namesFile(String bookUrl) {
+        File dir = bookCacheDir(bookUrl);
+        return dir == null ? null : new File(dir, "_names.json");
+    }
+
+    // ------------------------------------------------------------ 阅读统计 / 记录
+
+    private static final String KEY_STATS = "reader_stats";
+
+    /** 阅读统计快照：今日阅读时长(毫秒) + 最近阅读记录列表。 */
+    public static final class ReadingStats {
+        public long todayMs;
+        public final List<Record> records = new ArrayList<>();
+    }
+
+    /** 一条阅读记录：书名 + 最后阅读时间 + 进度。 */
+    public static final class Record {
+        public final String url;
+        public final String name;
+        public final long time;
+        public final String chapterName;
+        public final float percent;
+
+        Record(String url, String name, long time, String chapterName, float percent) {
+            this.url = url == null ? "" : url;
+            this.name = name == null ? "" : name;
+            this.time = time;
+            this.chapterName = chapterName == null ? "" : chapterName;
+            this.percent = percent;
+        }
+    }
+
+    /** 累计今日阅读时长（开机/跨天后自动归零），页面切换调用。 */
+    public void tickRead(long ms, String bookUrl, String bookName) {
+        if (prefs == null || ms <= 0) return;
+        try {
+            JSONObject o = new JSONObject(prefs.getString(KEY_STATS, "{}"));
+            String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date());
+            if (!today.equals(o.optString("day"))) {
+                o.put("day", today);
+                o.put("todayMs", 0L);
+            }
+            o.put("todayMs", o.optLong("todayMs") + ms);
+            prefs.edit().putString(KEY_STATS, o.toString()).apply();
+            recordRead(bookUrl, bookName, "", 0f);
+        } catch (Exception e) {
+            Log.w(TAG, "tick read failed", e);
+        }
+    }
+
+    /** 记录一次阅读进度（某本书记录章节+时间，供阅读记录页；同书去重置顶）。 */
+    public void recordRead(String bookUrl, String bookName, String chapterName, float percent) {
+        if (prefs == null || bookUrl == null || bookUrl.isEmpty()) return;
+        try {
+            JSONObject o = new JSONObject(prefs.getString(KEY_STATS, "{}"));
+            JSONArray records = o.optJSONArray("records");
+            if (records == null) records = new JSONArray();
+            JSONObject n = new JSONObject();
+            n.put("url", bookUrl);
+            n.put("name", bookName == null ? "" : bookName);
+            n.put("time", System.currentTimeMillis());
+            n.put("chapterName", chapterName == null ? "" : chapterName);
+            n.put("percent", percent);
+            // 去重置顶：移除同 url 旧项
+            JSONArray clean = new JSONArray();
+            for (int i = 0; i < records.length(); i++) {
+                JSONObject r = records.optJSONObject(i);
+                if (r == null) continue;
+                if (bookUrl.equals(r.optString("url"))) continue;
+                clean.put(r);
+            }
+            JSONArray finalArr = new JSONArray();
+            finalArr.put(n);
+            for (int i = 0; i < clean.length(); i++) finalArr.put(clean.get(i));
+            while (finalArr.length() > 50) finalArr.remove(finalArr.length() - 1);
+            o.put("records", finalArr);
+            prefs.edit().putString(KEY_STATS, o.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "record read failed", e);
+        }
+    }
+
+    /** 阅读统计快照（今日时长 + 记录列表）。 */
+    public ReadingStats readingStats() {
+        ReadingStats out = new ReadingStats();
+        if (prefs == null) return out;
+        try {
+            JSONObject o = new JSONObject(prefs.getString(KEY_STATS, "{}"));
+            String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date());
+            if (today.equals(o.optString("day"))) out.todayMs = o.optLong("todayMs");
+            JSONArray records = o.optJSONArray("records");
+            if (records != null) {
+                for (int i = 0; i < records.length(); i++) {
+                    JSONObject r = records.optJSONObject(i);
+                    if (r == null) continue;
+                    out.records.add(new Record(r.optString("url"), r.optString("name"), r.optLong("time"),
+                            r.optString("chapterName"), (float) r.optDouble("percent", 0.0)));
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "read stats failed", e);
+        }
+        return out;
+    }
+
+    /** 保存整本书章节名（导入本地书时一次性写入，书架重开后可显示真实章名）。 */
+    public void saveChapterNames(String bookUrl, List<String> names) {
+        File f = namesFile(bookUrl);
+        if (f == null) return;
+        try {
+            JSONArray a = new JSONArray();
+            for (String n : names) a.put(n == null ? "" : n);
+            Files.write(f.toPath(), a.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.w(TAG, "save chapter names failed", e);
+        }
+    }
+
+    /** 某章章节名；无记录返回空串。 */
+    public String chapterName(String bookUrl, int index) {
+        File f = namesFile(bookUrl);
+        if (f == null || !f.exists()) return "";
+        try {
+            JSONArray a = new JSONArray(new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8));
+            return index >= 0 && index < a.length() ? a.optString(index) : "";
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /** 读缓存正文；无缓存返回 null。 */
@@ -251,6 +510,7 @@ public final class ReaderStore {
                 b.author = o.optString("author");
                 b.cover = o.optString("cover");
                 b.source = o.optString("source");
+                b.group = o.optString("group");
                 out.add(b);
             }
         } catch (Exception e) {
@@ -294,6 +554,7 @@ public final class ReaderStore {
                 o.put("author", b.author);
                 o.put("cover", b.cover == null ? "" : b.cover);
                 o.put("source", b.source == null ? "" : b.source);
+                o.put("group", b.group == null ? "" : b.group);
                 arr.put(o);
             }
             prefs.edit().putString(KEY_SHELF, arr.toString()).apply();
@@ -315,7 +576,8 @@ public final class ReaderStore {
             if (chapter < 0) return null;
             float percent = (float) o.optDouble("percent", 0.0);
             int para = o.optInt("para", -1);
-            return new Progress(chapter, percent, para);
+            long lastRead = o.optLong("time", 0L);
+            return new Progress(chapter, percent, para, lastRead);
         } catch (Exception e) {
             return null;
         }
@@ -330,11 +592,52 @@ public final class ReaderStore {
             o.put("chapter", chapter);
             o.put("para", para);
             o.put("percent", totalPara > 0 ? Math.max(0f, Math.min(1f, (float) para / totalPara)) : 0f);
+            o.put("time", System.currentTimeMillis());
             map.put(bookUrl, o);
             prefs.edit().putString(KEY_PROGRESS, map.toString()).apply();
         } catch (Exception e) {
             Log.w(TAG, "write progress failed", e);
         }
+    }
+
+    // ------------------------------------------------------------ 书架分组
+
+    /** 全部书架分组名（含"全部"之外的实体分组），按首次出现顺序。 */
+    public List<String> groupNames() {
+        List<String> out = new ArrayList<>();
+        for (Book b : shelf()) {
+            String g = b.group == null || b.group.isEmpty() ? "默认" : b.group;
+            if (!out.contains(g)) out.add(g);
+        }
+        return out;
+    }
+
+    /** 把书移入分组（覆盖应改动的书；group 空表示默认分组）。 */
+    public void moveToGroup(String bookUrl, String group) {
+        String g = group == null || group.trim().isEmpty() ? "默认" : group.trim();
+        List<Book> list = shelf();
+        boolean changed = false;
+        for (Book b : list) {
+            if (b.url.equals(bookUrl) && !g.equals(b.group)) {
+                b.group = g;
+                changed = true;
+            }
+        }
+        if (changed) saveShelf(list);
+    }
+
+    /** 删除分组：组内书全部回到默认分组。 */
+    public void removeGroup(String group) {
+        if (group == null || group.isEmpty()) return;
+        List<Book> list = shelf();
+        boolean changed = false;
+        for (Book b : list) {
+            if (group.equals(b.group)) {
+                b.group = "默认";
+                changed = true;
+            }
+        }
+        if (changed) saveShelf(list);
     }
 
     // ------------------------------------------------------------ 书签
@@ -412,6 +715,54 @@ public final class ReaderStore {
             prefs.edit().putString(KEY_BOOKMARKS, map.toString()).apply();
         } catch (Exception e) {
             Log.w(TAG, "remove bookmark failed", e);
+        }
+    }
+
+    // ------------------------------------------------------------ 备份 / 恢复
+
+    /** 导出阅读库（书架/进度/书签/正文规则/阅读设置）为单一 JSON。 */
+    public String exportJson() {
+        if (prefs == null) return "{}";
+        try {
+            JSONObject o = new JSONObject();
+            o.put("shelf", new JSONArray(prefs.getString(KEY_SHELF, "[]")));
+            o.put("progress", new JSONObject(prefs.getString(KEY_PROGRESS, "{}")));
+            o.put("bookmarks", new JSONObject(prefs.getString(KEY_BOOKMARKS, "{}")));
+            o.put("text_rules", new JSONObject(prefs.getString(KEY_RULES, "{}")));
+            o.put("reader_settings", new JSONObject(prefs.getString(KEY_SETTINGS, "{}")));
+            o.put("reader_stats", new JSONObject(prefs.getString(KEY_STATS, "{}")));
+            return o.toString(2);
+        } catch (Exception e) {
+            Log.w(TAG, "export failed", e);
+            return "{}";
+        }
+    }
+
+    /** 恢复阅读库：覆盖书架/进度/书签/规则/设置，并重载内存。 */
+    public boolean importJson(String json) {
+        if (prefs == null || json == null || json.trim().isEmpty()) return false;
+        try {
+            JSONObject o = new JSONObject(json);
+            SharedPreferences.Editor e = prefs.edit();
+            JSONArray shelf = o.optJSONArray("shelf");
+            if (shelf != null) e.putString(KEY_SHELF, shelf.toString());
+            JSONObject progress = o.optJSONObject("progress");
+            if (progress != null) e.putString(KEY_PROGRESS, progress.toString());
+            JSONObject bookmarks = o.optJSONObject("bookmarks");
+            if (bookmarks != null) e.putString(KEY_BOOKMARKS, bookmarks.toString());
+            JSONObject rules = o.optJSONObject("text_rules");
+            if (rules != null) e.putString(KEY_RULES, rules.toString());
+            JSONObject settings = o.optJSONObject("reader_settings");
+            if (settings != null) e.putString(KEY_SETTINGS, settings.toString());
+            JSONObject stats = o.optJSONObject("reader_stats");
+            if (stats != null) e.putString(KEY_STATS, stats.toString());
+            e.apply();
+            loadSettings();
+            loadRules();
+            return true;
+        } catch (Exception ex) {
+            Log.w(TAG, "import failed", ex);
+            return false;
         }
     }
 }

@@ -68,6 +68,46 @@ public final class BookSource {
         return u.replace("{{key}}", java.net.URLEncoder.encode(keyword, java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /** 序列化回 legado 风格 JSON（编辑书源用；不含本地 enabled 开关）。 */
+    public String toJson() {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("bookSourceUrl", url);
+            o.put("bookSourceName", name);
+            if (!searchUrl.isEmpty()) o.put("searchUrl", searchUrl);
+            putSet(o, "ruleSearch", ruleSearch);
+            putSet(o, "ruleBookInfo", ruleBookInfo);
+            putSet(o, "ruleToc", ruleToc);
+            putSet(o, "ruleContent", ruleContent);
+            return o.toString(2);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    private static void putSet(JSONObject o, String key, RuleSet s) throws Exception {
+        if (s == null) return;
+        JSONObject r = new JSONObject();
+        putIf(r, "init", s.init);
+        putIf(r, "bookList", s.bookList);
+        putIf(r, "bookName", s.bookName);
+        putIf(r, "name", s.name);
+        putIf(r, "author", s.author);
+        putIf(r, "coverUrl", s.coverUrl);
+        putIf(r, "intro", s.intro);
+        putIf(r, "bookUrl", s.bookUrl);
+        putIf(r, "tocUrl", s.tocUrl);
+        putIf(r, "chapterList", s.chapterList);
+        putIf(r, "chapterName", s.chapterName);
+        putIf(r, "chapterUrl", s.chapterUrl);
+        putIf(r, "content", s.content);
+        if (r.length() > 0) o.put(key, r);
+    }
+
+    private static void putIf(JSONObject o, String key, String v) throws Exception {
+        if (v != null && !v.isEmpty()) o.put(key, v);
+    }
+
     public static final class RuleSet {
         public final String init;
         public final String bookList;

@@ -4,11 +4,16 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
+import android.view.Surface
+import android.view.TextureView
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -38,6 +43,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -51,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,12 +71,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
@@ -77,14 +89,27 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.fongmi.android.tv.reader.Book
 import com.fongmi.android.tv.reader.BookSource
+import com.fongmi.android.tv.reader.EpubImporter
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
 import com.fongmi.android.tv.utils.Notify
+import com.github.catvod.net.OkHttp
 import java.nio.charset.StandardCharsets
+import org.json.JSONObject
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+/** 全文搜索结果：命中书 + 章节 + 章内段落号 + 摘要。 */
+data class FulltextHit(
+    val bookUrl: String,
+    val bookName: String,
+    val chapter: Int,
+    val chapterName: String,
+    val para: Int,
+    val snippet: String,
+)
 
 /**
  * 阅读（书源）界面：搜索 → 书籍详情/目录 → 正文阅读（Compose 段落排版，断点按段落号恢复）。
@@ -100,6 +125,9 @@ class ReaderActivity : AppCompatActivity() {
         var sources by mutableStateOf<List<BookSource>>(emptyList())
         var sourceDialogVisible by mutableStateOf(false)
         var importing by mutableStateOf(false)
+        // 书源 JSON 规则编辑（含 @js: 源码）
+        var sourceEditVisible by mutableStateOf(false)
+        var sourceEditTarget by mutableStateOf<String?>(null)
         // 书籍详情 + 目录
         var book by mutableStateOf<Book?>(null)
         var detailLoading by mutableStateOf(false)
@@ -114,6 +142,12 @@ class ReaderActivity : AppCompatActivity() {
         var shelfMode by mutableStateOf(false)
         var shelves by mutableStateOf<List<Book>>(emptyList())
         var bookmarks by mutableStateOf<List<ReaderStore.Bookmark>>(emptyList())
+        // 书架分组/排序：分组过滤 + 移入分组 + 三种排序
+        var shelfGroups by mutableStateOf<List<String>>(emptyList())
+        var shelfGroupFilter by mutableStateOf("全部")
+        var shelfSort by mutableStateOf(0) // 0 加入顺序 / 1 最近阅读 / 2 书名
+        var moveTarget by mutableStateOf<Book?>(null)
+        var newGroupDialogVisible by mutableStateOf(false)
         /** 当前详情书是否在书架（Compose 可观察，收藏/移出即时刷新按钮）。 */
         var inShelf by mutableStateOf(false)
         // 批2：章节缓存 + 本地 TXT 导入 + 阅读设置
@@ -123,6 +157,24 @@ class ReaderActivity : AppCompatActivity() {
         var fontSize by mutableStateOf(17)
         var lineHeight by mutableStateOf(1.9f)
         var theme by mutableStateOf("dark")
+        // 本地/远程书籍导入（txt/epub）
+        var importDialogVisible by mutableStateOf(false)
+        var remoteImportVisible by mutableStateOf(false)
+        var remoteImporting by mutableStateOf(false)
+        // 全文搜索（在已缓存/本地书籍的章节内定位关键词）
+        var fulltextVisible by mutableStateOf(false)
+        var fulltextKeyword by mutableStateOf("")
+        var fulltextSearching by mutableStateOf(false)
+        var fulltextHits by mutableStateOf<List<FulltextHit>>(emptyList())
+        // 漫画阅读：章节含图片时提供 漫画/文字 切换；阅读统计弹窗
+        var comicMode by mutableStateOf(false)
+        var hasImages by mutableStateOf(false)
+        var statsVisible by mutableStateOf(false)
+        // 备份 / 恢复
+        var backupVisible by mutableStateOf(false)
+        // 正文规则（净化/高亮/词典）编辑弹窗 + 词典命中弹窗
+        var rulesDialogVisible by mutableStateOf(false)
+        var dictDialogText by mutableStateOf<String?>(null)
         // 缓存管理页：列出已缓存的书，支持单本/全部清除
         var cacheMode by mutableStateOf(false)
         var cacheBooks by mutableStateOf<List<ReaderStore.CachedBook>>(emptyList())
@@ -138,9 +190,31 @@ class ReaderActivity : AppCompatActivity() {
         var rssSourceDialogVisible by mutableStateOf(false)
         /** 当前 RSS 源是否已在书架（RssBar 收藏按钮即时刷新）。 */
         var rssInShelf by mutableStateOf(false)
+        // TTS 听书：本机 TextToSpeech + 在线 HTTP 朗读 + 语速 + 自动切章
+        var ttsVisible by mutableStateOf(false)
+        var ttsPlaying by mutableStateOf(false)
+        var ttsSpeed by mutableStateOf(1.0f)
+        var ttsEngine by mutableStateOf("online")
+        var ttsOnlineUrl by mutableStateOf("")
+        var ttsStatus by mutableStateOf("")
+        // RSS 收藏 / 已读 / 排序
+        var rssFavMode by mutableStateOf(false)
+        var rssFavs by mutableStateOf<List<RssRepository.RssFav>>(emptyList())
+        var rssUnreadOnly by mutableStateOf(false)
+        var rssRefreshKey by mutableStateOf(0)
+        /** 当前阅读的 RSS 文章是否已收藏（ReaderBar 星标）。 */
+        var rssArticleFav by mutableStateOf(false)
+        // 订阅源视频播放：RSS 正文里 mp4/m3u8 直链
+        var videoPlayUrl by mutableStateOf<String?>(null)
     }
 
     private val ui = UiState()
+    /** TTS 朗读引擎（本机 TextToSpeech / 在线 HTTP）。 */
+    private val ttsSpeaker = TtsSpeaker(this)
+    /** 切章后等正文就绪继续朗读（自动切章 / 手动上下章）。 */
+    private var ttsPendingCont = false
+    /** RSS 文章收藏页的伪源 key（rssActive 取此值表示在看收藏）。 */
+    private val RSS_FAV = "__favorites__"
     /** 当前章首可见段落号（LazyColumn 滚动实时更新，退出/切章时落盘）。 */
     private var currentParaIndex = 0
     /** 当前章段落总数（正文到达后按 htmlToParagraphs 计算）。 */
@@ -159,13 +233,23 @@ class ReaderActivity : AppCompatActivity() {
             mainHandler.postDelayed(this, 30 * 60_000L)
         }
     }
+    /** 阅读时长累计（每分钟一次，仅阅读中生效，计入阅读统计）。 */
+    private val statsTick = object : Runnable {
+        override fun run() {
+            val b = ui.book
+            if (ui.reading && b != null) {
+                ReaderStore.get().tickRead(60_000L, b.url, b.name)
+            }
+            mainHandler.postDelayed(this, 60_000L)
+        }
+    }
     /** 搜索兜底：底层（书源网络/规则求值）无论怎样，25s 内必须结束搜索态，绝不无限转圈。 */
     private val uiHandler = Handler(Looper.getMainLooper())
     private val SEARCH_TIMEOUT_MS = 25_000L
 
-    /** 本地 TXT 书籍文件选择器（SAF）。 */
-    private val localTxtPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importLocalTxt(uri)
+    /** 本地书籍文件选择器（SAF，TXT/EPUB 按扩展名识别）。 */
+    private val localBookPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importLocalBook(uri)
     }
 
     /** OPML 导入（批量添加订阅源）。 */
@@ -176,6 +260,16 @@ class ReaderActivity : AppCompatActivity() {
     /** OPML 导出（保存全部订阅源）。 */
     private val opmlExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/xml")) { uri ->
         if (uri != null) exportOpmlFile(uri)
+    }
+
+    /** 备份导出（阅读库 + 书源 + 订阅源写入单个 JSON）。 */
+    private val backupExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) exportBackup(uri)
+    }
+
+    /** 备份恢复（读取 JSON 覆盖阅读库/书源/订阅源）。 */
+    private val backupImportPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importBackup(uri)
     }
 
     companion object {
@@ -196,9 +290,18 @@ class ReaderActivity : AppCompatActivity() {
         ui.fontSize = rdr.fontSize
         ui.lineHeight = rdr.lineHeight
         ui.theme = rdr.theme
+        ui.ttsSpeed = rdr.ttsSpeed
+        ui.ttsEngine = rdr.ttsEngine
+        ui.ttsOnlineUrl = rdr.ttsOnlineUrl
+        // TTS 回调（均回到主线程）：状态按钮 / 段落进度 / 整章读完自动切章
+        ttsSpeaker.onState = { playing -> mainHandler.post { ui.ttsPlaying = playing } }
+        ttsSpeaker.onProgress = { pi, pc -> mainHandler.post { ui.ttsStatus = "第 ${pi + 1}/${pc} 段" } }
+        ttsSpeaker.onDone = { mainHandler.post { ttsChapterDone() } }
         refreshSources()
         refreshShelves()
         refreshRssSources()
+        // 共享/打开导入：其他 App 分享 txt/epub 打开本页，或分享书源文本
+        handleSharedIntent(intent)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF4FC3F7),
@@ -233,9 +336,24 @@ class ReaderActivity : AppCompatActivity() {
                         refreshShelves()
                         Notify.show("已移出书架")
                     },
+                    onCycleSort = ::cycleShelfSort,
+                    onSelectGroup = { ui.shelfGroupFilter = it },
+                    onOpenNewGroup = { ui.newGroupDialogVisible = true },
+                    onCreateGroup = ::createShelfGroup,
+                    onMoveShelfBook = { url, group ->
+                        moveShelfBook(url, group)
+                        ui.moveTarget = null
+                        Notify.show("已移入分组「$group」")
+                    },
                     onOpenSettings = { ui.settingsDialogVisible = true },
                     onCacheBook = ::cacheCurrentBook,
-                    onImportLocalTxt = { localTxtPicker.launch(arrayOf("text/*")) },
+                    onOpenImport = { ui.importDialogVisible = true },
+                    onOpenFulltext = { ui.fulltextVisible = true },
+                    onOpenCacheHit = ::openFromCacheHit,
+                    onOpenStats = { ui.statsVisible = true },
+                    onOpenBackup = { ui.backupVisible = true },
+                    onExportBackup = { backupExportPicker.launch("reader_backup.json") },
+                    onImportBackup = { backupImportPicker.launch(arrayOf("*/*")) },
                     onOpenCache = { ui.cacheMode = true; refreshCacheBooks() },
                     onCloseCache = { ui.cacheMode = false },
                     onClearBookCache = { url ->
@@ -280,6 +398,7 @@ class ReaderActivity : AppCompatActivity() {
                         RssRepository.get().toggleSource(it)
                         refreshRssSources()
                     },
+                    onTestRssSource = ::testRssSource,
                     onRemoveRssSource = {
                         RssRepository.get().removeSource(it)
                         refreshRssSources()
@@ -293,14 +412,57 @@ class ReaderActivity : AppCompatActivity() {
                     onImport = { importSource(it) },
                     onToggleSource = { toggleSource(it) },
                     onRemoveSource = { removeSource(it) },
+                    onTestSource = ::testSource,
+                    onEditSource = { url ->
+                        ui.sourceEditTarget = url
+                        ui.sourceEditVisible = true
+                    },
                 )
             }
         }
         mainHandler.postDelayed(rssRefreshTick, 30 * 60_000L)
+        mainHandler.postDelayed(statsTick, 60_000L)
+    }
+
+    /** 单实例模式下再次分享/打开 → 继续走导入流程。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleSharedIntent(intent)
+    }
+
+    /** 共享导入：ACTION_SEND/VIEW。
+     *  - 文件 uri（txt/epub）→ 直接导入本地书
+     *  - 纯文本（书源 JSON / 备份 JSON / OPML）→ 自动识别分别导入
+     */
+    private fun handleSharedIntent(intent: Intent) {
+        val action = intent.action ?: return
+        val uri = intent.data
+        if (uri != null) {
+            importLocalBook(uri)
+            return
+        }
+        if (Intent.ACTION_SEND == action) {
+            val shared = intent.getStringExtra(Intent.EXTRA_TEXT)
+            if (!shared.isNullOrBlank()) {
+                val t = shared.trim()
+                when {
+                    t.startsWith("http") && (t.endsWith(".txt") || t.endsWith(".epub")) ->
+                        importRemoteBook(t)
+                    t.contains("bookSourceUrl") -> importSource(t)
+                    t.contains("rss_sources") || t.contains("\"rss\"") -> RssRepository.get().importSources(t)
+                    t.contains("\"shelf\"") -> if (ReaderStore.get().importJson(t)) {
+                        refreshShelves(); Notify.show("已恢复阅读库")
+                    } else Notify.show("导入内容无法识别")
+                    else -> Notify.show("分享内容无法识别为书籍/书源/备份")
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(rssRefreshTick)
+        mainHandler.removeCallbacks(statsTick)
+        ttsSpeaker.release()
         super.onDestroy()
     }
 
@@ -353,6 +515,14 @@ class ReaderActivity : AppCompatActivity() {
         if (book.url.startsWith("local_txt://")) {
             ui.detailLoading = false
             refreshBookmarks()
+            // 书架重开时 chapter 列表为空，从缓存重建（章节名来自导入时保存的索引）
+            if (book.chapters.isEmpty()) {
+                val n = ReaderStore.get().cachedCount(book.url)
+                for (i in 0 until n) {
+                    val name = ReaderStore.get().chapterName(book.url, i).ifEmpty { "第${i + 1}节" }
+                    book.chapters.add(Book.Chapter(name, "local_txt#$i"))
+                }
+            }
             ui.cacheText = "本地文件 · ${book.chapters.size} 节"
             if (autoContinue) {
                 val p = ReaderStore.get().progress(book.url)
@@ -414,6 +584,7 @@ class ReaderActivity : AppCompatActivity() {
         ui.contentLoading = true
         ui.contentError = ""
         ui.content = ""
+        refreshRssArticleFav()
         // 断点续读：优先传入的段落号（书签跳转）；否则读进度库中该章的段落号
         if (restore >= 0) {
             restorePara = restore
@@ -426,11 +597,12 @@ class ReaderActivity : AppCompatActivity() {
         if (cached != null && cached.isNotEmpty()) {
             ui.contentLoading = false
             ui.content = cached
+            maybeContinueTts()
             return
         }
         // RSS 文章：正文来自条目 description（缓存层已覆盖离线续读），不走书源规则
         if (book.source == "rss") {
-            val art = ui.rssArticles.getOrNull(index)
+            val art = rssArticleForChapter(index)
             if (art == null) {
                 ui.contentLoading = false
                 ui.contentError = "文章不存在"
@@ -442,6 +614,7 @@ class ReaderActivity : AppCompatActivity() {
                     if (!html.isNullOrEmpty()) {
                         ui.content = html
                         Thread { ReaderStore.get().cacheChapter(book.url, index, html) }.start()
+                        maybeContinueTts()
                     } else {
                         ui.contentError = "正文为空（未能获取内容）"
                     }
@@ -457,15 +630,64 @@ class ReaderActivity : AppCompatActivity() {
                     val fallback = ReaderStore.get().cachedChapter(book.url, index)
                     if (fallback != null && fallback.isNotEmpty()) {
                         ui.content = fallback
+                        maybeContinueTts()
                     } else {
                         ui.contentError = "正文加载失败：" + friendly(e ?: Exception("空正文"))
                     }
                 } else {
                     ui.content = html
                     Thread { ReaderStore.get().cacheChapter(book.url, index, html) }.start()
+                    maybeContinueTts()
                 }
             }
         }
+    }
+
+    /** 当前章对应的 RSS 条目（来源文章列表或收藏页），供正文获取与星标。 */
+    private fun rssArticleForChapter(index: Int): RssRepository.RssArticle? {
+        val book = ui.book ?: return null
+        val ch = book.chapters.getOrNull(index) ?: return null
+        val link = ch.url.trim()
+        // 收藏模式：book.url 形如 rss_fav://<link>
+        if (book.url.startsWith("rss_fav://")) {
+            val fav = ui.rssFavs.firstOrNull { it.link.trim() == link } ?: RssRepository.get().favorites().firstOrNull { it.link.trim() == link }
+            if (fav != null) return RssRepository.RssArticle(fav.title, fav.link, fav.pubDate, fav.desc)
+        }
+        if (book.url.startsWith("rss_src://")) {
+            ui.rssArticles.firstOrNull { it.link.trim() == link }?.let { return it }
+            // 收藏页或离线场景：尝试缓存/收藏里找
+            RssRepository.get().favorites().firstOrNull { it.link.trim() == link }?.let { return RssRepository.RssArticle(it.title, it.link, it.pubDate, it.desc) }
+        }
+        return null
+    }
+
+    /** 当前 RSS 文章收藏态刷新（阅读页星标显示）。 */
+    private fun refreshRssArticleFav() {
+        if (ui.book?.source != "rss") {
+            ui.rssArticleFav = false
+            return
+        }
+        val ch = ui.book?.chapters?.getOrNull(ui.chapterIndex)
+        ui.rssArticleFav = ch != null && RssRepository.get().isFavorite(ch.url.trim())
+    }
+
+    /** 星标/取消星标当前 RSS 文章。 */
+    private fun toggleRssArticleFav() {
+        val ch = ui.book?.chapters?.getOrNull(ui.chapterIndex) ?: return
+        val link = ch.url.trim()
+        val base = rssArticleForChapter(ui.chapterIndex)
+        val art = base ?: RssRepository.RssArticle(ch.name, link, "", "")
+        val srcUrl = if (ui.book?.url?.startsWith("rss_fav://") == true) {
+            RssRepository.get().favorites().firstOrNull { it.link == link }?.sourceUrl ?: ""
+        } else ui.rssActive
+        val srcName = ui.rssSources.firstOrNull { it.url == srcUrl }?.name
+            ?: RssRepository.get().favorites().firstOrNull { it.link == link }?.source
+            ?: "RSS"
+        val fav = RssRepository.get().toggleFavorite(art, srcUrl, srcName)
+        ui.rssArticleFav = fav
+        refreshRssFavs()
+        ui.rssRefreshKey++
+        Notify.show(if (fav) "已收藏到收藏页" else "已取消收藏")
     }
 
     /** 缓存整本书全部章节（后台逐章拉取写入本地），展示进度。 */
@@ -499,50 +721,127 @@ class ReaderActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** 本地 TXT 书籍导入：读文本 → 按章节标题切章 → 逐章写入缓存 → 入书架并打开。 */
-    private fun importLocalTxt(uri: Uri) {
+    /** 本地书籍导入（TXT/EPUB）：按扩展名走不同解析，切章 → 逐章写缓存 → 入书架并打开。 */
+    private fun importLocalBook(uri: Uri) {
         Thread {
             try {
-                val name = queryName(contentResolver, uri) ?: "本地书籍.txt"
-                val text = contentResolver.openInputStream(uri)
-                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
-                if (text.isBlank()) {
-                    runOnUiThread { Notify.show("文本内容为空") }
-                    return@Thread
+                val name = queryName(contentResolver, uri) ?: "本地书籍"
+                val chapters: List<Pair<String, String>>
+                if (name.lowercase().endsWith(".epub")) {
+                    val stream = contentResolver.openInputStream(uri)
+                    if (stream == null) {
+                        runOnUiThread { Notify.show("无法打开文件") }
+                        return@Thread
+                    }
+                    val parsed = EpubImporter.parse(stream)
+                    stream.close()
+                    if (parsed.isEmpty()) {
+                        runOnUiThread { Notify.show("EPUB 无有效正文") }
+                        return@Thread
+                    }
+                    chapters = parsed.map { it.title to it.text }
+                } else {
+                    val text = contentResolver.openInputStream(uri)
+                        ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                    if (text.isBlank()) {
+                        runOnUiThread { Notify.show("文本内容为空") }
+                        return@Thread
+                    }
+                    chapters = splitChapters(text)
                 }
-                val bookUrl = "local_txt://" + abs(name.hashCode())
-                val book = Book(bookUrl, name.removeSuffix(".txt").ifEmpty { "本地书籍" }, "本地文件", "")
-                book.source = "local"
-                var idx = 0
-                for ((title, body) in splitChapters(text)) {
-                    val html = "<p>" + body.replace("\n", "<br/>") + "</p>"
-                    ReaderStore.get().cacheChapter(bookUrl, idx, html)
-                    book.chapters.add(Book.Chapter(title.ifEmpty { "第${idx + 1}节" }, "local_txt#$idx"))
-                    idx++
-                }
-                ReaderStore.get().addToShelf(book)
-                runOnUiThread {
-                    refreshShelves()
-                    Notify.show("已导入「${book.name}」${book.chapters.size} 节")
-                    // 覆盖简要信息后直接进书架详情（不再请求网络）
-                    openBook(book, false)
-                    ui.shelfMode = false
-                }
+                runImportChapters(name.removeSuffix(".txt").removeSuffix(".epub").ifEmpty { "本地书籍" }, chapters)
             } catch (e: Exception) {
                 runOnUiThread { Notify.show("导入失败：" + (e.message ?: "")) }
             }
         }.start()
     }
 
-    /** 文本切章：优先「第X章/卷/回/节」标题分割，无标题时整篇作一节。 */
+    /** 远程书籍导入：拉取直链（.epub/.txt），复用本地导入流程。 */
+    private fun importRemoteBook(url: String) {
+        if (url.isBlank()) return
+        ui.remoteImporting = true
+        var display = "txt"
+        Thread {
+            try {
+                if (!url.startsWith("http")) {
+                    runOnUiThread { Notify.show("无效链接，需以 http(s) 开头") }
+                    return@Thread
+                }
+                val chapters: List<Pair<String, String>>
+                val name: String
+                val urlName = url.substringAfterLast('/').substringBefore('?').ifEmpty { "远程书籍" }
+                if (urlName.lowercase().endsWith(".epub")) {
+                    display = "epub"
+                    val resp = OkHttp.newCall(url).execute()
+                    resp.use { r ->
+                        val body = r.body
+                        if (body == null) throw IllegalStateException("响应为空")
+                        val parsed = EpubImporter.parse(body.byteStream())
+                        if (parsed.isEmpty()) throw IllegalStateException("EPUB 无有效正文")
+                        chapters = parsed.map { it.title to it.text }
+                    }
+                    name = urlName.removeSuffix(".epub")
+                } else {
+                    val text = OkHttp.string(url)
+                    if (text.isBlank()) throw IllegalStateException("链接内容为空")
+                    chapters = splitChapters(text)
+                    name = urlName.removeSuffix(".txt")
+                }
+                runOnUiThread { ui.remoteImporting = false }
+                runImportChapters(name.ifEmpty { "远程书籍" }, chapters)
+            } catch (e: Exception) {
+                runOnUiThread {
+                    ui.remoteImporting = false
+                    Notify.show("导入失败（$display）：" + (e.message ?: ""))
+                }
+            }
+        }.start()
+    }
+
+    /** 把切好的章节写入缓存并入书架（IO 线程调用；UI 收尾在主线程）。 */
+    private fun runImportChapters(name: String, chapters: List<Pair<String, String>>) {
+        try {
+            val seed = (chapters.firstOrNull()?.second ?: "").take(40)
+            val bookUrl = "local_txt://" + abs(name.hashCode() + 31 * seed.hashCode())
+            val book = Book(bookUrl, name, "本地文件", "")
+            book.source = "local"
+            var idx = 0
+            val names = ArrayList<String>()
+            for ((title, body) in chapters) {
+                val html = "<p>" + body.replace("\n", "<br/>") + "</p>"
+                ReaderStore.get().cacheChapter(bookUrl, idx, html)
+                val t = title.ifEmpty { "第${idx + 1}节" }
+                names.add(t)
+                book.chapters.add(Book.Chapter(t, "local_txt#$idx"))
+                idx++
+            }
+            ReaderStore.get().saveChapterNames(bookUrl, names)
+            ReaderStore.get().addToShelf(book)
+            runOnUiThread {
+                refreshShelves()
+                Notify.show("已导入「${book.name}」${book.chapters.size} 节")
+                // 覆盖简要信息后直接进书架详情（不再请求网络）
+                openBook(book, false)
+                ui.shelfMode = false
+            }
+        } catch (e: Exception) {
+            runOnUiThread { Notify.show("导入失败：" + (e.message ?: "")) }
+        }
+    }
+
+    /** 文本切章（txtTocRule）：按阅读设置里的正则匹配章标题分割；无标题时整篇作一节。 */
     private fun splitChapters(text: String): List<Pair<String, String>> {
-        val titleRe = Regex("^\\s*(第[0-9零一二三四五六七八九十百千万]+[章节卷回部篇集])")
+        val pat: Regex = try {
+            Regex("^\\s*(" + ReaderStore.get().txtTocRegex + ")")
+        } catch (e: Exception) {
+            Regex("^\\s*(第[0-9零一二三四五六七八九十百千万]+[章节卷回部篇集])")
+        }
         val out = mutableListOf<Pair<String, String>>()
         var curTitle = ""
         val curBody = StringBuilder()
         for (line in text.split("\n")) {
             val t = line.trim()
-            if (t.isNotEmpty() && titleRe.containsMatchIn(t) && curBody.isNotEmpty()) {
+            if (t.isNotEmpty() && pat.containsMatchIn(t) && curBody.isNotEmpty()) {
                 out.add(curTitle to curBody.toString())
                 curTitle = t
                 curBody.setLength(0)
@@ -572,6 +871,7 @@ class ReaderActivity : AppCompatActivity() {
     /** 退出阅读页（返回目录/列表）：落盘当前章内进度。 */
     private fun leaveReader() {
         saveProgress()
+        if (ui.ttsPlaying || ttsSpeaker.isActive) stopTts()
         ui.reading = false
     }
 
@@ -598,6 +898,9 @@ class ReaderActivity : AppCompatActivity() {
         val book = ui.book ?: return
         if (ui.content.isEmpty()) return
         ReaderStore.get().saveProgressPara(book.url, ui.chapterIndex, currentParaIndex, currentParaCount)
+        // 阅读记录：此书记录去重置顶（阅读统计页展示最近在读）
+        val cn = book.chapters.getOrNull(ui.chapterIndex)?.name ?: ""
+        ReaderStore.get().recordRead(book.url, book.name, cn, ui.readPercent)
     }
 
     /** 滚动中节流保存进度（2s 一次），防止进程被杀时丢失断点；同时刷新阅读页进度条。 */
@@ -607,6 +910,73 @@ class ReaderActivity : AppCompatActivity() {
         lastAutoSaveAt = now
         ui.readPercent = if (currentParaCount <= 0) 0f else (currentParaIndex.toFloat() / currentParaCount).coerceIn(0f, 1f)
         mainHandler.post { saveProgress() }
+    }
+
+    // ------------------------------------------------------------ TTS 听书（本机 + 在线 HTTP）
+
+    /** 开始朗读当前章：从当前首可见段落读到章尾（自动切章由 onDone 驱动）。 */
+    private fun beginTts(fromPara: Int = currentParaIndex) {
+        if (ui.book == null) return
+        if (ui.content.isBlank() || ui.comicMode) {
+            Notify.show("正文未加载，无法朗读")
+            return
+        }
+        val paras = htmlToParagraphs(ui.content)
+        if (paras.isEmpty()) {
+            Notify.show("本章无可朗读内容")
+            return
+        }
+        ttsPendingCont = false
+        ui.ttsVisible = true
+        ui.ttsStatus = "准备朗读…"
+        ttsSpeaker.start(paras, fromPara.coerceIn(0, paras.size - 1), ui.ttsSpeed, ui.ttsEngine, ui.ttsOnlineUrl.ifBlank { ReaderStore.get().ttsOnlineUrl })
+        ui.ttsPlaying = ttsSpeaker.isActive
+    }
+
+    /** 阅读页顶栏「朗读」按钮：未开始时启动；朗读中再点则暂停/继续。 */
+    fun beginTtsLong() {
+        if (ui.ttsPlaying) {
+            ttsSpeaker.pause()
+            ui.ttsPlaying = false
+        } else if (ttsSpeaker.isActive) {
+            ttsSpeaker.resume()
+            ui.ttsPlaying = true
+        } else {
+            beginTts()
+        }
+    }
+
+    private fun stopTts() {
+        ttsSpeaker.stop()
+        ttsPendingCont = false
+        ui.ttsPlaying = false
+        ui.ttsStatus = ""
+    }
+
+    /** 整章读完：有下章则继续，否则结束。 */
+    private fun ttsChapterDone() {
+        val book = ui.book ?: run { stopTts(); return }
+        if (ui.chapterIndex + 1 >= book.chapters.size) {
+            stopTts()
+            Notify.show("全书朗读完毕")
+            return
+        }
+        ttsPendingCont = true
+        step(1)
+    }
+
+    /** 朗读面板上下章：切章后在正文就绪处继续读。 */
+    private fun ttsSkipChapter(delta: Int) {
+        ttsPendingCont = true
+        ttsSpeaker.stop()
+        step(delta)
+    }
+
+    /** 切章后正文就绪回调：若处于朗读会话且待续，就从新章头继续读。 */
+    private fun maybeContinueTts() {
+        if (!ttsPendingCont) return
+        ttsPendingCont = false
+        if (ui.ttsPlaying || ttsSpeaker.isActive) beginTts()
     }
 
     private fun refreshCacheBooks() {
@@ -622,6 +992,10 @@ class ReaderActivity : AppCompatActivity() {
     /** 拉取订阅源文章列表（失败时回落缓存）；background=true 时不清空旧列表（定时刷新）。 */
     private fun loadRssArticles(url: String, background: Boolean = false) {
         if (url.isEmpty()) return
+        if (url == RSS_FAV) { // 收藏页：不拉网络
+            refreshRssFavs()
+            return
+        }
         ui.rssActive = url
         ui.rssLoading = true
         ui.rssError = ""
@@ -656,7 +1030,49 @@ class ReaderActivity : AppCompatActivity() {
         ui.shelfMode = false
         ui.detailLoading = false
         ui.inShelf = false
+        RssRepository.get().markRead(arts[index].link)
+        ui.rssRefreshKey++
         openChapter(index)
+    }
+
+    /** 收藏列表（ui.rssActive 切为 RSS_FAV，展示跨源收藏，不拉网络）。 */
+    private fun openFavList() {
+        ui.rssActive = RSS_FAV
+        ui.rssMode = true
+        ui.rssLoading = false
+        ui.rssError = ""
+        refreshRssFavs()
+    }
+
+    private fun refreshRssFavs() {
+        ui.rssFavs = RssRepository.get().favorites()
+    }
+
+    /** 打开收藏文章：单章虚拟书，正文来自收藏里存的 desc。 */
+    private fun openRssFav(index: Int) {
+        val favs = ui.rssFavs
+        if (index !in favs.indices) return
+        val f = favs[index]
+        val book = Book("rss_fav://" + f.link.trim(), f.title.ifEmpty { "收藏文章" },
+            if (f.source.isNotEmpty()) "收藏 · " + f.source else "RSS 收藏", "")
+        book.source = "rss"
+        book.chapters.add(Book.Chapter(f.title.ifEmpty { "文章" }, f.link.ifEmpty { "rss" }))
+        ui.book = book
+        ui.reading = false
+        ui.shelfMode = false
+        ui.detailLoading = false
+        ui.inShelf = false
+        RssRepository.get().markRead(f.link)
+        ui.rssRefreshKey++
+        openChapter(0)
+    }
+
+    /** 收藏页移除单篇。 */
+    private fun removeRssFav(link: String) {
+        RssRepository.get().removeFavorite(link.trim())
+        refreshRssFavs()
+        ui.rssRefreshKey++
+        Notify.show("已取消收藏")
     }
 
     /** 当前 RSS 源是否已在书架（RssBar 收藏按钮）。 */
@@ -716,6 +1132,62 @@ class ReaderActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** 导出备份：阅读库 + 书源 + 订阅源合成单个 JSON。 */
+    private fun exportBackup(uri: Uri) {
+        Thread {
+            try {
+                val root = try {
+                    JSONObject(ReaderStore.get().exportJson())
+                } catch (e: Exception) {
+                    JSONObject()
+                }
+                root.put("sources", JSONObject().put("items", ReaderRepository.get().exportSources()).toString())
+                root.put("rss_sources", RssRepository.get().exportSources())
+                root.put("rss_favorites", RssRepository.get().exportFavorites())
+                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                    it.write(root.toString(2))
+                }
+                runOnUiThread { Notify.show("备份完成（书架/进度/书签/规则/书源/订阅源）") }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+            }
+        }.start()
+    }
+
+    /** 恢复备份：解析 JSON 后逐项覆盖阅读库 / 书源 / 订阅源。 */
+    private fun importBackup(uri: Uri) {
+        Thread {
+            try {
+                val text = contentResolver.openInputStream(uri)
+                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                if (text.isBlank()) {
+                    runOnUiThread { Notify.show("备份文件为空") }
+                    return@Thread
+                }
+                val root = JSONObject(text)
+                var ok = ReaderStore.get().importJson(text)
+                val srcs = root.optString("sources", "")
+                if (srcs.isNotBlank()) {
+                    val items = try { JSONObject(srcs).optString("items", "") } catch (e: Exception) { "" }
+                    ok = ok || (items.isNotBlank() && ReaderRepository.get().importSources(items))
+                }
+                val rss = root.optString("rss_sources", "")
+                if (rss.isNotBlank()) ok = ok || RssRepository.get().importSources(rss)
+                val rfav = root.optString("rss_favorites", "")
+                if (rfav.isNotBlank()) ok = ok || RssRepository.get().importFavorites(rfav)
+                refreshSources()
+                refreshRssSources()
+                refreshShelves()
+                refreshRssFavs()
+                runOnUiThread {
+                    Notify.show(if (ok) "恢复完成" else "恢复失败：不是有效的备份文件")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("恢复失败：" + (e.message ?: "")) }
+            }
+        }.start()
+    }
+
     /** 设置变更：写入 ReaderStore 持久化，并以新样式重载当前章（进度位置保留）。 */
     private fun applySettings() {
         val s = ReaderStore.get()
@@ -727,7 +1199,37 @@ class ReaderActivity : AppCompatActivity() {
     }
 
     private fun refreshShelves() {
-        ui.shelves = ReaderStore.get().shelf()
+        var list = ReaderStore.get().shelf()
+        when (ui.shelfSort) {
+            1 -> list = list.sortedByDescending { ReaderStore.get().progress(it.url)?.lastRead ?: 0L }
+            2 -> list = list.sortedBy { it.name }
+        }
+        ui.shelves = list
+        ui.shelfGroups = ReaderStore.get().groupNames()
+        if (ui.shelfGroupFilter != "全部") {
+            // 分组被删除后回退到全部
+            if (ui.shelfGroupFilter != "默认" && ui.shelfGroups.none { it == ui.shelfGroupFilter }) {
+                ui.shelfGroupFilter = "全部"
+            }
+        }
+    }
+
+    /** 书架排序循环：加入顺序 → 最近阅读 → 书名。 */
+    private fun cycleShelfSort() {
+        ui.shelfSort = (ui.shelfSort + 1) % 3
+        refreshShelves()
+    }
+
+    /** 新建分组（空名忽略）。 */
+    private fun createShelfGroup(name: String) {
+        if (name.trim().isEmpty()) return
+        ui.shelfGroups = if (ui.shelfGroups.contains(name.trim())) ui.shelfGroups else ui.shelfGroups + name.trim()
+    }
+
+    /** 把书移入分组。 */
+    private fun moveShelfBook(url: String, group: String) {
+        ReaderStore.get().moveToGroup(url, group)
+        refreshShelves()
     }
 
     private fun refreshBookmarks() {
@@ -803,6 +1305,88 @@ class ReaderActivity : AppCompatActivity() {
         Notify.show("已删除该书源")
     }
 
+    /** 书源连通性测试（用已保存的书源做一次搜索）。 */
+    private fun testSource(url: String) {
+        ReaderRepository.get().testSource(url).whenComplete { ok, _ ->
+            runOnUiThread { Notify.show(if (ok) "测试通过" else "测试失败：无结果或源不可达") }
+        }
+    }
+
+    /** RSS 订阅源连通性测试：拉一次文章列表，能解析出条目即视为可用。 */
+    private fun testRssSource(url: String) {
+        RssRepository.get().refresh(url).whenComplete { list, _ ->
+            runOnUiThread {
+                val n = list?.size ?: 0
+                Notify.show(if (n > 0) "测试通过：拉取到 $n 篇文章" else "测试失败：无文章或源不可达")
+            }
+        }
+    }
+
+    /** 全文搜索：遍历书架所有“已缓存/本地”书的章节正文，逐段匹配关键词（后台线程，结果增量上屏）。 */
+    private fun startFulltextSearch(kw: String) {
+        val keyword = kw.trim()
+        if (keyword.isEmpty()) return
+        ui.fulltextKeyword = keyword
+        ui.fulltextSearching = true
+        ui.fulltextHits = emptyList()
+        val cap = 200
+        Thread {
+            val found = ArrayList<FulltextHit>()
+            val books = ReaderStore.get().shelf()
+            for (b in books) {
+                val count = ReaderStore.get().cachedCount(b.url)
+                if (count == 0) continue
+                for (i in 0 until count) {
+                    val html = ReaderStore.get().cachedChapter(b.url, i) ?: continue
+                    val paras = htmlToParagraphs(html)
+                    for ((pi, p) in paras.withIndex()) {
+                        if (p.contains(keyword)) {
+                            if (found.size >= cap) break
+                            val cname = ReaderStore.get().chapterName(b.url, i).ifEmpty { "第${i + 1}节" }
+                            found.add(FulltextHit(b.url, b.name, i, cname, pi, snippet(p, keyword)))
+                        }
+                    }
+                }
+                // 每本书扫完推送一次进度（增量上屏）
+                runOnUiThread { ui.fulltextHits = found.toList() }
+                if (found.size >= cap) break
+            }
+            runOnUiThread {
+                ui.fulltextSearching = false
+                if (found.isEmpty()) Notify.show("未在已缓存/本地书籍中找到「$keyword」（远程书需先下载章节）")
+            }
+        }.start()
+    }
+
+    /** 命中段落摘要：关键词前后各取一段，两端补省略号。 */
+    private fun snippet(p: String, kw: String): String {
+        val i = p.indexOf(kw)
+        if (i < 0) return p.take(60)
+        val from = (i - 20).coerceAtLeast(0)
+        val to = (i + kw.length + 25).coerceAtMost(p.length)
+        return (if (from > 0) "…" else "") + p.substring(from, to) + (if (to < p.length) "…" else "")
+    }
+
+    /** 从全文搜索命中直接进入阅读（走缓存，不请求网络）。 */
+    private fun openFromCacheHit(hit: FulltextHit) {
+        val book = Book(hit.bookUrl, hit.bookName, "本地文件", "")
+        book.source = "local"
+        val n = ReaderStore.get().cachedCount(hit.bookUrl)
+        for (i in 0 until n) {
+            val name = ReaderStore.get().chapterName(hit.bookUrl, i).ifEmpty { "第${i + 1}节" }
+            book.chapters.add(Book.Chapter(name, "local_txt#$i"))
+        }
+        if (hit.chapter !in 0 until n) {
+            Notify.show("该章节缓存已失效，请先重新打开书籍")
+            return
+        }
+        ui.book = book
+        ui.shelfMode = false
+        ui.fulltextVisible = false
+        ui.importDialogVisible = false
+        openChapter(hit.chapter, hit.para)
+    }
+
     private fun friendly(t: Throwable): String {
         val cause = t.cause ?: t
         val msg = cause.message ?: cause.toString()
@@ -829,9 +1413,20 @@ class ReaderActivity : AppCompatActivity() {
         onOpenBookmark: (Int) -> Unit,
         onRemoveBookmark: (Int) -> Unit,
         onRemoveShelf: (String) -> Unit,
+        onCycleSort: () -> Unit,
+        onSelectGroup: (String) -> Unit,
+        onOpenNewGroup: () -> Unit,
+        onCreateGroup: (String) -> Unit,
+        onMoveShelfBook: (String, String) -> Unit,
         onOpenSettings: () -> Unit,
         onCacheBook: () -> Unit,
-        onImportLocalTxt: () -> Unit,
+        onOpenImport: () -> Unit,
+        onOpenFulltext: () -> Unit,
+        onOpenCacheHit: (FulltextHit) -> Unit,
+        onOpenStats: () -> Unit,
+        onOpenBackup: () -> Unit,
+        onExportBackup: () -> Unit,
+        onImportBackup: () -> Unit,
         onOpenCache: () -> Unit,
         onCloseCache: () -> Unit,
         onClearBookCache: (String) -> Unit,
@@ -843,6 +1438,7 @@ class ReaderActivity : AppCompatActivity() {
         onRssImport: (String, String) -> Unit,
         onToggleRssSource: (String) -> Unit,
         onRemoveRssSource: (String) -> Unit,
+        onTestRssSource: (String) -> Unit,
         onRefreshRss: () -> Unit,
         onToggleRssShelf: () -> Unit,
         onImportOpml: () -> Unit,
@@ -851,6 +1447,8 @@ class ReaderActivity : AppCompatActivity() {
         onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
         onRemoveSource: (String) -> Unit,
+        onTestSource: (String) -> Unit,
+        onEditSource: (String) -> Unit,
     ) {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(Color(0xFF141414))) {
@@ -865,22 +1463,54 @@ class ReaderActivity : AppCompatActivity() {
                         onNext = onNext,
                         onAddBookmark = onAddBookmark,
                         onOpenSettings = onOpenSettings,
+                        showComicToggle = ui.hasImages,
+                        comicMode = ui.comicMode,
+                        onToggleComic = { ui.comicMode = !ui.comicMode },
+                        ttsPlaying = ui.ttsPlaying,
+                        onToggleTts = { beginTtsLong() },
+                        favVisible = ui.book?.source == "rss",
+                        favOn = ui.rssArticleFav,
+                        onToggleFav = ::toggleRssArticleFav,
                     )
                 } else if (ui.rssMode) {
-                    RssBar(
-                        title = ui.rssSources.firstOrNull { it.url == ui.rssActive }?.name ?: "RSS 订阅",
-                        inShelf = ui.rssInShelf,
-                        onBack = onBackFromRss,
-                        onManage = { ui.rssSourceDialogVisible = true },
-                        onToggleShelf = onToggleRssShelf,
-                        onRefresh = onRefreshRss,
-                    )
+                    if (ui.rssActive == RSS_FAV) {
+                        FavoritesBar(
+                            count = ui.rssFavs.size,
+                            onBack = onBackFromRss,
+                            onClear = {
+                                val n = RssRepository.get().clearFavorites()
+                                refreshRssFavs()
+                                ui.rssRefreshKey++
+                                Notify.show(if (n > 0) "已清空收藏（$n 篇）" else "收藏里还没有内容")
+                            },
+                        )
+                    } else {
+                        RssBar(
+                            title = ui.rssSources.firstOrNull { it.url == ui.rssActive }?.name ?: "RSS 订阅",
+                            inShelf = ui.rssInShelf,
+                            onBack = onBackFromRss,
+                            onManage = { ui.rssSourceDialogVisible = true },
+                            onToggleShelf = onToggleRssShelf,
+                            onRefresh = onRefreshRss,
+                        )
+                    }
                 } else if (ui.cacheMode) {
                     CacheBar(onBack = onCloseCache, onClearAll = onClearAllCache)
                 } else if (currentBook != null) {
                     BookBar(book = currentBook, onBack = onBackFromBook)
                 } else if (ui.shelfMode) {
-                    ShelfBar(count = ui.shelves.size, onBack = onBackFromShelf, onOpenCache = onOpenCache, onOpenSources = onOpenSources)
+                    ShelfBar(
+                        count = ui.shelves.size,
+                        sortLabel = shelfSortLabel(ui.shelfSort),
+                        groupFilter = ui.shelfGroupFilter,
+                        onBack = onBackFromShelf,
+                        onOpenCache = onOpenCache,
+                        onOpenSources = onOpenSources,
+                        onCycleSort = onCycleSort,
+                        onOpenNewGroup = onOpenNewGroup,
+                        onOpenFulltext = onOpenFulltext,
+                        onOpenStats = onOpenStats,
+                    )
                 } else {
                     SearchTop(
                         keyword = keyword,
@@ -891,6 +1521,7 @@ class ReaderActivity : AppCompatActivity() {
                         shelfCount = ui.shelves.size,
                         onOpenShelf = onOpenShelf,
                         onOpenRss = onOpenRss,
+                        onOpenBackup = onOpenBackup,
                     )
                 }
                 HorizontalDivider(color = Color(0x22FFFFFF))
@@ -905,10 +1536,16 @@ class ReaderActivity : AppCompatActivity() {
                         sources = ui.rssSources,
                         active = ui.rssActive,
                         articles = ui.rssArticles,
+                        favs = ui.rssFavs,
                         loading = ui.rssLoading,
                         error = ui.rssError,
+                        unreadOnly = ui.rssUnreadOnly,
+                        refreshKey = ui.rssRefreshKey,
                         onSelectSource = onSelectRssSource,
                         onOpenArticle = onOpenRssArticle,
+                        onOpenFav = ::openRssFav,
+                        onRemoveFav = ::removeRssFav,
+                        onToggleUnread = { ui.rssUnreadOnly = !ui.rssUnreadOnly },
                     )
                 } else if (ui.cacheMode) {
                     CacheBody(
@@ -933,9 +1570,14 @@ class ReaderActivity : AppCompatActivity() {
                 } else if (ui.shelfMode) {
                     ShelfBody(
                         shelves = ui.shelves,
+                        groupFilter = ui.shelfGroupFilter,
+                        groups = ui.shelfGroups,
+                        onSelectGroup = onSelectGroup,
+                        onOpenNewGroup = onOpenNewGroup,
+                        onMove = { book -> ui.moveTarget = book },
                         onOpenBook = onOpenShelfBook,
                         onRemove = onRemoveShelf,
-                        onImportLocalTxt = onImportLocalTxt,
+                        onOpenImport = onOpenImport,
                     )
                 } else {
                     SearchBody(
@@ -954,6 +1596,73 @@ class ReaderActivity : AppCompatActivity() {
                 onImport = onImport,
                 onToggle = onToggleSource,
                 onRemove = onRemoveSource,
+                onTest = onTestSource,
+                onEdit = onEditSource,
+            )
+        }
+        if (ui.sourceEditVisible) {
+            val t = ui.sourceEditTarget?.let { u -> ui.sources.firstOrNull { it.url == u } }
+            if (t != null) {
+                SourceEditDialog(
+                    target = t,
+                    onClose = {
+                        ui.sourceEditVisible = false
+                        ui.sourceEditTarget = null
+                    },
+                    onSaved = { refreshSources() },
+                )
+            } else {
+                ui.sourceEditVisible = false
+            }
+        }
+        if (ui.importDialogVisible) {
+            ImportDialog(
+                onPickLocal = { localBookPicker.launch(arrayOf("*/*")) },
+                onRemote = {
+                    ui.importDialogVisible = false
+                    ui.remoteImportVisible = true
+                },
+                onClose = { ui.importDialogVisible = false },
+            )
+        }
+        if (ui.remoteImportVisible) {
+            RemoteImportDialog(
+                importing = ui.remoteImporting,
+                onImport = { importRemoteBook(it) },
+                onClose = { ui.remoteImportVisible = false },
+            )
+        }
+        if (ui.fulltextVisible) {
+            FulltextDialog(
+                searching = ui.fulltextSearching,
+                keyword = ui.fulltextKeyword,
+                hits = ui.fulltextHits,
+                onKeyword = { ui.fulltextKeyword = it },
+                onSearch = { startFulltextSearch(ui.fulltextKeyword) },
+                onOpen = onOpenCacheHit,
+                onClose = { ui.fulltextVisible = false },
+            )
+        }
+        if (ui.statsVisible) {
+            StatsDialog(
+                onClose = { ui.statsVisible = false },
+                onOpenRecord = { url, name ->
+                    ui.statsVisible = false
+                    openBook(Book(url, name, "本地文件", ""), true)
+                },
+            )
+        }
+        if (ui.backupVisible) {
+            BackupDialog(
+                onExport = {
+                    ui.backupVisible = false
+                    onExportBackup()
+                },
+                onImport = {
+                    ui.backupVisible = false
+                    onImportBackup()
+                },
+                onClose = { ui.backupVisible = false },
             )
         }
         if (ui.settingsDialogVisible) {
@@ -961,11 +1670,24 @@ class ReaderActivity : AppCompatActivity() {
                 fontSize = ui.fontSize,
                 lineHeight = ui.lineHeight,
                 theme = ui.theme,
+                tocRegex = ReaderStore.get().txtTocRegex,
                 onFontSize = { ui.fontSize = it; applySettings() },
                 onLineHeight = { ui.lineHeight = it; applySettings() },
                 onTheme = { ui.theme = it; applySettings() },
+                onTocRegex = { v ->
+                    ReaderStore.get().txtTocRegex = v.trim()
+                    ReaderStore.get().saveSettings()
+                },
+                onOpenRules = { ui.rulesDialogVisible = true },
                 onClose = { ui.settingsDialogVisible = false },
             )
+        }
+        if (ui.rulesDialogVisible) {
+            RulesDialog(onClose = { ui.rulesDialogVisible = false })
+        }
+        val ddict = ui.dictDialogText
+        if (ddict != null) {
+            DictDialog(text = ddict, dicts = ReaderStore.get().dicts(), onClose = { ui.dictDialogText = null })
         }
         if (ui.rssSourceDialogVisible) {
             RssSourceDialog(
@@ -974,8 +1696,66 @@ class ReaderActivity : AppCompatActivity() {
                 onAdd = onRssImport,
                 onToggle = onToggleRssSource,
                 onRemove = onRemoveRssSource,
+                onTest = onTestRssSource,
                 onImportOpml = onImportOpml,
                 onExportOpml = onExportOpml,
+            )
+        }
+        if (ui.ttsVisible) {
+            TtsPanel(
+                playing = ui.ttsPlaying,
+                speed = ui.ttsSpeed,
+                engine = ui.ttsEngine,
+                onlineUrl = ui.ttsOnlineUrl,
+                status = ui.ttsStatus,
+                chapterName = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.name ?: "",
+                onTogglePlay = { beginTtsLong() },
+                onPrevChapter = { ttsSkipChapter(-1) },
+                onNextChapter = { ttsSkipChapter(1) },
+                onSpeed = { v ->
+                    ui.ttsSpeed = v
+                    ReaderStore.get().ttsSpeed = v
+                    ReaderStore.get().saveSettings()
+                    ttsSpeaker.changeSpeed(v)
+                },
+                onEngine = { eng ->
+                    ui.ttsEngine = eng
+                    ReaderStore.get().ttsEngine = eng
+                    ReaderStore.get().saveSettings()
+                    Notify.show(if (eng == "local") "已切换本机朗读（需设备装有 TTS 引擎）" else "已切换在线朗读")
+                },
+                onOnlineUrl = { v ->
+                    ui.ttsOnlineUrl = v
+                    ReaderStore.get().ttsOnlineUrl = v
+                    ReaderStore.get().saveSettings()
+                },
+                onClose = {
+                    ui.ttsVisible = false
+                    if (ui.ttsPlaying || ttsSpeaker.isActive) stopTts()
+                },
+            )
+        }
+        val vurl = ui.videoPlayUrl
+        if (vurl != null) {
+            VideoDialog(url = vurl, onClose = { ui.videoPlayUrl = null })
+        }
+        val mt = ui.moveTarget
+        if (mt != null) {
+            MoveGroupDialog(
+                book = mt,
+                groups = ui.shelfGroups,
+                onPick = { g -> onMoveShelfBook(mt.url, g) },
+                onClose = { ui.moveTarget = null },
+            )
+        }
+        if (ui.newGroupDialogVisible) {
+            NewGroupDialog(
+                onClose = { ui.newGroupDialogVisible = false },
+                onCreate = { name ->
+                    onCreateGroup(name)
+                    ui.newGroupDialogVisible = false
+                    if (name.isNotBlank()) ui.shelfGroupFilter = name.trim()
+                },
             )
         }
     }
@@ -990,6 +1770,7 @@ class ReaderActivity : AppCompatActivity() {
         shelfCount: Int,
         onOpenShelf: () -> Unit,
         onOpenRss: () -> Unit,
+        onOpenBackup: () -> Unit,
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -1011,6 +1792,13 @@ class ReaderActivity : AppCompatActivity() {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenRss).padding(horizontal = 6.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "备份",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenBackup).padding(horizontal = 6.dp, vertical = 4.dp),
             )
             Spacer(Modifier.width(4.dp))
             OutlinedTextField(
@@ -1075,29 +1863,67 @@ class ReaderActivity : AppCompatActivity() {
         return url
     }
 
-    /** 书架顶栏：返回搜索 + 标题；右侧缓存管理与书源入口。 */
+    /** 书架顶栏：返回搜索 + 标题；右侧排序循环、新建分组、缓存管理与书源入口。 */
     @Composable
-    private fun ShelfBar(count: Int, onBack: () -> Unit, onOpenCache: () -> Unit, onOpenSources: () -> Unit) {
+    private fun ShelfBar(
+        count: Int,
+        sortLabel: String,
+        groupFilter: String,
+        onBack: () -> Unit,
+        onOpenCache: () -> Unit,
+        onOpenSources: () -> Unit,
+        onCycleSort: () -> Unit,
+        onOpenNewGroup: () -> Unit,
+        onOpenFulltext: () -> Unit,
+        onOpenStats: () -> Unit,
+    ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text("书架 ($count)", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+            if (groupFilter != "全部") {
+                Text(" · $groupFilter", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            }
             Spacer(Modifier.weight(1f))
+            Text("排序:$sortLabel", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onCycleSort).padding(horizontal = 4.dp, vertical = 6.dp))
+            Text("分组", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenNewGroup).padding(horizontal = 4.dp, vertical = 6.dp))
+            Text("全文", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenFulltext).padding(horizontal = 4.dp, vertical = 6.dp))
+            Text("统计", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenStats).padding(horizontal = 4.dp, vertical = 6.dp))
             Text("缓存", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onOpenCache).padding(horizontal = 6.dp, vertical = 6.dp))
+                modifier = Modifier.clickable(onClick = onOpenCache).padding(horizontal = 4.dp, vertical = 6.dp))
             Text("书源", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onOpenSources).padding(horizontal = 6.dp, vertical = 6.dp))
+                modifier = Modifier.clickable(onClick = onOpenSources).padding(horizontal = 4.dp, vertical = 6.dp))
         }
     }
 
-    /** 书架：封面 + 书名 + 进度，行尾移出；列表顶部固定「导入本地 TXT」入口。 */
+    private fun shelfSortLabel(mode: Int): String = when (mode) {
+        1 -> "最近阅读"
+        2 -> "书名"
+        else -> "加入顺序"
+    }
+
+    /** 书架：分组 chips + 封面/书名/进度行（行尾可移入分组、移出）；顶部固定导入 TXT。 */
     @Composable
-    private fun ShelfBody(shelves: List<Book>, onOpenBook: (Book) -> Unit, onRemove: (String) -> Unit, onImportLocalTxt: () -> Unit) {
+    private fun ShelfBody(
+        shelves: List<Book>,
+        groupFilter: String,
+        groups: List<String>,
+        onSelectGroup: (String) -> Unit,
+        onOpenNewGroup: () -> Unit,
+        onMove: (Book) -> Unit,
+        onOpenBook: (Book) -> Unit,
+        onRemove: (String) -> Unit,
+        onOpenImport: () -> Unit,
+    ) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
             item(key = "import") {
                 Row(
-                    Modifier.fillMaxWidth().clickable { onImportLocalTxt() }
+                    Modifier.fillMaxWidth().clickable { onOpenImport() }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -1106,27 +1932,49 @@ class ReaderActivity : AppCompatActivity() {
                             .background(Color(0xFF245060)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("TXT", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4FC3F7))
+                        Text("导入", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4FC3F7))
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("导入本地 TXT 小说", fontSize = 14.sp, color = Color(0xFFE0E0E0))
-                        Text("选择 .txt 文件，按「第X章」自动切分章节加入书架，离线可读", fontSize = 11.sp,
+                        Text("导入本地 / 远程书籍", fontSize = 14.sp, color = Color(0xFFE0E0E0))
+                        Text("支持 TXT（自动切章）、EPUB，或粘贴书籍文件直链", fontSize = 11.sp,
                             color = Color(0xFF888888), maxLines = 2)
                     }
                     Text("导入", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                 }
                 HorizontalDivider(color = Color(0x16FFFFFF))
             }
-            if (shelves.isEmpty()) {
+            item(key = "groups") {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    GroupChip("全部", groupFilter == "全部") { onSelectGroup("全部") }
+                    for (g in groups) {
+                        Spacer(Modifier.width(6.dp))
+                        GroupChip(g, groupFilter == g) { onSelectGroup(g) }
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text("＋", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClick = onOpenNewGroup)
+                            .clip(RoundedCornerShape(14.dp)).background(Color(0x26FFFFFF))
+                            .padding(horizontal = 12.dp, vertical = 3.dp))
+                }
+            }
+            val shown = shelves.filter {
+                if (groupFilter == "全部") true
+                else (it.group.ifEmpty { "默认" } == groupFilter)
+            }
+            if (shown.isEmpty()) {
                 item(key = "empty") {
-                    Box(Modifier.fillMaxWidth().padding(top = 60.dp), contentAlignment = Alignment.Center) {
-                        Text("书架还空着：搜索到书后点「加入书架」", fontSize = 13.sp, color = Color(0xFF666666))
+                    Box(Modifier.fillMaxWidth().padding(top = 50.dp), contentAlignment = Alignment.Center) {
+                        Text("该分组暂无书籍", fontSize = 13.sp, color = Color(0xFF666666))
                     }
                 }
                 return@LazyColumn
             }
-            itemsIndexed(shelves) { _, book ->
+            itemsIndexed(shown) { _, book ->
                 val p = ReaderStore.get().progress(book.url)
                 Row(
                     Modifier.fillMaxWidth().clickable { onOpenBook(book) }
@@ -1147,10 +1995,99 @@ class ReaderActivity : AppCompatActivity() {
                         ).joinToString(" · ")
                         Text(sub, fontSize = 12.sp, color = Color(0xFF888888), maxLines = 1)
                     }
+                    Text("⋯", fontSize = 16.sp, color = Color(0xFFAAAAAA),
+                        modifier = Modifier.clickable { onMove(book) }.padding(horizontal = 8.dp, vertical = 6.dp))
                     Text("移出", fontSize = 12.sp, color = Color(0xFFFF8A80),
-                        modifier = Modifier.clickable { onRemove(book.url) }.padding(horizontal = 8.dp, vertical = 6.dp))
+                        modifier = Modifier.clickable { onRemove(book.url) }.padding(horizontal = 6.dp, vertical = 6.dp))
                 }
                 HorizontalDivider(color = Color(0x14FFFFFF))
+            }
+        }
+    }
+
+    @Composable
+    private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = if (selected) Color(0xFF141414) else Color(0xFFCCCCCC),
+            modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                .background(if (selected) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+    }
+
+    /** 移入分组弹窗：列出全部可选分组（含默认），点击即移入。 */
+    @Composable
+    private fun MoveGroupDialog(book: Book, groups: List<String>, onPick: (String) -> Unit, onClose: () -> Unit) {
+        var newName by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("「${book.name}」移入分组", fontSize = 16.sp, color = Color.White,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 6.dp))
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    val all = listOf("默认") + groups.filter { it != "默认" }
+                    itemsIndexed(all) { _, g ->
+                        Text(g, fontSize = 14.sp, color = Color(0xFFDDDDDD),
+                            modifier = Modifier.fillMaxWidth().clickable { onPick(g) }
+                                .padding(horizontal = 28.dp, vertical = 12.dp))
+                        HorizontalDivider(color = Color(0x14FFFFFF))
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("或输入新分组名", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = {
+                        if (newName.isNotBlank()) onPick(newName.trim())
+                    }) { Text("移入", fontSize = 13.sp) }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 新建分组弹窗。 */
+    @Composable
+    private fun NewGroupDialog(onClose: () -> Unit, onCreate: (String) -> Unit) {
+        var name by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("新建分组", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 30.dp, bottom = 10.dp))
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
+                    placeholder = { Text("分组名称", color = Color(0xFF666666), fontSize = 14.sp) },
+                    maxLines = 1,
+                    singleLine = true,
+                    keyboardActions = KeyboardActions(onDone = { onCreate(name) }),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("新建后可在书架行尾「⋯」把书移入该分组", fontSize = 11.sp, color = Color(0xFF888888),
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(16.dp))
+                Text("确定", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().clickable { onCreate(name) }.padding(vertical = 8.dp))
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 8.dp))
             }
         }
     }
@@ -1397,17 +2334,38 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** RSS 正文页：源 chips 切换 + 文章列表（标题/时间/摘要），点击进阅读页。 */
+    /** 收藏页顶栏：返回 + 数量 + 清空。 */
+    @Composable
+    private fun FavoritesBar(count: Int, onBack: () -> Unit, onClear: () -> Unit) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
+            Spacer(Modifier.weight(1f))
+            Text("我的收藏（$count）", fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            Text("清空", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                modifier = Modifier.clickable(onClick = onClear).padding(horizontal = 6.dp, vertical = 6.dp))
+        }
+    }
+
+    /** RSS 正文页：源 chips（含「收藏」入口）+ 文章列表；已读置灰、只看未读过滤；收藏页展示跨源收藏。 */
     @Composable
     private fun RssBody(
         sources: List<RssRepository.RssSource>,
         active: String,
         articles: List<RssRepository.RssArticle>,
+        favs: List<RssRepository.RssFav>,
         loading: Boolean,
         error: String,
+        unreadOnly: Boolean,
+        refreshKey: Int,
         onSelectSource: (String) -> Unit,
         onOpenArticle: (Int) -> Unit,
+        onOpenFav: (Int) -> Unit,
+        onRemoveFav: (String) -> Unit,
+        onToggleUnread: () -> Unit,
     ) {
+        val isFav = active == RSS_FAV
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
@@ -1415,7 +2373,7 @@ class ReaderActivity : AppCompatActivity() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 sources.filter { it.enabled }.forEach { s ->
-                    val selected = s.url == active
+                    val selected = !isFav && s.url == active
                     Text(
                         s.name,
                         fontSize = 12.sp,
@@ -1427,40 +2385,116 @@ class ReaderActivity : AppCompatActivity() {
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                if (sources.none { it.enabled }) {
+                // 收藏页入口
+                val favSel = isFav
+                Text(
+                    "★收藏${if (favs.isEmpty()) "" else "(${favs.size})"}",
+                    fontSize = 12.sp,
+                    color = if (favSel) Color(0xFF141414) else Color(0xFFFFD54F),
+                    modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                        .background(if (favSel) Color(0xFFFFD54F) else Color(0x26FFFFFF))
+                        .clickable { onSelectSource(RSS_FAV) }
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                if (sources.none { it.enabled } && !isFav) {
                     Text("暂无启用源：点右上角「源管理」添加", fontSize = 12.sp, color = Color(0xFF666666))
+                }
+            }
+            // 未读过滤（仅源列表页）
+            if (!isFav) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (unreadOnly) "√ 只看未读" else "只看未读", fontSize = 12.sp,
+                        color = if (unreadOnly) Color(0xFFFFD54F) else Color(0xFF999999),
+                        modifier = Modifier.clickable(onClick = onToggleUnread).padding(vertical = 4.dp))
+                    Spacer(Modifier.weight(1f))
+                    Text("阅读后自动标记为已读", fontSize = 11.sp, color = Color(0xFF666666))
                 }
             }
             HorizontalDivider(color = Color(0x16FFFFFF), modifier = Modifier.padding(bottom = 4.dp))
             when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                loading && !isFav -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(30.dp))
+                }
+                isFav -> {
+                    if (favs.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("收藏里还没有文章\n在文章阅读页点「☆ 收藏」即可加入", fontSize = 13.sp,
+                                color = Color(0xFF666666), textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                        }
+                    } else {
+                        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                            itemsIndexed(favs) { index, f ->
+                                Row(Modifier.fillMaxWidth().clickable { onOpenFav(index) }
+                                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(f.title.ifEmpty { "无标题" }, fontSize = 14.sp, color = Color(0xFFE0E0E0),
+                                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        val meta = listOfNotNull(
+                                            f.source.ifEmpty { null },
+                                            f.pubDate.ifEmpty { null },
+                                        ).joinToString(" · ")
+                                        if (meta.isNotEmpty()) {
+                                            Text(meta, fontSize = 11.sp, color = Color(0xFF777777), maxLines = 1,
+                                                modifier = Modifier.padding(top = 2.dp))
+                                        }
+                                    }
+                                    Text("移除", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                                        modifier = Modifier.clickable { onRemoveFav(f.link) }.padding(horizontal = 10.dp, vertical = 6.dp))
+                                }
+                                HorizontalDivider(color = Color(0x12FFFFFF))
+                            }
+                        }
+                    }
                 }
                 articles.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(error.ifEmpty { "暂无文章" }, fontSize = 13.sp, color = Color(0xFF666666),
                         textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
                 }
-                else -> LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
-                    itemsIndexed(articles) { index, art ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable { onOpenArticle(index) }
-                                .padding(horizontal = 14.dp, vertical = 9.dp),
-                        ) {
-                            Text(art.title.ifEmpty { "无标题" }, fontSize = 14.sp, color = Color(0xFFE0E0E0),
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                                if (art.pubDate.isNotEmpty()) {
-                                    Text(art.pubDate, fontSize = 11.sp, color = Color(0xFF777777), maxLines = 1)
+                else -> {
+                    val readMap = remember(articles, active, refreshKey) {
+                        articles.associate { it.link.trim() to RssRepository.get().isRead(it.link.trim()) }
+                    }
+                    val shown = remember(articles, unreadOnly, readMap) {
+                        articles.mapIndexed { i, a -> i to a }
+                            .filter { (_, a) -> !unreadOnly || !(readMap[a.link.trim()] ?: false) }
+                    }
+                    if (shown.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("没有未读文章（点「只看未读」取消过滤）", fontSize = 13.sp,
+                                color = Color(0xFF666666), modifier = Modifier.padding(horizontal = 32.dp))
+                        }
+                    } else {
+                        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                            itemsIndexed(shown) { _, (origIdx, art) ->
+                                val read = readMap[art.link.trim()] ?: false
+                                Column(
+                                    Modifier.fillMaxWidth().clickable { onOpenArticle(origIdx) }
+                                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                                ) {
+                                    Text(
+                                        (if (read) "· " else "") + art.title.ifEmpty { "无标题" },
+                                        fontSize = 14.sp,
+                                        color = if (read) Color(0xFF777777) else Color(0xFFE0E0E0),
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        if (art.pubDate.isNotEmpty()) {
+                                            Text(art.pubDate, fontSize = 11.sp, color = Color(0xFF777777), maxLines = 1)
+                                        }
+                                        val desc = stripHtml(art.desc)
+                                        if (desc.isNotEmpty()) {
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(desc, fontSize = 11.sp, color = if (read) Color(0xFF5A5A5A) else Color(0xFF888888),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        }
+                                    }
                                 }
-                                val desc = stripHtml(art.desc)
-                                if (desc.isNotEmpty()) {
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(desc, fontSize = 11.sp, color = Color(0xFF888888),
-                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                }
+                                HorizontalDivider(color = Color(0x12FFFFFF))
                             }
                         }
-                        HorizontalDivider(color = Color(0x12FFFFFF))
                     }
                 }
             }
@@ -1482,6 +2516,7 @@ class ReaderActivity : AppCompatActivity() {
         onAdd: (String, String) -> Unit,
         onToggle: (String) -> Unit,
         onRemove: (String) -> Unit,
+        onTest: (String) -> Unit,
         onImportOpml: () -> Unit,
         onExportOpml: () -> Unit,
     ) {
@@ -1516,6 +2551,8 @@ class ReaderActivity : AppCompatActivity() {
                                     Text(s.url, fontSize = 10.sp, color = Color(0xFF666666), maxLines = 1,
                                         overflow = TextOverflow.Ellipsis)
                                 }
+                                Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
+                                    modifier = Modifier.clickable { onTest(s.url) }.padding(6.dp))
                                 Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80),
                                     modifier = Modifier.clickable { onRemove(s.url) }.padding(6.dp))
                             }
@@ -1571,6 +2608,14 @@ class ReaderActivity : AppCompatActivity() {
         onNext: () -> Unit,
         onAddBookmark: () -> Unit,
         onOpenSettings: () -> Unit,
+        showComicToggle: Boolean,
+        comicMode: Boolean,
+        onToggleComic: () -> Unit,
+        ttsPlaying: Boolean,
+        onToggleTts: () -> Unit,
+        favVisible: Boolean,
+        favOn: Boolean,
+        onToggleFav: () -> Unit,
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 目录", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
@@ -1578,8 +2623,19 @@ class ReaderActivity : AppCompatActivity() {
             Spacer(Modifier.weight(1f))
             Text(chapterName, fontSize = 14.sp, color = Color(0xFFE0E0E0), maxLines = 1)
             Spacer(Modifier.weight(1f))
+            if (favVisible) {
+                Text(if (favOn) "★ 已藏" else "☆ 收藏", fontSize = 13.sp, color = if (favOn) Color(0xFFFFD54F) else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable(onClick = onToggleFav).padding(horizontal = 6.dp, vertical = 6.dp))
+            }
+            if (showComicToggle) {
+                Text(if (comicMode) "文字" else "漫画", fontSize = 13.sp, color = Color(0xFFFFD54F),
+                    modifier = Modifier.clickable(onClick = onToggleComic).padding(horizontal = 6.dp, vertical = 6.dp))
+            }
             Text("☆ 书签", fontSize = 13.sp, color = Color(0xFFFFD54F),
                 modifier = Modifier.clickable(onClick = onAddBookmark).padding(horizontal = 6.dp, vertical = 6.dp))
+            Text(if (ttsPlaying) "停止朗读" else "朗读", fontSize = 13.sp,
+                color = if (ttsPlaying) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onToggleTts).padding(horizontal = 6.dp, vertical = 6.dp))
             Text("设置", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenSettings).padding(horizontal = 6.dp, vertical = 6.dp))
             Text("上一章", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
@@ -1609,49 +2665,231 @@ class ReaderActivity : AppCompatActivity() {
             }
             return
         }
+        // 漫画阅读：章节正文带 <img> 时提供 漫画/文字 切换；漫画模式直接竖排渲染图片
+        val images = remember(content) { extractImageUrls(content) }
+        LaunchedEffect(images) { ui.hasImages = images.isNotEmpty() }
+        if (images.isNotEmpty() && ui.comicMode) {
+            ComicBody(images)
+            return
+        }
         val fs = ui.fontSize.coerceIn(12, 30)
         val lineSize = (fs * ui.lineHeight).coerceAtLeast(fs + 2f).sp
         val (bg, fg) = themeColors()
         val paras = remember(content) { htmlToParagraphs(content) }
+        val clears = ReaderStore.get().clears()
+        val highlights = ReaderStore.get().highlights()
+        val dicts = ReaderStore.get().dicts()
+        // 段落 → 净化后带高亮/词典标注的富文本（规则变化会自动重算）
+        val styledParas = remember(content, clears, highlights, dicts) {
+            paras.mapNotNull { p ->
+                val cleaned = applyClears(p, clears)
+                if (cleaned.trim().isEmpty()) null else styledPara(cleaned, highlights, dicts)
+            }
+        }
         val listState = rememberLazyListState()
         // 渲染标识：正文 + 字号 + 行距 + 主题任一变化 → 恢复同一段落位置（设置变更重排等价保留进度）
         val renderKey = content.hashCode().toString() + "|$fs|${ui.lineHeight}|${ui.theme}"
         Column(Modifier.fillMaxSize().background(bg)) {
+            // 订阅源视频：识别正文里的 mp4/m3u8 直链，内嵌播放
+            if (ui.book?.source == "rss") {
+                val videos = remember(content) { extractVideoUrls(content) }
+                if (videos.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                            .background(Color(0xFF16222B)).padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("订阅视频：", fontSize = 12.sp, color = Color(0xFFFFD54F))
+                        videos.forEachIndexed { i, v ->
+                            Text(
+                                "▶ 播放 ${i + 1}",
+                                fontSize = 12.sp,
+                                color = Color(0xFF81C784),
+                                modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0x26FFFFFF))
+                                    .clickable { ui.videoPlayUrl = v }
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                        }
+                    }
+                }
+            }
             LinearProgressIndicator(
                 progress = { ui.readPercent },
                 modifier = Modifier.fillMaxWidth().height(3.dp),
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                itemsIndexed(paras) { index, paragraph ->
-                    Text(
-                        text = paragraph.ifEmpty { " " },
-                        fontSize = fs.sp,
-                        lineHeight = lineSize,
-                        color = fg,
+                itemsIndexed(styledParas) { _, styled ->
+                    ClickableText(
+                        text = styled,
+                        style = androidx.compose.ui.text.TextStyle(
+                            color = fg,
+                            fontSize = fs.sp,
+                            lineHeight = lineSize,
+                        ),
+                        onClick = { ui.dictDialogText = styled.text },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp),
                     )
                 }
             }
         }
         // 初次布局 / 内容或设置变化时：一次性恢复到目标段落（消费 restorePara）
-        LaunchedEffect(paras, renderKey) {
+        LaunchedEffect(styledParas, renderKey) {
             val rp = restorePara
-            if (rp in paras.indices) {
+            if (rp in styledParas.indices) {
                 restorePara = -1
                 listState.scrollToItem(rp)
             }
             currentParaIndex = listState.firstVisibleItemIndex
-            currentParaCount = paras.size
-            ui.readPercent = if (paras.isEmpty()) 0f else (currentParaIndex.toFloat() / paras.size)
+            currentParaCount = styledParas.size
+            ui.readPercent = if (styledParas.isEmpty()) 0f else (currentParaIndex.toFloat() / styledParas.size)
         }
         // 滚动跟踪：首可见段落号变化 → 节流保存断点
-        LaunchedEffect(paras) {
+        LaunchedEffect(styledParas) {
             snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
                 if (idx != currentParaIndex) {
                     currentParaIndex = idx
                     maybeAutoSaveProgress()
                 }
             }
+        }
+    }
+
+    /** 漫画正文：竖排渲染章节里的全部图片，滚动位置计入阅读进度。 */
+    @Composable
+    private fun ComicBody(urls: List<String>) {
+        val base = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url ?: ""
+        val listState = rememberLazyListState()
+        LaunchedEffect(urls) {
+            val rp = restorePara
+            if (rp in urls.indices) {
+                restorePara = -1
+                listState.scrollToItem(rp)
+            }
+            currentParaIndex = listState.firstVisibleItemIndex
+            currentParaCount = urls.size
+            ui.readPercent = if (urls.isEmpty()) 0f else (currentParaIndex.toFloat() / urls.size).coerceIn(0f, 1f)
+        }
+        LaunchedEffect(urls) {
+            snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
+                if (idx != currentParaIndex) {
+                    currentParaIndex = idx
+                    maybeAutoSaveProgress()
+                }
+            }
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().background(Color(0xFF101010))) {
+            itemsIndexed(urls) { _, u ->
+                ComicImage(resolveImageSrc(base, u))
+            }
+        }
+    }
+
+    /** 单页漫画图：Glide 整宽加载，失败/加载中给占位反馈。 */
+    @Composable
+    private fun ComicImage(url: String) {
+        val context = LocalContext.current
+        var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
+        var failed by remember(url) { mutableStateOf(false) }
+        LaunchedEffect(url) {
+            bitmap = withContext(Dispatchers.IO) {
+                try {
+                    Glide.with(context).asBitmap()
+                        .apply(RequestOptions().timeout(12_000))
+                        .load(url).submit().get()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (bitmap == null) failed = true
+        }
+        val bmp = bitmap
+        if (failed) {
+            Box(Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+                Text("图片加载失败", fontSize = 12.sp, color = Color(0xFF666666))
+            }
+        } else if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "漫画页",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(26.dp))
+            }
+        }
+    }
+
+    /** 提取正文 HTML 里的图片地址（漫画章节判定与漫画模式渲染用）。 */
+    private fun extractImageUrls(html: String): List<String> {
+        val re = Regex("(?i)<img[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']")
+        return re.findAll(html).map { it.groupValues[1] }.filter { it.isNotBlank() }.toList()
+    }
+
+    /** 图片相对路径按章节目录解析成绝对地址（data/ 等协议原样返回）。 */
+    private fun resolveImageSrc(base: String, src: String): String {
+        val s = src.trim().replace("&amp;", "&")
+        if (s.startsWith("http") || s.startsWith("data:") || s.startsWith("//")) {
+            return if (s.startsWith("//")) "https:" + s else s
+        }
+        return try {
+            java.net.URL(java.net.URL(base), s).toString()
+        } catch (e: Exception) {
+            s
+        }
+    }
+
+    /** 净化规则：逐个正则删除匹配文本（支持去广告行/无关内容）。 */
+    private fun applyClears(text: String, clears: List<String>): String {
+        var t = text
+        for (c in clears) {
+            if (c.isBlank()) continue
+            try {
+                t = Regex(c, RegexOption.IGNORE_CASE).replace(t, "")
+            } catch (ignored: Exception) {
+            }
+        }
+        return t
+    }
+
+    /** 高亮/词典标注：给命中词加 SpanStyle（高亮=黄，词典=蓝加下划线）。 */
+    private fun styledPara(text: String, highlights: List<ReaderStore.HighlightRule>, dicts: List<ReaderStore.DictRule>): AnnotatedString {
+        val builder = AnnotatedString.Builder(text)
+        for (r in highlights) {
+            if (r.p.isBlank()) continue
+            try {
+                val color = parseHexColor(r.c, 0xFFFFD54F)
+                for (m in Regex(r.p, RegexOption.IGNORE_CASE).findAll(text)) {
+                    builder.addStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold), m.range.first, m.range.last + 1)
+                }
+            } catch (ignored: Exception) {
+            }
+        }
+        for (r in dicts) {
+            if (r.w.isBlank()) continue
+            try {
+                for (m in Regex(Regex.escape(r.w), RegexOption.IGNORE_CASE).findAll(text)) {
+                    builder.addStyle(
+                        SpanStyle(color = Color(0xFF4FC3F7), fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline),
+                        m.range.first, m.range.last + 1,
+                    )
+                }
+            } catch (ignored: Exception) {
+            }
+        }
+        return builder.toAnnotatedString()
+    }
+
+    /** "#RRGGBB" → Color（非法则回退默认色 def）。 */
+    private fun parseHexColor(hex: String, def: Long): Color {
+        if (hex.isBlank()) return Color(def)
+        return try {
+            Color(hex.trim().removePrefix("#").toLong(16) or 0xFF000000L)
+        } catch (e: Exception) {
+            Color(def)
         }
     }
 
@@ -1685,6 +2923,8 @@ class ReaderActivity : AppCompatActivity() {
         onImport: (String) -> Unit,
         onToggle: (String) -> Unit,
         onRemove: (String) -> Unit,
+        onTest: (String) -> Unit,
+        onEdit: (String) -> Unit,
     ) {
         var url by remember { mutableStateOf("") }
         Dialog(
@@ -1709,6 +2949,10 @@ class ReaderActivity : AppCompatActivity() {
                                 Text(s.name, fontSize = 14.sp, color = if (s.enabled) Color(0xFFDDDDDD) else Color(0xFF777777), maxLines = 1)
                                 Text(s.url, fontSize = 10.sp, color = Color(0xFF666666), maxLines = 1)
                             }
+                            Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
+                                modifier = Modifier.clickable { onTest(s.url) }.padding(6.dp))
+                            Text("编辑", fontSize = 12.sp, color = Color(0xFF4FC3F7),
+                                modifier = Modifier.clickable { onEdit(s.url) }.padding(6.dp))
                             Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80),
                                 modifier = Modifier.clickable { onRemove(s.url) }.padding(6.dp))
                         }
@@ -1732,15 +2976,602 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** 阅读设置弹窗：字号滑动调节 / 行距 / 主题，改动即生效并持久化。 */
+    /** 书源 JSON 某个字段取值；group 为 null 表示顶层字段，无值返回空串。 */
+    private fun srcLine(json: String, group: String?, field: String): String = try {
+        val o = JSONObject(json)
+        val g = if (group == null) o else o.optJSONObject(group)
+        g?.optString(field) ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
+    /** 设置书源 JSON 某个字段；值为空则删除该字段（保持 JSON 干净）。 */
+    private fun setSrcLine(json: String, group: String?, field: String, value: String): String = try {
+        val o = JSONObject(json)
+        val g = if (group == null) o else o.optJSONObject(group) ?: JSONObject().also { o.put(group, it) }
+        if (value.isBlank()) g.remove(field) else g.put(field, value)
+        o.toString(2)
+    } catch (e: Exception) {
+        json
+    }
+
+    /** 书源 JSON 规则编辑弹窗：可视化字段（legado 风格）与 JSON 源码（含 @js: 表达式）切换编辑，测试不落盘。 */
+    @Composable
+    private fun SourceEditDialog(target: BookSource, onClose: () -> Unit, onSaved: () -> Unit) {
+        var tab by remember { mutableStateOf(0) }
+        var json by remember { mutableStateOf(target.toJson()) }
+        var testing by remember { mutableStateOf(false) }
+        val tabs = listOf("基础", "搜索", "详情", "目录", "正文", "JSON 源码")
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("编辑书源 · ${target.name}", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    tabs.forEachIndexed { i, n ->
+                        Text(
+                            n,
+                            fontSize = 13.sp,
+                            color = if (tab == i) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (tab == i) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable { tab = i }
+                                .padding(horizontal = 14.dp, vertical = 5.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+                Column(
+                    Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 8.dp),
+                ) {
+                    when (tab) {
+                        0 -> {
+                            RuleField("书源名称 bookSourceName", srcLine(json, null, "bookSourceName")) { setSrcLine(json, null, "bookSourceName", it).also { j -> json = j } }
+                            RuleField("书源地址 bookSourceUrl", srcLine(json, null, "bookSourceUrl")) { setSrcLine(json, null, "bookSourceUrl", it).also { j -> json = j } }
+                            RuleField("搜索模板 searchUrl（{{key}} 为关键词）", srcLine(json, null, "searchUrl")) { setSrcLine(json, null, "searchUrl", it).also { j -> json = j } }
+                        }
+                        1 -> {
+                            Text("搜索规则 ruleSearch：CSS 选择器或 @js: 表达式（result 为整个响应）。示例：@js:result.bookList.map(e=>({bookName:e.n, bookUrl:e.u}))", fontSize = 11.sp, color = Color(0xFF888888))
+                            RuleField("bookList 列表容器", srcLine(json, "ruleSearch", "bookList")) { setSrcLine(json, "ruleSearch", "bookList", it).also { j -> json = j } }
+                            RuleField("bookName 书名", srcLine(json, "ruleSearch", "bookName")) { setSrcLine(json, "ruleSearch", "bookName", it).also { j -> json = j } }
+                            RuleField("author 作者", srcLine(json, "ruleSearch", "author")) { setSrcLine(json, "ruleSearch", "author", it).also { j -> json = j } }
+                            RuleField("bookUrl 详情链接（@attr:href / @json:）", srcLine(json, "ruleSearch", "bookUrl")) { setSrcLine(json, "ruleSearch", "bookUrl", it).also { j -> json = j } }
+                            RuleField("coverUrl 封面", srcLine(json, "ruleSearch", "coverUrl")) { setSrcLine(json, "ruleSearch", "coverUrl", it).also { j -> json = j } }
+                        }
+                        2 -> {
+                            Text("详情规则 ruleBookInfo（html 响应或 @js:）", fontSize = 11.sp, color = Color(0xFF888888))
+                            RuleField("name 书名", srcLine(json, "ruleBookInfo", "name")) { setSrcLine(json, "ruleBookInfo", "name", it).also { j -> json = j } }
+                            RuleField("author 作者", srcLine(json, "ruleBookInfo", "author")) { setSrcLine(json, "ruleBookInfo", "author", it).also { j -> json = j } }
+                            RuleField("intro 简介", srcLine(json, "ruleBookInfo", "intro")) { setSrcLine(json, "ruleBookInfo", "intro", it).also { j -> json = j } }
+                            RuleField("coverUrl 封面", srcLine(json, "ruleBookInfo", "coverUrl")) { setSrcLine(json, "ruleBookInfo", "coverUrl", it).also { j -> json = j } }
+                            RuleField("tocUrl 目录页链接", srcLine(json, "ruleBookInfo", "tocUrl")) { setSrcLine(json, "ruleBookInfo", "tocUrl", it).also { j -> json = j } }
+                        }
+                        3 -> {
+                            Text("目录规则 ruleToc：chapterList 定位章节容器，chapterName/chapterUrl 在容器内求值", fontSize = 11.sp, color = Color(0xFF888888))
+                            RuleField("chapterList 章节列表", srcLine(json, "ruleToc", "chapterList")) { setSrcLine(json, "ruleToc", "chapterList", it).also { j -> json = j } }
+                            RuleField("chapterName 章节名", srcLine(json, "ruleToc", "chapterName")) { setSrcLine(json, "ruleToc", "chapterName", it).also { j -> json = j } }
+                            RuleField("chapterUrl 章节链接", srcLine(json, "ruleToc", "chapterUrl")) { setSrcLine(json, "ruleToc", "chapterUrl", it).also { j -> json = j } }
+                        }
+                        4 -> {
+                            Text("正文规则 ruleContent：content 为正文选择器；支持 @js: 处理分段文本", fontSize = 11.sp, color = Color(0xFF888888))
+                            RuleField("content 正文", srcLine(json, "ruleContent", "content")) { setSrcLine(json, "ruleContent", "content", it).also { j -> json = j } }
+                        }
+                        else -> {
+                            OutlinedTextField(
+                                value = json,
+                                onValueChange = { json = it },
+                                modifier = Modifier.fillMaxWidth().height(480.dp),
+                                placeholder = { Text("legado BookSource JSON（含 @js: 规则源码，可整段编辑后保存）", color = Color(0xFF666666), fontSize = 13.sp) },
+                            )
+                        }
+                    }
+                }
+                Text("规则字段即 legado 风格：裸 CSS / @css: / @attr:href / @text / @json:path / @js:表达式，可用 @ 串联", fontSize = 10.sp,
+                    color = Color(0xFF666666), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(10.dp))
+                    TextButton(onClick = {
+                        if (testing) return@TextButton
+                        testing = true
+                        ReaderRepository.get().testSourceJson(json).whenComplete { ok, _ ->
+                            runOnUiThread {
+                                testing = false
+                                Notify.show(if (ok) "测试通过：当前规则可搜索到结果" else "测试失败：无结果或源不可达")
+                            }
+                        }
+                    }) { Text(if (testing) "测试中…" else "测试", fontSize = 13.sp, color = Color(0xFF81C784)) }
+                    Spacer(Modifier.width(16.dp))
+                    Button(onClick = {
+                        if (ReaderRepository.get().updateSource(json)) {
+                            onSaved()
+                            Notify.show("书源已保存")
+                            onClose()
+                        } else {
+                            Notify.show("保存失败：JSON 不合法或缺少必要字段")
+                        }
+                    }) { Text("保存", fontSize = 13.sp) }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 编辑弹窗内的单个规则输入行。 */
+    @Composable
+    private fun RuleField(label: String, value: String, onValue: (String) -> Unit) {
+        Text(label, fontSize = 12.sp, color = Color(0xFFAAAAAA), modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValue,
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+        )
+    }
+
+    /** 导入书籍：本地文件（TXT/EPUB）/ 远程直链 二选一。 */
+    @Composable
+    private fun ImportDialog(
+        onPickLocal: () -> Unit,
+        onRemote: () -> Unit,
+        onClose: () -> Unit,
+    ) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("导入书籍", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 14.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onPickLocal)
+                        .padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("本地文件", fontSize = 16.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text("TXT / EPUB", fontSize = 13.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("选择", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onRemote)
+                        .padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("远程地址", fontSize = 16.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text("粘贴 .txt / .epub 直链", fontSize = 13.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("输入", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 远程书籍导入：输入 .txt/.epub 直链，拉取后按本地流程切章入书架。 */
+    @Composable
+    private fun RemoteImportDialog(importing: Boolean, onImport: (String) -> Unit, onClose: () -> Unit) {
+        var url by remember { mutableStateOf("") }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("远程书籍导入", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp))
+                Text("粘贴书籍文件直链（.txt 自动切章 / .epub 自动解析），拉到服务器后离线可读", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                    placeholder = { Text("https://example.com/book.epub", color = Color(0xFF666666), fontSize = 13.sp) },
+                    maxLines = 2,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(20.dp))
+                    Button(onClick = { onImport(url.trim()) }, enabled = !importing && url.isNotBlank()) {
+                        Text(if (importing) "导入中…" else "导入", fontSize = 13.sp)
+                    }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 全文搜索弹窗：输入关键词，在书架已缓存/本地书籍章节内定位，点结果直接跳到段落。 */
+    @Composable
+    private fun FulltextDialog(
+        searching: Boolean,
+        keyword: String,
+        hits: List<FulltextHit>,
+        onKeyword: (String) -> Unit,
+        onSearch: () -> Unit,
+        onOpen: (FulltextHit) -> Unit,
+        onClose: () -> Unit,
+    ) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("全文搜索", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 4.dp))
+                Text("搜索书架中已缓存/本地书籍的正文；远程书请先「下载全书」", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = keyword,
+                        onValueChange = onKeyword,
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("输入关键词", color = Color(0xFF666666), fontSize = 13.sp) },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onSearch, enabled = !searching && keyword.isNotBlank()) {
+                        Text(if (searching) "搜索中…" else "搜索", fontSize = 13.sp)
+                    }
+                }
+                if (hits.isEmpty() && !searching) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text("暂无结果", fontSize = 13.sp, color = Color(0xFF666666))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 6.dp)) {
+                        itemsIndexed(hits) { _, h ->
+                            Column(
+                                Modifier.fillMaxWidth().clickable { onOpen(h) }
+                                    .padding(horizontal = 20.dp, vertical = 7.dp),
+                            ) {
+                                Text(h.bookName + " · " + h.chapterName, fontSize = 13.sp, color = Color(0xFF4FC3F7), maxLines = 1)
+                                Text(h.snippet, fontSize = 12.sp, color = Color(0xFFBBBBBB), maxLines = 2)
+                            }
+                            HorizontalDivider(color = Color(0x16FFFFFF))
+                        }
+                    }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 阅读统计弹窗：今日阅读时长 + 最近阅读记录（点记录继续阅读）。 */
+    @Composable
+    private fun StatsDialog(onClose: () -> Unit, onOpenRecord: (String, String) -> Unit) {
+        val stats = remember { ReaderStore.get().readingStats() }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("阅读统计", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 6.dp))
+                Text(
+                    "今日阅读 ${stats.todayMs / 60000} 分钟 · 最近在读 ${stats.records.size} 本",
+                    fontSize = 13.sp, color = Color(0xFF4FC3F7), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                )
+                if (stats.records.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text("暂无阅读记录", fontSize = 13.sp, color = Color(0xFF666666))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                        itemsIndexed(stats.records) { _, r ->
+                            Column(
+                                Modifier.fillMaxWidth().clickable { if (r.url.isNotBlank()) onOpenRecord(r.url, r.name) }
+                                    .padding(horizontal = 24.dp, vertical = 7.dp),
+                            ) {
+                                Text(r.name, fontSize = 14.sp, color = Color(0xFFDDDDDD), maxLines = 1)
+                                Row(Modifier.fillMaxWidth()) {
+                                    Text(r.chapterName.ifEmpty { "进度 ${(r.percent * 100).toInt()}%" },
+                                        fontSize = 12.sp, color = Color(0xFF888888), maxLines = 1)
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
+                                            .format(java.util.Date(r.time)),
+                                        fontSize = 11.sp, color = Color(0xFF555555),
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = Color(0x14FFFFFF))
+                        }
+                    }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 备份 / 恢复：导出/导入单个 JSON（书架/进度/书签/正文规则/阅读设置/书源/订阅源）。 */
+    @Composable
+    private fun BackupDialog(onExport: () -> Unit, onImport: () -> Unit, onClose: () -> Unit) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("备份 / 恢复", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp))
+                Text("单一 JSON 覆盖书架、阅读进度、书签、净化/高亮/词典规则、阅读设置、书源与 RSS 订阅源", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onExport)
+                        .padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("导出备份", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text("保存 .json", fontSize = 12.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("导出", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onImport)
+                        .padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("从备份恢复", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+                    Spacer(Modifier.weight(1f))
+                    Text("选择 .json", fontSize = 12.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.width(10.dp))
+                    Text("恢复", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 听书朗读面板：播放/暂停、上下章、语速、引擎（本机/在线）与在线接口模板。 */
+    @Composable
+    private fun TtsPanel(
+        playing: Boolean,
+        speed: Float,
+        engine: String,
+        onlineUrl: String,
+        status: String,
+        chapterName: String,
+        onTogglePlay: () -> Unit,
+        onPrevChapter: () -> Unit,
+        onNextChapter: () -> Unit,
+        onSpeed: (Float) -> Unit,
+        onEngine: (String) -> Unit,
+        onOnlineUrl: (String) -> Unit,
+        onClose: () -> Unit,
+    ) {
+        var urlText by remember { mutableStateOf(onlineUrl) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(
+                Modifier.fillMaxSize().background(Color(0xE6000000))
+                    .padding(horizontal = 28.dp).verticalScroll(rememberScrollState()),
+            ) {
+                Text("听书朗读", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 4.dp))
+                Text(chapterName, fontSize = 12.sp, color = Color(0xFFBBBBBB), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(), maxLines = 1)
+                Text(status.ifEmpty { if (playing) "朗读中…" else "已停止" }, fontSize = 12.sp,
+                    color = if (playing) MaterialTheme.colorScheme.primary else Color(0xFF888888),
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+                // 播放控制
+                Row(Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Text("上一章", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClick = onPrevChapter).padding(horizontal = 16.dp, vertical = 10.dp))
+                    Text(if (playing) "暂停" else "播放", fontSize = 18.sp, color = Color(0xFFFFD54F),
+                        modifier = Modifier.clickable(onClick = onTogglePlay).padding(horizontal = 24.dp, vertical = 10.dp))
+                    Text("下一章", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClick = onNextChapter).padding(horizontal = 16.dp, vertical = 10.dp))
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 8.dp))
+                // 语速
+                Text("语速（本机朗读生效）", fontSize = 13.sp, color = Color(0xFFDDDDDD))
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    for (opt in listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)) {
+                        val sel = Math.abs(speed - opt) < 0.01f
+                        Text(
+                            if (opt == opt.toInt().toFloat()) opt.toInt().toString() else opt.toString(),
+                            fontSize = 14.sp,
+                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable { onSpeed(opt) }
+                                .padding(horizontal = 16.dp, vertical = 7.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 8.dp))
+                // 引擎选择
+                Text("朗读引擎", fontSize = 13.sp, color = Color(0xFFDDDDDD))
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    for ((key, label) in listOf("local" to "本机朗读", "online" to "在线朗读")) {
+                        val sel = engine == key
+                        Text(
+                            label,
+                            fontSize = 14.sp,
+                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable { onEngine(key) }
+                                .padding(horizontal = 16.dp, vertical = 7.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+                if (engine == "online") {
+                    Text("在线接口（GET 模板，{text} 替换为编码后的句子；需返回 mp3 音频）", fontSize = 11.sp,
+                        color = Color(0xFF777777), modifier = Modifier.padding(top = 8.dp))
+                    OutlinedTextField(
+                        value = urlText,
+                        onValueChange = { urlText = it; onOnlineUrl(it) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        placeholder = { Text("https://…?text={text}", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Text("内置示例为有道词典语音（短句）。可换成自建 Edge TTS / 百度等任何返回 mp3 的接口",
+                        fontSize = 11.sp, color = Color(0xFF666666), modifier = Modifier.padding(top = 4.dp))
+                } else {
+                    Text("使用设备自带 TTS 引擎，离线可用；需系统已安装 TTS 语音包（多数 TV 盒子没有）",
+                        fontSize = 11.sp, color = Color(0xFF666666), modifier = Modifier.padding(top = 8.dp))
+                }
+                Text("停止朗读并关闭", fontSize = 13.sp, color = Color(0xFFFF8A80), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onClose).padding(top = 18.dp))
+                Text("点击下方空白处关闭面板", fontSize = 11.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 订阅源视频播放：RSS 正文里的 mp4/m3u8 直链，内嵌 MediaPlayer 全屏播放。 */
+    @Composable
+    private fun VideoDialog(url: String, onClose: () -> Unit) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            var playing by remember { mutableStateOf(true) }
+            var err by remember { mutableStateOf("") }
+            val player = remember { MediaPlayer() }
+            val ready = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+            DisposableEffect(url) {
+                try {
+                    player.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .build()
+                    )
+                    player.setDataSource(url)
+                    player.setOnPreparedListener {
+                        ready.set(true)
+                        player.start()
+                    }
+                    player.setOnErrorListener { _, _, _ ->
+                        err = "播放失败：格式或地址不可用（请返回或更换其它视频）"
+                        playing = false
+                        true
+                    }
+                    player.setOnCompletionListener { playing = false }
+                    player.prepareAsync()
+                } catch (e: Exception) {
+                    err = "播放失败：" + (e.message ?: "")
+                }
+                onDispose {
+                    try {
+                        player.release()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            Box(
+                Modifier.fillMaxSize().background(Color.Black).clickable {
+                    if (playing) {
+                        try {
+                            player.pause()
+                        } catch (_: Exception) {
+                        }
+                    } else {
+                        try {
+                            if (ready.get()) player.start()
+                        } catch (_: Exception) {
+                        }
+                    }
+                    playing = !playing
+                },
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        TextureView(ctx).apply {
+                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) {
+                                    try {
+                                        player.setSurface(Surface(s))
+                                        if (ready.get() && !player.isPlaying) player.start()
+                                    } catch (_: Exception) {
+                                    }
+                                }
+
+                                override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
+                                override fun onSurfaceTextureDestroyed(s: SurfaceTexture): Boolean = true
+                                override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Column(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .background(Color(0x99000000)).padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (err.isNotEmpty()) {
+                        Text(err, fontSize = 13.sp, color = Color(0xFFFF8A80),
+                            textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
+                    } else {
+                        Text(if (playing) "点击屏幕暂停" else "点击屏幕继续", fontSize = 12.sp, color = Color(0xFFCCCCCC))
+                    }
+                    Text("关闭", fontSize = 14.sp, color = Color(0xFFE0E0E0),
+                        modifier = Modifier.clickable(onClick = onClose).padding(horizontal = 16.dp, vertical = 8.dp))
+                }
+                Text(url.take(110), fontSize = 10.sp, color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 20.dp, vertical = 8.dp), maxLines = 1)
+            }
+        }
+    }
+
+    /** 从正文 HTML/文本中提取 mp4/m3u8 直链（去重保序）。 */
+    private fun extractVideoUrls(html: String): List<String> {
+        if (html.isBlank()) return emptyList()
+        val out = LinkedHashSet<String>()
+        for (m in Regex("https?://[^\\s\"'<>),；，。！？】]+", RegexOption.IGNORE_CASE).findAll(html)) {
+            var s = m.value.trimEnd('"', '\'', ')', ']', '}', '>', ',', '.', ';', '，', '。', '；', '！', '？')
+            if (s.endsWith("/")) s = s.dropLast(1)
+            val path = s.substringAfter("://", "").lowercase()
+            if (path.endsWith(".mp4") || path.endsWith(".m3u8") || path.contains(".mp4?") || path.contains(".m3u8?")) {
+                out.add(s)
+            }
+        }
+        return out.toList()
+    }
+
+    /** 阅读设置弹窗：字号滑动调节 / 行距 / 主题 / 本地 TXT 切章正则，改动即生效并持久化。 */
     @Composable
     private fun SettingsDialog(
         fontSize: Int,
         lineHeight: Float,
         theme: String,
+        tocRegex: String,
         onFontSize: (Int) -> Unit,
         onLineHeight: (Float) -> Unit,
         onTheme: (String) -> Unit,
+        onTocRegex: (String) -> Unit,
+        onOpenRules: () -> Unit,
         onClose: () -> Unit,
     ) {
         var sliderValue by remember { mutableStateOf(fontSize.toFloat()) }
@@ -1802,7 +3633,143 @@ class ReaderActivity : AppCompatActivity() {
                             Spacer(Modifier.width(8.dp))
                         }
                     }
+                    // 本地 TXT 切章正则（txtTocRule）
+                    HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 8.dp))
+                    Text("本地 TXT 切章正则", fontSize = 14.sp, color = Color(0xFFDDDDDD))
+                    OutlinedTextField(
+                        value = tocRegex,
+                        onValueChange = onTocRegex,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        placeholder = { Text("示例：第[0-9零一二三四五六七八九十百千万]+[章节卷回部篇集]", color = Color(0xFF666666), fontSize = 12.sp) },
+                        maxLines = 1,
+                    )
+                    Text("导入 .txt 时按此正则切章；新导入生效", fontSize = 11.sp, color = Color(0xFF888888))
+                    // 正文规则入口
+                    Text(
+                        "正文净化 / 高亮 / 词典 ›",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClick = onOpenRules).padding(vertical = 10.dp),
+                    )
                     Spacer(Modifier.height(16.dp))
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 正文规则编辑：净化（正则删除）/ 高亮（词/正则+可选颜色）/ 词典（词=释义），文本形式逐行编辑。 */
+    @Composable
+    private fun RulesDialog(onClose: () -> Unit) {
+        val store = ReaderStore.get()
+        var tab by remember { mutableStateOf(0) }
+        var clearsText by remember { mutableStateOf(store.clears().joinToString("\n")) }
+        var highlightsText by remember {
+            mutableStateOf(store.highlights().joinToString("\n") { h -> (if (h.c.isBlank()) "" else h.c + " ") + h.p }.trim())
+        }
+        var dictsText by remember { mutableStateOf(store.dicts().joinToString("\n") { it.w + "=" + it.d }) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("正文规则", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    for ((i, n) in listOf("净化", "高亮", "词典").withIndex()) {
+                        Text(
+                            n,
+                            fontSize = 13.sp,
+                            color = if (tab == i) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (tab == i) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable { tab = i }
+                                .padding(horizontal = 16.dp, vertical = 5.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                when (tab) {
+                    0 -> OutlinedTextField(
+                        value = clearsText,
+                        onValueChange = { clearsText = it },
+                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
+                        placeholder = { Text("每行一条正则，命中文本将删除\n示例：本章未完待续", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 12,
+                    )
+                    1 -> OutlinedTextField(
+                        value = highlightsText,
+                        onValueChange = { highlightsText = it },
+                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
+                        placeholder = { Text("每行：关键词/正则，可加颜色前缀\n示例：#FFD54F 主角名", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 12,
+                    )
+                    else -> OutlinedTextField(
+                        value = dictsText,
+                        onValueChange = { dictsText = it },
+                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
+                        placeholder = { Text("每行：词=释义\n点击正文中蓝色下划线词可查看释义", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 12,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(20.dp))
+                    Button(onClick = {
+                        val clears = clearsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList().distinct()
+                        val highlights = highlightsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { line ->
+                            val sp = line.split(Regex("\\s+"), limit = 2)
+                            if (sp.size == 2 && sp[0].startsWith("#")) {
+                                ReaderStore.HighlightRule(sp[1], sp[0])
+                            } else {
+                                ReaderStore.HighlightRule(line, "")
+                            }
+                        }.toList()
+                        val dicts = dictsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { line ->
+                            val i = line.indexOf('=')
+                            if (i > 0) ReaderStore.DictRule(line.substring(0, i).trim(), line.substring(i + 1).trim())
+                            else ReaderStore.DictRule(line, "(未填释义)")
+                        }.toList()
+                        ReaderStore.get().saveRules(clears, highlights, dicts)
+                        Notify.show("规则已保存（打开章节时生效）")
+                        onClose()
+                    }) { Text("保存", fontSize = 13.sp) }
+                }
+                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 词典弹窗：列出段落中命中的词典词与释义。 */
+    @Composable
+    private fun DictDialog(text: String, dicts: List<ReaderStore.DictRule>, onClose: () -> Unit) {
+        val hits = dicts.filter { it.w.isNotBlank() && text.contains(it.w, ignoreCase = true) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text("词典释义", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 6.dp))
+                if (hits.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("本段未命中词典词（可在设置→正文规则中添加）", fontSize = 13.sp, color = Color(0xFF777777))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
+                        itemsIndexed(hits) { _, h ->
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp)) {
+                                Text(h.w, fontSize = 15.sp, color = Color(0xFF4FC3F7), fontWeight = FontWeight.Bold)
+                                Text(h.d.ifEmpty { "（未填释义）" }, fontSize = 13.sp, color = Color(0xFFBBBBBB),
+                                    modifier = Modifier.padding(top = 2.dp))
+                            }
+                            HorizontalDivider(color = Color(0x14FFFFFF))
+                        }
+                    }
                 }
                 Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))

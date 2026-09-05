@@ -215,6 +215,65 @@ public final class ReaderRepository {
         reload();
     }
 
+    /** 更新书源（编辑保存）：按 URL 覆盖原条目并保留启用开关；新 URL 视为导入。 */
+    public synchronized boolean updateSource(String json) {
+        if (json == null || json.trim().isEmpty()) return false;
+        BookSource parsed = BookSource.parse(json);
+        if (parsed == null) return false;
+        List<String> raw = new ArrayList<>(savedRaw());
+        boolean hit = false;
+        for (int i = 0; i < raw.size(); i++) {
+            try {
+                JSONObject o = new JSONObject(raw.get(i));
+                if (parsed.url.equals(o.optString("bookSourceUrl"))) {
+                    boolean enabled = o.optBoolean("enabled", true);
+                    JSONObject edited = new JSONObject(json);
+                    edited.put("enabled", enabled);
+                    raw.set(i, edited.toString());
+                    hit = true;
+                    break;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (hit) {
+            save(raw);
+            reload();
+            return true;
+        }
+        int n = importText(json);
+        return n > 0;
+    }
+
+    /** 连通性测试：用固定关键词做一次搜索，能解析出结果即视为可用。 */
+    public CompletableFuture<Boolean> testSource(String sourceUrl) {
+        BookSource s = sourceOf(sourceUrl);
+        if (s == null) return CompletableFuture.completedFuture(false);
+        return testParsed(s);
+    }
+
+    /** 连通性测试（草稿 JSON，未保存）：编辑书源弹窗里用当前改动做测试。 */
+    public CompletableFuture<Boolean> testSourceJson(String json) {
+        BookSource s = BookSource.parse(json);
+        if (s == null) return CompletableFuture.completedFuture(false);
+        return testParsed(s);
+    }
+
+    private CompletableFuture<Boolean> testParsed(BookSource s) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String rule = s.ruleSearch == null ? "" : s.ruleSearch.bookList;
+                if (rule.isEmpty()) rule = "html";
+                String raw = OkHttp.string(s.fillSearchUrl("测试"));
+                if (raw == null || raw.isEmpty()) return false;
+                JSONArray list = RuleExecutor.jsonArray(rule, raw);
+                return list != null && list.length() > 0;
+            } catch (Exception e) {
+                return false;
+            }
+        }, io);
+    }
+
     public synchronized void toggleSource(String url) {
         for (BookSource s : sources) {
             if (s.url.equals(url)) s.enabled = !s.enabled;
@@ -242,6 +301,39 @@ public final class ReaderRepository {
         List<String> raw = new ArrayList<>();
         for (BookSource s : sources) raw.add(toJson(s));
         save(raw);
+    }
+
+    /** 导出全部书源原始 JSON（含 enabled），供备份用。 */
+    public String exportSources() {
+        return prefs().getString(KEY_SOURCES, "");
+    }
+
+    /** 恢复书源（覆盖式）：接受书源数组 JSON，逐项校验后整体写入。 */
+    public synchronized boolean importSources(String json) {
+        if (json == null || json.trim().isEmpty()) return false;
+        JSONArray arr;
+        try {
+            arr = new JSONArray(json);
+        } catch (Exception e) {
+            try {
+                arr = new JSONArray("[" + json + "]");
+            } catch (Exception ex) {
+                return false;
+            }
+        }
+        if (arr.length() == 0) return false;
+        List<String> raw = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            try {
+                if (BookSource.parse(arr.getString(i)) == null) return false;
+                raw.add(arr.getString(i));
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        save(raw);
+        reload();
+        return true;
     }
 
     /** 完整序列化（含规则与 enabled），供 toggle 后持久化不丢规则。 */

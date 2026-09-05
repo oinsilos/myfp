@@ -14,6 +14,8 @@ public final class Book {
     public String intro = "";
     /** 所属书源 url。 */
     public String source = "";
+    /** 书架分组（默认"默认"；仅书架用途）。 */
+    public String group = "";
 
     public static final class Chapter {
         public String name = "";

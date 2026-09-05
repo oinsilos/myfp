@@ -36,6 +36,8 @@ public final class RssRepository {
     private static final String TAG = "RssRepository";
     private static final String PREFS = "reader_rss";
     private static final String KEY_SOURCES = "sources";
+    private static final String KEY_FAVORITES = "favorites";
+    private static final String KEY_READ = "read";
     private static final int BODY_MAX = 16_000;
 
     private static volatile RssRepository instance;
@@ -68,11 +70,32 @@ public final class RssRepository {
         public final String pubDate;
         public final String desc;
 
-        RssArticle(String title, String link, String pubDate, String desc) {
+        public RssArticle(String title, String link, String pubDate, String desc) {
             this.title = title == null ? "" : title;
             this.link = link == null ? "" : link;
             this.pubDate = pubDate == null ? "" : pubDate;
             this.desc = desc == null ? "" : desc;
+        }
+    }
+
+    /** 收藏条目：文章 + 来源信息 + 收藏时间。 */
+    public static final class RssFav {
+        public final String title;
+        public final String link;
+        public final String pubDate;
+        public final String desc;
+        public final String source;
+        public final String sourceUrl;
+        public final long favTime;
+
+        RssFav(String title, String link, String pubDate, String desc, String source, String sourceUrl, long favTime) {
+            this.title = title == null ? "" : title;
+            this.link = link == null ? "" : link;
+            this.pubDate = pubDate == null ? "" : pubDate;
+            this.desc = desc == null ? "" : desc;
+            this.source = source == null ? "" : source;
+            this.sourceUrl = sourceUrl == null ? "" : sourceUrl;
+            this.favTime = favTime;
         }
     }
 
@@ -167,6 +190,145 @@ public final class RssRepository {
             prefs.edit().putString(KEY_SOURCES, arr.toString()).apply();
         } catch (Exception e) {
             Log.w(TAG, "save sources failed", e);
+        }
+    }
+
+    /** 导出全部订阅源 JSON（含 enabled），供备份用。 */
+    public String exportSources() {
+        return prefs == null ? "[]" : prefs.getString(KEY_SOURCES, "[]");
+    }
+
+    /** 恢复订阅源（覆盖式）：接受订阅源数组 JSON。 */
+    public synchronized boolean importSources(String json) {
+        if (prefs == null || json == null || json.trim().isEmpty()) return false;
+        try {
+            saveSources(parseSources(json));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------ 收藏 / 已读（跨源汇总，持久化）
+
+    /** 收藏列表（按收藏时间倒序）。 */
+    public synchronized List<RssFav> favorites() {
+        List<RssFav> out = new ArrayList<>();
+        if (prefs == null) return out;
+        try {
+            JSONArray arr = new JSONArray(prefs.getString(KEY_FAVORITES, "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                out.add(new RssFav(o.optString("t"), o.optString("l"), o.optString("pd"),
+                        o.optString("d"), o.optString("s"), o.optString("su"), o.optLong("ft", 0)));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "parse favorites failed", e);
+        }
+        List<RssFav> rev = new ArrayList<>();
+        for (int i = out.size() - 1; i >= 0; i--) rev.add(out.get(i)); // 存储倒序，读取还原
+        return rev;
+    }
+
+    /** 本文是否已收藏。 */
+    public synchronized boolean isFavorite(String link) {
+        if (prefs == null || link == null || link.isEmpty()) return false;
+        try {
+            JSONArray arr = new JSONArray(prefs.getString(KEY_FAVORITES, "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o != null && link.equals(o.optString("l"))) return true;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "isFavorite failed", e);
+        }
+        return false;
+    }
+
+    /** 收藏/取消收藏；返回操作后是否已收藏。 */
+    public synchronized boolean toggleFavorite(RssArticle article, String sourceUrl, String sourceName) {
+        if (prefs == null || article == null || article.link.isEmpty()) return false;
+        if (isFavorite(article.link)) {
+            removeFavorite(article.link);
+            return false;
+        }
+        try {
+            JSONArray arr = new JSONArray(prefs.getString(KEY_FAVORITES, "[]"));
+            JSONObject o = new JSONObject();
+            o.put("t", article.title);
+            o.put("l", article.link);
+            o.put("pd", article.pubDate);
+            o.put("d", article.desc);
+            o.put("s", sourceName == null ? "" : sourceName);
+            o.put("su", sourceUrl == null ? "" : sourceUrl);
+            o.put("ft", System.currentTimeMillis());
+            arr.put(o);
+            prefs.edit().putString(KEY_FAVORITES, arr.toString()).apply();
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "save favorite failed", e);
+            return false;
+        }
+    }
+
+    public synchronized boolean removeFavorite(String link) {
+        if (prefs == null || link == null || link.isEmpty()) return false;
+        try {
+            JSONArray arr = new JSONArray(prefs.getString(KEY_FAVORITES, "[]"));
+            JSONArray next = new JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null || !link.equals(o.optString("l"))) next.put(o);
+            }
+            prefs.edit().putString(KEY_FAVORITES, next.toString()).apply();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public synchronized int clearFavorites() {
+        int n = favorites().size();
+        if (prefs != null) prefs.edit().remove(KEY_FAVORITES).apply();
+        return n;
+    }
+
+    /** 是否已读。 */
+    public synchronized boolean isRead(String link) {
+        if (prefs == null || link == null || link.isEmpty()) return false;
+        String k = link.trim();
+        return prefs.getString(KEY_READ, "").contains("\u0001" + k + "\u0001");
+    }
+
+    /** 标记已读（重复标记幂等）。 */
+    public synchronized void markRead(String link) {
+        if (prefs == null || link == null) return;
+        String k = link.trim();
+        if (k.isEmpty() || isRead(k)) return;
+        String v = prefs.getString(KEY_READ, "");
+        prefs.edit().putString(KEY_READ, v + "\u0001" + k + "\u0001").apply();
+    }
+
+    /** 批量同步已读状态（登出/批量打开后清空标记用）。 */
+    public synchronized void clearRead() {
+        if (prefs != null) prefs.edit().remove(KEY_READ).apply();
+    }
+
+    /** 导出收藏（供备份）。 */
+    public String exportFavorites() {
+        return prefs == null ? "[]" : prefs.getString(KEY_FAVORITES, "[]");
+    }
+
+    /** 恢复收藏（覆盖式）。 */
+    public synchronized boolean importFavorites(String json) {
+        if (prefs == null || json == null || json.trim().isEmpty()) return false;
+        try {
+            new JSONArray(json);
+            prefs.edit().putString(KEY_FAVORITES, json).apply();
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
