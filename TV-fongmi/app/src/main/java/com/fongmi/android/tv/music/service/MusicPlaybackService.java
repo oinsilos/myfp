@@ -19,6 +19,8 @@ import android.os.Looper;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.media.session.MediaButtonReceiver;
+import android.support.v4.media.session.MediaSessionCompat;
 import androidx.media3.common.PlaybackException;
 
 import com.fongmi.android.tv.R;
@@ -80,6 +82,8 @@ public final class MusicPlaybackService extends Service {
     private Listener listener;
     /** 倍速（播放器懒创建前暂存，首次播放时由 play 同步）。 */
     private volatile float speed = 1.0f;
+    /** 实体媒体键（遥控器/耳机/车机）路由入口：MediaSession + Manifest MediaButtonReceiver。 */
+    private MediaSessionCompat mediaSession;
 
     /** 睡眠定时：到点暂停播放（不断服务，通知保持可再次进入）。 */
     private final Handler sleepHandler = new Handler(Looper.getMainLooper());
@@ -126,6 +130,35 @@ public final class MusicPlaybackService extends Service {
         // 从通知直接进入时可能没有 Activity 触发，这里先确保插件仓库就绪（幂等）
         MusicRepository.get().init(getApplicationContext());
         player = new MusicPlayer(this, new PlayerBridge());
+        // 实体媒体键/遥控器：媒体会话接收系统 MediaButton 路由
+        mediaSession = new MediaSessionCompat(this, "MusicPlayback");
+        mediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onPlay() {
+                if (player != null) player.play();
+            }
+
+            @Override
+            public void onPause() {
+                if (player != null) player.pause();
+            }
+
+            @Override
+            public void onSkipToNext() {
+                if (player != null) player.next();
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                if (player != null) player.prev();
+            }
+
+            @Override
+            public void onStop() {
+                if (player != null) player.pause();
+            }
+        });
+        mediaSession.setActive(true);
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_PLAY_PAUSE);
         filter.addAction(ACTION_PREV);
@@ -136,6 +169,8 @@ public final class MusicPlaybackService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // 媒体按钮（MediaButtonReceiver 唤醒）转发到会话回调
+        if (mediaSession != null) MediaButtonReceiver.handleIntent(mediaSession, intent);
         return START_STICKY;
     }
 
@@ -148,6 +183,11 @@ public final class MusicPlaybackService extends Service {
     @Override
     public void onDestroy() {
         sleepHandler.removeCallbacks(sleepTick);
+        if (mediaSession != null) {
+            mediaSession.setActive(false);
+            mediaSession.release();
+            mediaSession = null;
+        }
         unregisterReceiver(actions);
         stopForeground(STOP_FOREGROUND_REMOVE);
         if (player != null) player.release();
@@ -167,6 +207,14 @@ public final class MusicPlaybackService extends Service {
 
     public void toggle() {
         if (player != null) player.toggle();
+    }
+
+    public void play() {
+        if (player != null) player.play();
+    }
+
+    public void pause() {
+        if (player != null) player.pause();
     }
 
     public void next() {

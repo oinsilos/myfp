@@ -27,6 +27,7 @@ public final class MusicLibrary {
     private static final String TAG = "MusicLibrary";
     private static final String KEY_FAVORITES = "music_library";
     private static final String KEY_HISTORY = "music_history";
+    private static final String KEY_PLAYLISTS = "music_playlists";
     private static final int HISTORY_MAX = 100;
 
     private static volatile MusicLibrary instance;
@@ -89,6 +90,127 @@ public final class MusicLibrary {
         list.add(0, copy(m));
         while (list.size() > HISTORY_MAX) list.remove(list.size() - 1);
         write(KEY_HISTORY, list);
+    }
+
+    // ------------------------------------------------------------ 自建歌单
+
+    /** 自建歌单（可读写）。 */
+    public static final class Playlist {
+        public final String name;
+        public final List<MusicMedia> items = new ArrayList<>();
+
+        Playlist(String name) {
+            this.name = name;
+        }
+    }
+
+    /** 全部自建歌单。 */
+    public List<Playlist> playlists() {
+        List<Playlist> out = new ArrayList<>();
+        String raw = prefs == null ? "" : prefs.getString(KEY_PLAYLISTS, "");
+        if (raw.isEmpty()) return out;
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                String name = o.optString("name");
+                if (name.isEmpty()) continue;
+                Playlist p = new Playlist(name);
+                JSONArray ia = o.optJSONArray("items");
+                if (ia != null) {
+                    for (int j = 0; j < ia.length(); j++) {
+                        MusicMedia m = parse(ia.optJSONObject(j));
+                        if (m != null) p.items.add(m);
+                    }
+                }
+                out.add(p);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "read playlists failed", e);
+        }
+        return out;
+    }
+
+    /** 新建歌单（重名失败）。 */
+    public boolean createPlaylist(String name) {
+        if (name == null || name.trim().isEmpty()) return false;
+        List<Playlist> ps = playlists();
+        for (Playlist p : ps) if (p.name.equals(name.trim())) return false;
+        ps.add(new Playlist(name.trim()));
+        savePlaylists(ps);
+        return true;
+    }
+
+    /** 重命名歌单（新名重名/为空失败）。 */
+    public boolean renamePlaylist(String oldName, String newName) {
+        if (newName == null || newName.trim().isEmpty()) return false;
+        List<Playlist> ps = playlists();
+        for (Playlist p : ps) if (!p.name.equals(oldName) && p.name.equals(newName.trim())) return false;
+        for (int i = 0; i < ps.size(); i++) {
+            Playlist p = ps.get(i);
+            if (p.name.equals(oldName)) {
+                Playlist n = new Playlist(newName.trim());
+                n.items.addAll(p.items);
+                ps.set(i, n);
+                savePlaylists(ps);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 删除歌单。 */
+    public void deletePlaylist(String name) {
+        List<Playlist> ps = playlists();
+        ps.removeIf(p -> p.name.equals(name));
+        savePlaylists(ps);
+    }
+
+    /** 往歌单加歌（同 id 去重，头插）。 */
+    public boolean addToPlaylist(String name, MusicMedia m) {
+        if (m == null) return false;
+        List<Playlist> ps = playlists();
+        for (Playlist p : ps) {
+            if (p.name.equals(name)) {
+                if (indexOf(p.items, m) < 0) p.items.add(0, copy(m));
+                savePlaylists(ps);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 从歌单移除指定下标的歌曲。 */
+    public void removeFromPlaylist(String name, int index) {
+        List<Playlist> ps = playlists();
+        for (Playlist p : ps) {
+            if (p.name.equals(name)) {
+                if (index >= 0 && index < p.items.size()) {
+                    p.items.remove(index);
+                    savePlaylists(ps);
+                }
+                return;
+            }
+        }
+    }
+
+    private void savePlaylists(List<Playlist> ps) {
+        if (prefs == null) return;
+        try {
+            JSONArray arr = new JSONArray();
+            for (Playlist p : ps) {
+                JSONObject o = new JSONObject();
+                o.put("name", p.name);
+                JSONArray ia = new JSONArray();
+                for (MusicMedia m : p.items) ia.put(toJson(m));
+                o.put("items", ia);
+                arr.put(o);
+            }
+            prefs.edit().putString(KEY_PLAYLISTS, arr.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "write playlists failed", e);
+        }
     }
 
     // ------------------------------------------------------------ 内部

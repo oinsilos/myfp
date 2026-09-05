@@ -11,8 +11,14 @@ import com.fongmi.android.tv.utils.Download;
 import com.fongmi.android.tv.utils.Notify;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -36,6 +42,12 @@ public final class MusicDownloader {
     private final Handler handler = new Handler(Looper.getMainLooper());
     /** 下载中（platform+id 键），去重。 */
     private final Set<String> running = new HashSet<>();
+    /** 下载中队列（按加入顺序，供下载管理页展示进度/取消）。 */
+    private final List<MusicMedia> queue = new ArrayList<>();
+    /** key → 当前进度（0~100）。 */
+    private final Map<String, Integer> progress = new HashMap<>();
+    /** key → 下载句柄（取消用）。 */
+    private final Map<String, Download> tasks = new HashMap<>();
     /** 完成/失败标记，避免重复下载同一首。 */
     private final Set<String> doneKeys = new HashSet<>();
 
@@ -95,6 +107,10 @@ public final class MusicDownloader {
         Context ctx = context;
         if (media == null || ctx == null) return;
         String k = key(media);
+        if ("local".equals(media.source)) {
+            Notify.show("本地文件无需下载");
+            return;
+        }
         if (k.isEmpty() || media.vip) {
             Notify.show("无法下载：无有效地址或 VIP 歌曲");
             return;
@@ -105,6 +121,12 @@ public final class MusicDownloader {
                 return;
             }
             running.add(k);
+        }
+        synchronized (queue) {
+            queue.add(media);
+        }
+        synchronized (progress) {
+            progress.put(k, 0);
         }
         notifyState();
         MusicRepository.get().getMediaUrl(media, "").whenComplete((url, error) -> {
@@ -117,10 +139,17 @@ public final class MusicDownloader {
                 finishDone(k, file);
                 return;
             }
-            Download.create(url, file).start(new Download.Callback() {
+            Download d = Download.create(url, file);
+            synchronized (tasks) {
+                tasks.put(k, d);
+            }
+            d.start(new Download.Callback() {
                 @Override
                 public void progress(int progress) {
                     final int p = progress;
+                    synchronized (MusicDownloader.this.progress) {
+                        MusicDownloader.this.progress.put(k, p);
+                    }
                     onUi(() -> {
                         Listener l = listener;
                         if (l != null) l.onProgress(k, p);
@@ -144,20 +173,32 @@ public final class MusicDownloader {
         synchronized (doneKeys) {
             doneKeys.add(k);
         }
-        synchronized (running) {
-            running.remove(k);
-        }
+        removeFromQueue(k);
         Notify.show("已下载：" + file.getName());
         notifyState();
     }
 
     private void finishFail(String k, String msg) {
         // 失败不记 doneKeys：允许用户稍后重试同一首
+        removeFromQueue(k);
+        Notify.show(msg);
+        notifyState();
+    }
+
+    /** 从下载中队列/句柄/进度清理（完成、失败、取消共用）。 */
+    private void removeFromQueue(String k) {
+        synchronized (queue) {
+            queue.removeIf(m -> key(m).equals(k));
+        }
+        synchronized (tasks) {
+            tasks.remove(k);
+        }
+        synchronized (progress) {
+            progress.remove(k);
+        }
         synchronized (running) {
             running.remove(k);
         }
-        Notify.show(msg);
-        notifyState();
     }
 
     private void notifyState() {
@@ -194,5 +235,52 @@ public final class MusicDownloader {
     /** 下载目录（供 UI 查看/打开）。 */
     public File musicDir() {
         return context == null ? null : new File(context.getExternalFilesDir(null), DIR);
+    }
+
+    // ------------------------------------------------------------ 下载管理
+
+    /** 进行中的下载（按加入顺序）。 */
+    public List<MusicMedia> runningList() {
+        synchronized (queue) {
+            return new ArrayList<>(queue);
+        }
+    }
+
+    /** 某曲当前下载进度（0~100）。 */
+    public int progressOf(MusicMedia m) {
+        synchronized (progress) {
+            Integer p = progress.get(key(m));
+            return p == null ? 0 : p;
+        }
+    }
+
+    /** 取消下载（进行中从队列移除并中断）。 */
+    public void cancel(MusicMedia m) {
+        String k = key(m);
+        Download d;
+        synchronized (tasks) {
+            d = tasks.remove(k);
+        }
+        if (d != null) d.cancel();
+        removeFromQueue(k);
+        notifyState();
+    }
+
+    /** 已完成的 mp3 文件（按修改时间倒序）。 */
+    public List<File> completedFiles() {
+        File dir = musicDir();
+        if (dir == null || !dir.exists()) return new ArrayList<>();
+        File[] fs = dir.listFiles((d, name) -> name.endsWith(".mp3"));
+        if (fs == null) return new ArrayList<>();
+        Arrays.sort(fs, Comparator.comparingLong(File::lastModified).reversed());
+        return new ArrayList<>(Arrays.asList(fs));
+    }
+
+    /** 删除一个已下载文件。 */
+    public void deleteDownloaded(File f) {
+        if (f == null) return;
+        boolean ok = f.exists() && f.delete();
+        if (!ok) Notify.show("删除失败");
+        else notifyState();
     }
 }

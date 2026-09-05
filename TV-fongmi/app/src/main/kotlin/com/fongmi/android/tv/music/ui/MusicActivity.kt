@@ -1,15 +1,23 @@
 package com.fongmi.android.tv.music.ui
 
 import android.content.ComponentName
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.util.Log
+import android.view.KeyEvent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.input.ImeAction
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
@@ -43,6 +51,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -75,6 +84,7 @@ import androidx.media3.common.Player
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.fongmi.android.tv.R
+import com.fongmi.android.tv.music.core.LocalMusicScanner
 import com.fongmi.android.tv.music.core.LrcParser
 import com.fongmi.android.tv.music.core.MusicDownloader
 import com.fongmi.android.tv.music.core.MusicLibrary
@@ -86,6 +96,7 @@ import com.fongmi.android.tv.music.plugin.MusicSource
 import com.fongmi.android.tv.music.service.MusicPlaybackService
 import com.fongmi.android.tv.utils.Notify
 import java.io.File
+import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -146,6 +157,25 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var importDialogVisible by mutableStateOf(false)
         // 歌单/榜单/歌手/导入结果详情视图：非 null 时主区显示详情
         var sheetView by mutableStateOf<SheetView?>(null)
+        // 本地音乐（扫描 MediaStore）
+        var localMusic by mutableStateOf<List<MusicMedia>>(emptyList())
+        var localLoading by mutableStateOf(false)
+        var localLoaded by mutableStateOf(false)
+        // 下载管理（进行中列表 + 已完成文件）
+        var downloads by mutableStateOf<List<MusicMedia>>(emptyList())
+        var doneFiles by mutableStateOf<List<File>>(emptyList())
+        // 自建歌单
+        var playlists by mutableStateOf<List<MusicLibrary.Playlist>>(emptyList())
+        // 加歌单弹窗
+        var playlistPickerVisible by mutableStateOf(false)
+        var pickerMedia by mutableStateOf<MusicMedia?>(null)
+        // 歌单新建/重命名输入弹窗
+        var playlistDialogVisible by mutableStateOf(false)
+        var playlistDialogTitle by mutableStateOf("")
+        var playlistDialogText by mutableStateOf("")
+        var playlistDialogTarget by mutableStateOf<String?>(null)
+        // “我的音乐”子 Tab：0 收藏 / 1 最近 / 2 本地 / 3 下载 / 4 歌单
+        var libTab by mutableStateOf(0)
     }
 
     /** 详情视图（歌单详情 / 榜单详情 / 歌手热歌 / 导入结果 共用）。 */
@@ -156,6 +186,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var items by mutableStateOf<List<MusicMedia>>(emptyList())
         var loading by mutableStateOf(false)
         var error by mutableStateOf("")
+        /** 非空=自定义歌单详情（行内显示「移除」入口）。 */
+        var playlistName by mutableStateOf("")
     }
 
     private val ui = UiState()
@@ -167,6 +199,40 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private var bound = false
     private var service: MusicPlaybackService? = null
     private val handler = Handler(Looper.getMainLooper())
+
+    /** 本地音乐权限（Android 13+ READ_MEDIA_AUDIO / 旧版 READ_EXTERNAL_STORAGE）。 */
+    private val audioPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) loadLocalMusic()
+        else Notify.show("需要音频读取权限才能扫描本地音乐")
+    }
+
+    /** 本地 JS 插件文件选择器（SAF）。 */
+    private val localPluginPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importLocalPlugin(uri)
+    }
+
+    /** 遥控器/实体媒体键：播放暂停、上下首（覆盖系统不接管的按键；耳机键经 MediaSession 走服务侧）。 */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_HEADSETHOOK -> {
+                service?.toggle()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> {
+                service?.pause()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                service?.next()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                service?.prev()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
 
     companion object {
         private const val TAG = "MusicActivity"
@@ -212,10 +278,12 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         MusicDownloader.get().setListener(object : MusicDownloader.Listener {
             override fun onStateChanged() {
                 ui.downloadTick = ui.downloadTick + 1
+                refreshDownloads()
             }
 
             override fun onProgress(key: String, percent: Int) {
                 ui.downloadTick = ui.downloadTick + 1
+                refreshDownloads()
             }
         })
         // 插件未就绪前的占位：显示「加载中…」而不是误导性的 unknown；readyFuture 完成后刷新为真实音源
@@ -261,6 +329,42 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onOpenSleep = { ui.sleepDialogVisible = true },
                     onSwitchSource = ::switchSource,
                     onImportPlugin = ::importPlugin,
+                    onPickLocalPlugin = { localPluginPicker.launch(arrayOf("*/*")) },
+                    onAddPlaylist = ::openPlaylistPicker,
+                    onScanLocal = ::requestLocalMusic,
+                    onPlayLocalFile = ::playLocalFile,
+                    onCancelDownload = { MusicDownloader.get().cancel(it) },
+                    onDeleteDownloaded = { MusicDownloader.get().deleteDownloaded(it) },
+                    onOpenPlaylist = { p ->
+                        val v = SheetView()
+                        v.title = p.name
+                        v.subtitle = "自定义歌单 · ${p.items.size} 首"
+                        v.items = p.items
+                        v.playlistName = p.name
+                        v.loading = false
+                        ui.sheetView = v
+                    },
+                    onNewPlaylist = ::openNewPlaylistDialog,
+                    onRenamePlaylist = ::openRenamePlaylistDialog,
+                    onDeletePlaylist = { name ->
+                        MusicLibrary.get().deletePlaylist(name)
+                        refreshPlaylists()
+                        Notify.show("歌单已删除")
+                    },
+                    onRemoveFromPlaylist = { name, idx ->
+                        MusicLibrary.get().removeFromPlaylist(name, idx)
+                        ui.sheetView?.let { v ->
+                            if (v.playlistName == name) {
+                                v.items = v.items.filterIndexed { i, _ -> i != idx }
+                                v.subtitle = "自定义歌单 · ${v.items.size} 首"
+                                if (v.items.isEmpty()) {
+                                    ui.sheetView = null
+                                    Notify.show("歌单已清空")
+                                }
+                            }
+                        }
+                        refreshPlaylists()
+                    },
                 )
             }
         }
@@ -402,6 +506,160 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         ui.favorites = MusicLibrary.get().favorites()
         ui.history = MusicLibrary.get().history()
         ui.libraryTick = ui.libraryTick + 1
+    }
+
+    // ------------------------------------------------------------ 本地音乐 / 下载 / 歌单
+
+    /** 后台扫描本地 mp3（MediaStore）。 */
+    private fun loadLocalMusic() {
+        if (ui.localLoading) return
+        ui.localLoading = true
+        Thread {
+            val list = LocalMusicScanner.scan(applicationContext)
+            runOnUiThread {
+                ui.localMusic = list
+                ui.localLoading = false
+                ui.localLoaded = true
+                if (list.isEmpty()) Notify.show("未扫描到本地 mp3 音乐")
+            }
+        }.start()
+    }
+
+    private fun audioPermission(): String =
+        if (Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_AUDIO
+        else android.Manifest.permission.READ_EXTERNAL_STORAGE
+
+    private fun hasAudioPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, audioPermission()) == PackageManager.PERMISSION_GRANTED
+
+    /** 「扫描本地音乐」入口：有权限直接扫，无权限先申请（Android 13+ READ_MEDIA_AUDIO）。 */
+    private fun requestLocalMusic() {
+        if (hasAudioPermission()) loadLocalMusic()
+        else audioPermLauncher.launch(audioPermission())
+    }
+
+    /** 刷新下载管理数据（进行中 + 已完成文件）。 */
+    private fun refreshDownloads() {
+        ui.downloads = MusicDownloader.get().runningList()
+        ui.doneFiles = MusicDownloader.get().completedFiles()
+    }
+
+    /** 刷新歌单列表。 */
+    private fun refreshPlaylists() {
+        ui.playlists = MusicLibrary.get().playlists()
+    }
+
+    /** 打开「加入歌单」弹窗。 */
+    private fun openPlaylistPicker(media: MusicMedia) {
+        ui.pickerMedia = media
+        refreshPlaylists()
+        ui.playlistPickerVisible = true
+    }
+
+    /** 加入指定歌单。 */
+    private fun pickPlaylist(name: String) {
+        val m = ui.pickerMedia ?: return
+        if (MusicLibrary.get().addToPlaylist(name, m)) {
+            refreshPlaylists()
+            Notify.show("已加入歌单「$name」")
+        } else {
+            Notify.show("加入失败")
+        }
+        ui.playlistPickerVisible = false
+        ui.pickerMedia = null
+    }
+
+    /** 新建/重命名歌单输入弹窗提交。 */
+    private fun submitPlaylistDialog(value: String) {
+        val target = ui.playlistDialogTarget
+        ui.playlistDialogVisible = false
+        if (value.isBlank()) {
+            Notify.show("名称不能为空")
+            return
+        }
+        if (target == null) {
+            val named = value.trim()
+            if (MusicLibrary.get().createPlaylist(named)) {
+                refreshPlaylists()
+                val m = ui.pickerMedia
+                if (m != null) {
+                    MusicLibrary.get().addToPlaylist(named, m)
+                    refreshPlaylists()
+                    ui.pickerMedia = null
+                    Notify.show("已创建并加入歌单「$named」")
+                } else {
+                    Notify.show("歌单已创建")
+                }
+            } else {
+                Notify.show("创建失败（重名或空名）")
+            }
+        } else if (MusicLibrary.get().renamePlaylist(target, value)) {
+            refreshPlaylists()
+            Notify.show("已重命名")
+        } else {
+            Notify.show("重命名失败（重名或空名）")
+        }
+    }
+
+    private fun openNewPlaylistDialog() {
+        ui.playlistDialogTitle = "新建歌单"
+        ui.playlistDialogText = ""
+        ui.playlistDialogTarget = null
+        ui.playlistDialogVisible = true
+    }
+
+    private fun openRenamePlaylistDialog(name: String) {
+        ui.playlistDialogTitle = "重命名歌单"
+        ui.playlistDialogText = name
+        ui.playlistDialogTarget = name
+        ui.playlistDialogVisible = true
+    }
+
+    /** 播放一个已下载的本地文件。 */
+    private fun playLocalFile(file: File) {
+        val m = MusicMedia(file.name, file.nameWithoutExtension, "", "", 0, null, Uri.fromFile(file).toString(), null, null)
+        m.source = "local"
+        playList(listOf(m), 0)
+    }
+
+    /** 读 SAF uri 文本内容（插件 JS）并在后台导入。 */
+    private fun importLocalPlugin(uri: Uri) {
+        Thread {
+            try {
+                val name = queryName(contentResolver, uri) ?: "plugin.js"
+                val code = contentResolver.openInputStream(uri)?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                if (code.isEmpty()) {
+                    runOnUiThread { Notify.show("插件文件读取失败") }
+                    return@Thread
+                }
+                MusicRepository.get().importLocalFile(name, code).whenComplete { ok, _ ->
+                    runOnUiThread {
+                        if (ok == true) {
+                            refreshSourceInfo()
+                            ui.sourceDialogVisible = false
+                            Notify.show("插件导入成功：" + name)
+                        } else {
+                            Notify.show("插件导入失败（无法解析）")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("插件读取失败：" + (e.message ?: "")) }
+            }
+        }.start()
+    }
+
+    private fun queryName(cr: ContentResolver, uri: Uri): String? {
+        return try {
+            cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0) c.getString(i) else null
+                } else null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** 切换当前行收藏状态，并同步到 UI（无序遍历安全）。 */
@@ -844,6 +1102,17 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onOpenSleep: () -> Unit,
         onSwitchSource: (String) -> Unit,
         onImportPlugin: (String) -> Unit,
+        onPickLocalPlugin: () -> Unit,
+        onAddPlaylist: (MusicMedia) -> Unit,
+        onScanLocal: () -> Unit,
+        onPlayLocalFile: (File) -> Unit,
+        onCancelDownload: (MusicMedia) -> Unit,
+        onDeleteDownloaded: (File) -> Unit,
+        onOpenPlaylist: (MusicLibrary.Playlist) -> Unit,
+        onNewPlaylist: () -> Unit,
+        onRenamePlaylist: (String) -> Unit,
+        onDeletePlaylist: (String) -> Unit,
+        onRemoveFromPlaylist: (String, Int) -> Unit,
     ) {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -860,6 +1129,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                         onDownload = onDownloadMedia,
                         onFavorite = onToggleFavMedia,
                         onArtist = onOpenArtistOf,
+                        onRemoveFromPlaylist = onRemoveFromPlaylist,
                     )
                 } else {
                     when (ui.tab) {
@@ -880,6 +1150,24 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                             onPlayList = onPlayList,
                             onDownloadMedia = onDownloadMedia,
                             onToggleFavMedia = onToggleFavMedia,
+                            onAddPlaylist = onAddPlaylist,
+                            onScanLocal = onScanLocal,
+                            onPlayLocalFile = onPlayLocalFile,
+                            onCancelDownload = onCancelDownload,
+                            onDeleteDownloaded = onDeleteDownloaded,
+                            onOpenPlaylist = { p ->
+                                val v = SheetView()
+                                v.title = p.name
+                                v.subtitle = "自定义歌单 · ${p.items.size} 首"
+                                v.items = p.items
+                                v.playlistName = p.name
+                                v.loading = false
+                                v.error = ""
+                                ui.sheetView = v
+                            },
+                            onNewPlaylist = onNewPlaylist,
+                            onRenamePlaylist = onRenamePlaylist,
+                            onDeletePlaylist = onDeletePlaylist,
                         )
                         else -> {
                             SearchBar(keyword, { keyword = it }) { onSearch(keyword) }
@@ -897,6 +1185,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                                 onDownloadAt = onDownloadAt,
                                 onFavoriteAt = onFavoriteAt,
                                 onArtist = onOpenArtistOf,
+                                onAddPlaylist = { idx -> ui.results.getOrNull(idx)?.let(onAddPlaylist) },
                             )
                         }
                     }
@@ -922,6 +1211,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 onClose = { ui.sourceDialogVisible = false },
                 onSwitch = onSwitchSource,
                 onImport = onImportPlugin,
+                onPickLocal = onPickLocalPlugin,
             )
         }
         if (ui.importDialogVisible) {
@@ -938,6 +1228,28 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 current = ui.sleepUntil,
                 onClose = { ui.sleepDialogVisible = false },
                 onSelect = ::setSleepTimer,
+            )
+        }
+        if (ui.playlistPickerVisible) {
+            PlaylistPickerDialog(
+                playlists = ui.playlists,
+                onClose = {
+                    ui.playlistPickerVisible = false
+                    ui.pickerMedia = null
+                },
+                onPick = ::pickPlaylist,
+                onNew = {
+                    ui.playlistPickerVisible = false
+                    openNewPlaylistDialog()
+                },
+            )
+        }
+        if (ui.playlistDialogVisible) {
+            PlaylistInputDialog(
+                title = ui.playlistDialogTitle,
+                initial = ui.playlistDialogText,
+                onClose = { ui.playlistDialogVisible = false },
+                onOk = ::submitPlaylistDialog,
             )
         }
     }
@@ -997,7 +1309,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     }
 
     @Composable
-    private fun ResultList(groups: List<MusicRepository.Aggregated>, items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit, onArtist: (MusicMedia) -> Unit) {
+    private fun ResultList(groups: List<MusicRepository.Aggregated>, items: List<MusicMedia>, libraryTick: Int, modifier: Modifier, onPlayAt: (Int) -> Unit, onDownloadAt: (Int) -> Unit, onFavoriteAt: (Int) -> Unit, onArtist: (MusicMedia) -> Unit, onAddPlaylist: (Int) -> Unit = {}) {
         @Suppress("UNUSED_EXPRESSION")
         libraryTick // 观察收藏变化：切换收藏后重绘心形图标
         LazyColumn(modifier, contentPadding = PaddingValues(vertical = 4.dp)) {
@@ -1031,6 +1343,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                                 onDownload = onDownloadAt,
                                 onFavorite = onFavoriteAt,
                                 onArtist = onArtist,
+                                onAddPlaylist = onAddPlaylist,
                             )
                         }
                     }
@@ -1045,13 +1358,14 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                         onDownload = onDownloadAt,
                         onFavorite = onFavoriteAt,
                         onArtist = onArtist,
+                        onAddPlaylist = onAddPlaylist,
                     )
                 }
             }
         }
     }
 
-    /** 歌曲列表行（搜索 / 歌单详情 / 导入结果 / 我的音乐 共用）：封面 + 标题 + 歌手/专辑 + 时长 + 收藏 + 下载。 */
+    /** 歌曲列表行（搜索 / 歌单详情 / 导入结果 / 我的音乐 共用）：封面 + 标题 + 歌手/专辑 + 时长 + 收藏 + 下载 + 加歌单。 */
     @Composable
     private fun MusicRow(
         index: Int,
@@ -1060,6 +1374,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onDownload: (Int) -> Unit,
         onFavorite: (Int) -> Unit,
         onArtist: (MusicMedia) -> Unit,
+        onAddPlaylist: (Int) -> Unit = {},
+        /** 非 null 时行尾显示「移除」（自定义歌单整理用），回调返回行下标。 */
+        onRemoveFromPlaylist: ((Int) -> Unit)? = null,
     ) {
         val vip = media.vip
         val sub = when {
@@ -1154,6 +1471,22 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                         )
                     }
                 }
+            }
+            // 加歌单（本地/下载行也允许，方便整理）
+            Text(
+                "＋歌单",
+                fontSize = 10.sp,
+                color = Color(0xFF888888),
+                modifier = Modifier.clickable { onAddPlaylist(index) }.padding(horizontal = 2.dp, vertical = 6.dp),
+            )
+            // 歌单整理入口：从自定义歌单移除该曲
+            if (onRemoveFromPlaylist != null) {
+                Text(
+                    "移除",
+                    fontSize = 10.sp,
+                    color = Color(0xFFFFB74D),
+                    modifier = Modifier.clickable { onRemoveFromPlaylist(index) }.padding(horizontal = 2.dp, vertical = 6.dp),
+                )
             }
         }
     }
@@ -1329,6 +1662,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onClose: () -> Unit,
         onSwitch: (String) -> Unit,
         onImport: (String) -> Unit,
+        onPickLocal: () -> Unit,
     ) {
         var url by remember { mutableStateOf("") }
         Dialog(
@@ -1412,6 +1746,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                         Text(if (importing) "导入中…" else "导入")
                     }
                 }
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "或选择本地 JS 文件导入",
+                        fontSize = 12.sp,
+                        color = Color(0xFF999999),
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onPickLocal) { Text("本地文件", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                }
                 Text(
                     "点击下方关闭",
                     fontSize = 12.sp,
@@ -1424,7 +1770,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 我的音乐页面（Tab 2）：收藏 / 最近播放 双 Tab，行可播放、收藏 Tab 可取消收藏。 */
+    /** 我的音乐页面（Tab 2）：收藏 / 最近播放 / 本地音乐 / 下载管理 / 自建歌单 五子页。 */
     @Composable
     private fun MyContent(
         ui: UiState,
@@ -1432,39 +1778,287 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onPlayList: (List<MusicMedia>, Int) -> Unit,
         onDownloadMedia: (MusicMedia) -> Unit,
         onToggleFavMedia: (MusicMedia) -> Unit,
+        onAddPlaylist: (MusicMedia) -> Unit,
+        onScanLocal: () -> Unit,
+        onPlayLocalFile: (File) -> Unit,
+        onCancelDownload: (MusicMedia) -> Unit,
+        onDeleteDownloaded: (File) -> Unit,
+        onOpenPlaylist: (MusicLibrary.Playlist) -> Unit,
+        onNewPlaylist: () -> Unit,
+        onRenamePlaylist: (String) -> Unit,
+        onDeletePlaylist: (String) -> Unit,
     ) {
-        var tab by remember { mutableStateOf(0) }
         Column(modifier) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                LibraryTab("收藏 (${ui.favorites.size})", tab == 0) { tab = 0 }
-                Spacer(Modifier.width(16.dp))
-                LibraryTab("最近播放 (${ui.history.size})", tab == 1) { tab = 1 }
+            // 子页签：收藏 / 最近 / 本地 / 下载 / 歌单
+            val names = listOf("收藏", "最近", "本地", "下载", "歌单")
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                names.forEachIndexed { i, name ->
+                    val count = when (i) {
+                        0 -> ui.favorites.size
+                        1 -> ui.history.size
+                        2 -> if (ui.localLoaded) ui.localMusic.size else 0
+                        3 -> ui.downloads.size + ui.doneFiles.size
+                        else -> ui.playlists.size
+                    }
+                    LibraryTab(if (count > 0) "$name $count" else name, ui.libTab == i) { ui.libTab = i }
+                    Spacer(Modifier.width(4.dp))
+                }
             }
             HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 6.dp))
-            val items = if (tab == 0) ui.favorites else ui.history
-            if (items.isEmpty()) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            // 内容区固定权重容器：子页内部用 fillMaxSize 填满（避免子页各自依赖 ColumnScope）
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (ui.libTab) {
+                    0 -> FavHistoryTab(
+                        ui.favorites, "暂无收藏",
+                        onPlayList, onDownloadMedia, onToggleFavMedia, onAddPlaylist,
+                    )
+                    1 -> FavHistoryTab(
+                        ui.history, "暂无播放记录",
+                        onPlayList, onDownloadMedia, onToggleFavMedia, onAddPlaylist,
+                    )
+                    2 -> LocalTab(ui, onPlayList, onDownloadMedia, onToggleFavMedia, onAddPlaylist, onScanLocal)
+                    3 -> DownloadTab(ui, onPlayLocalFile, onCancelDownload, onDeleteDownloaded)
+                    else -> PlaylistsTab(ui, onOpenPlaylist, onNewPlaylist, onRenamePlaylist, onDeletePlaylist)
+                }
+            }
+        }
+    }
+
+    /** 「我的音乐」收藏/最近播放共用列表。 */
+    @Composable
+    private fun FavHistoryTab(
+        items: List<MusicMedia>,
+        emptyText: String,
+        onPlayList: (List<MusicMedia>, Int) -> Unit,
+        onDownloadMedia: (MusicMedia) -> Unit,
+        onToggleFavMedia: (MusicMedia) -> Unit,
+        onAddPlaylist: (MusicMedia) -> Unit,
+    ) {
+        if (items.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(emptyText, fontSize = 13.sp, color = Color(0xFF666666))
+            }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                itemsIndexed(items) { index, media ->
+                    MusicRow(
+                        index = index,
+                        media = media,
+                        onPlay = { i -> onPlayList(items, i) },
+                        onDownload = { onDownloadMedia(media) },
+                        onFavorite = { onToggleFavMedia(media) },
+                        onArtist = {},
+                        onAddPlaylist = { onAddPlaylist(media) },
+                    )
+                    HorizontalDivider(color = Color(0x1AFFFFFF))
+                }
+            }
+        }
+    }
+
+    /** 「我的音乐」本地音乐：未扫描时给扫描入口，已扫描展示列表，可重新扫描。 */
+    @Composable
+    private fun LocalTab(
+        ui: UiState,
+        onPlayList: (List<MusicMedia>, Int) -> Unit,
+        onDownloadMedia: (MusicMedia) -> Unit,
+        onToggleFavMedia: (MusicMedia) -> Unit,
+        onAddPlaylist: (MusicMedia) -> Unit,
+        onScanLocal: () -> Unit,
+    ) {
+        when {
+            ui.localLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(30.dp))
+            }
+            !ui.localLoaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("扫描设备中的本地音乐（mp3）", fontSize = 13.sp, color = Color(0xFF666666))
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = onScanLocal) { Text("扫描本地音乐") }
+                }
+            }
+            ui.localMusic.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("未扫描到本地 mp3", fontSize = 13.sp, color = Color(0xFF666666))
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = onScanLocal) { Text("重新扫描") }
+                }
+            }
+            else -> Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("共 ${ui.localMusic.size} 首", fontSize = 12.sp, color = Color(0xFF888888))
+                    Spacer(Modifier.weight(1f))
                     Text(
-                        if (tab == 0) "暂无收藏" else "暂无播放记录",
-                        fontSize = 13.sp,
-                        color = Color(0xFF666666),
+                        "重新扫描",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onScanLocal() }.padding(horizontal = 6.dp, vertical = 4.dp),
                     )
                 }
-            } else {
-                LazyColumn(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 4.dp),
-                ) {
-                    itemsIndexed(items) { index, media ->
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    itemsIndexed(ui.localMusic) { index, media ->
                         MusicRow(
                             index = index,
                             media = media,
-                            onPlay = { i -> onPlayList(items, i) },
+                            onPlay = { i -> onPlayList(ui.localMusic, i) },
                             onDownload = { onDownloadMedia(media) },
                             onFavorite = { onToggleFavMedia(media) },
                             onArtist = {},
+                            onAddPlaylist = { onAddPlaylist(media) },
                         )
-                        HorizontalDivider(color = Color(0x1AFFFFFF))
+                        HorizontalDivider(color = Color(0x14FFFFFF))
+                    }
+                }
+            }
+        }
+    }
+
+    /** 「我的音乐」下载管理：进行中（进度+取消） + 已完成文件（播放+删除）。 */
+    @Composable
+    private fun DownloadTab(
+        ui: UiState,
+        onPlayLocalFile: (File) -> Unit,
+        onCancelDownload: (MusicMedia) -> Unit,
+        onDeleteDownloaded: (File) -> Unit,
+    ) {
+        if (ui.downloads.isEmpty() && ui.doneFiles.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("暂无下载", fontSize = 13.sp, color = Color(0xFF666666))
+            }
+            return
+        }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
+            if (ui.downloads.isNotEmpty()) {
+                item(key = "dl_head") {
+                    Text(
+                        "下载中 (${ui.downloads.size})",
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFCCCCCC),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+                itemsIndexed(ui.downloads) { index, media ->
+                    val pct = MusicDownloader.get().progressOf(media)
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${media.title} - ${media.artist}",
+                                fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { pct / 100f },
+                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text("$pct%", fontSize = 12.sp, color = Color(0xFF999999))
+                        Text(
+                            "取消",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { onCancelDownload(media) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    HorizontalDivider(color = Color(0x14FFFFFF))
+                }
+            }
+            if (ui.doneFiles.isNotEmpty()) {
+                item(key = "done_head") {
+                    Text(
+                        "已完成 (${ui.doneFiles.size})",
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFCCCCCC),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+                itemsIndexed(ui.doneFiles) { index, file ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                file.name,
+                                fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(fileSize(file.length()), fontSize = 11.sp, color = Color(0xFF888888))
+                        }
+                        Text(
+                            "播放",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { onPlayLocalFile(file) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                        )
+                        Text(
+                            "删除",
+                            fontSize = 12.sp,
+                            color = Color(0xFFFF8A80),
+                            modifier = Modifier.clickable { onDeleteDownloaded(file) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                        )
+                    }
+                    HorizontalDivider(color = Color(0x14FFFFFF))
+                }
+            }
+        }
+    }
+
+    /** 「我的音乐」自建歌单：新建 / 打开整理 / 重命名 / 删除。 */
+    @Composable
+    private fun PlaylistsTab(
+        ui: UiState,
+        onOpenPlaylist: (MusicLibrary.Playlist) -> Unit,
+        onNewPlaylist: () -> Unit,
+        onRenamePlaylist: (String) -> Unit,
+        onDeletePlaylist: (String) -> Unit,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("自建歌单", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFCCCCCC))
+                Spacer(Modifier.weight(1f))
+                Button(onClick = onNewPlaylist, modifier = Modifier.height(32.dp)) { Text("＋ 新建歌单", fontSize = 12.sp) }
+            }
+            if (ui.playlists.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("暂无歌单，点右上角新建", fontSize = 13.sp, color = Color(0xFF666666))
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    itemsIndexed(ui.playlists) { index, p ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onOpenPlaylist(p) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, fontSize = 14.sp, color = Color(0xFFE0E0E0), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${p.items.size} 首", fontSize = 11.sp, color = Color(0xFF888888))
+                            }
+                            Text(
+                                "整理",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { onOpenPlaylist(p) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                            Text(
+                                "重命名",
+                                fontSize = 12.sp,
+                                color = Color(0xFFBBBBBB),
+                                modifier = Modifier.clickable { onRenamePlaylist(p.name) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                            Text(
+                                "删除",
+                                fontSize = 12.sp,
+                                color = Color(0xFFFF8A80),
+                                modifier = Modifier.clickable { onDeletePlaylist(p.name) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
+                        }
+                        HorizontalDivider(color = Color(0x14FFFFFF))
                     }
                 }
             }
@@ -1645,6 +2239,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onDownload: (MusicMedia) -> Unit,
         onFavorite: (MusicMedia) -> Unit,
         onArtist: (MusicMedia) -> Unit,
+        onRemoveFromPlaylist: (String, Int) -> Unit,
     ) {
         Column(modifier) {
             Row(
@@ -1703,6 +2298,9 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                             onDownload = { onDownload(media) },
                             onFavorite = { onFavorite(media) },
                             onArtist = onArtist,
+                            onRemoveFromPlaylist = if (view.playlistName.isNotEmpty()) {
+                                { i -> onRemoveFromPlaylist(view.playlistName, i) }
+                            } else null,
                         )
                         HorizontalDivider(color = Color(0x14FFFFFF))
                     }
@@ -1711,7 +2309,113 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 歌单导入弹窗：粘贴网易云歌单/榜单链接（或纯 id）。 */
+    /** 加入歌单弹窗：选择已有歌单或新建。 */
+    @Composable
+    private fun PlaylistPickerDialog(
+        playlists: List<MusicLibrary.Playlist>,
+        onClose: () -> Unit,
+        onPick: (String) -> Unit,
+        onNew: () -> Unit,
+    ) {
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text(
+                    "加入歌单",
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 26.dp, bottom = 6.dp),
+                )
+                // 新建歌单入口
+                Button(
+                    onClick = onNew,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).height(36.dp),
+                ) { Text("＋ 新建歌单", fontSize = 13.sp) }
+                Spacer(Modifier.height(8.dp))
+                if (playlists.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("暂无歌单，先新建一个吧", fontSize = 13.sp, color = Color(0xFF666666))
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                        itemsIndexed(playlists) { index, p ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable { onPick(p.name) }
+                                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(p.name, fontSize = 14.sp, color = Color(0xFFE0E0E0))
+                                Spacer(Modifier.width(10.dp))
+                                Text("${p.items.size} 首", fontSize = 11.sp, color = Color(0xFF777777))
+                            }
+                            HorizontalDivider(color = Color(0x14FFFFFF))
+                        }
+                    }
+                }
+                Text(
+                    "点击下方关闭",
+                    fontSize = 12.sp,
+                    color = Color(0xFF555555),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
+                        .padding(vertical = 12.dp),
+                )
+            }
+        }
+    }
+
+    /** 歌单新建/重命名输入弹窗。 */
+    @Composable
+    private fun PlaylistInputDialog(
+        title: String,
+        initial: String,
+        onClose: () -> Unit,
+        onOk: (String) -> Unit,
+    ) {
+        var value by remember { mutableStateOf(initial) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+                Text(
+                    title,
+                    fontSize = 16.sp,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 26.dp, bottom = 6.dp),
+                )
+                Spacer(Modifier.height(20.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
+                    placeholder = { Text("歌单名称", color = Color(0xFF666666), fontSize = 14.sp) },
+                    singleLine = true,
+                    keyboardActions = KeyboardActions(onDone = { onOk(value) }),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
+                    Spacer(Modifier.width(24.dp))
+                    Button(onClick = { onOk(value) }) { Text("确定") }
+                }
+                Text(
+                    "点击下方关闭",
+                    fontSize = 12.sp,
+                    color = Color(0xFF555555),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().clickable { onClose() }
+                        .padding(vertical = 12.dp),
+                )
+            }
+        }
+    }
+
     @Composable
     private fun ImportDialog(
         onClose: () -> Unit,
@@ -1884,5 +2588,13 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         if (ms <= 0) return "--:--"
         val total = ms / 1000
         return String.format(Locale.US, "%02d:%02d", total / 60, total % 60)
+    }
+
+    /** 文件大小格式化（下载管理页展示）。 */
+    private fun fileSize(bytes: Long): String {
+        if (bytes <= 0) return ""
+        val mb = bytes / 1024.0 / 1024.0
+        return if (mb >= 1) String.format(Locale.CHINA, "%.1f MB", mb)
+        else String.format(Locale.CHINA, "%.0f KB", bytes / 1024.0)
     }
 }

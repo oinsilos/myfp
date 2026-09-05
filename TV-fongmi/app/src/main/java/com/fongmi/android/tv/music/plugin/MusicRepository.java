@@ -34,6 +34,8 @@ public final class MusicRepository {
     private static final String TAG = "MusicRepository";
     private static final String PREFS = "music_plugins";
     private static final String KEY_IMPORT = "import_urls";
+    /** 本地文件导入的插件（文件名清单，文件缓存在 filesDir/plugins/，重启无网络也能加载）。 */
+    private static final String KEY_LOCAL = "local_plugins";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
     private static final String[] BUILTIN = {"netease.js"};
     /** 单源搜索超时：某源卡死/无响应按空组处理，聚合结果不被拖死。 */
@@ -129,6 +131,7 @@ public final class MusicRepository {
                     }
                 }
                 loadImportsAsync();
+                loadLocalPlugins();
                 if (current == null && !plugins.isEmpty()) current = plugins.get(0);
             } catch (Throwable e) {
                 Log.w(TAG, "init plugins failed", e);
@@ -214,6 +217,64 @@ public final class MusicRepository {
         Plugin p = current;
         if (p == null) return CompletableFuture.completedFuture(Collections.emptyList());
         return p.source.search(keyword == null ? "" : keyword, 1, 1);
+    }
+
+    /**
+     * 导入本地 JS 插件文件（文件选择器来源）：代码写缓存目录 + 登记，重启自动加载。
+     * 成功返回 true 并自动设为当前源。
+     */
+    public CompletableFuture<Boolean> importLocalFile(String label, String code) {
+        if (code == null || code.trim().isEmpty()) return CompletableFuture.completedFuture(false);
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String name = Math.abs(code.hashCode()) + "_" + System.currentTimeMillis();
+                File file = new File(context.getFilesDir(), "plugins/" + name + ".js");
+                File dir = file.getParentFile();
+                if (dir != null && !dir.exists() && !dir.mkdirs()) Log.w(TAG, "mkdir failed " + dir);
+                Files.write(file.toPath(), code.getBytes(StandardCharsets.UTF_8));
+                rememberLocal(name);
+                return addLoaded(label, code, false);
+            } catch (Throwable e) {
+                Log.w(TAG, "import local plugin failed", e);
+                return false;
+            }
+        }, io);
+    }
+
+    /** 重启补载本地文件导入的插件（无需网络）。 */
+    private void loadLocalPlugins() {
+        for (String name : localNames()) {
+            File f = new File(context.getFilesDir(), "plugins/" + name + ".js");
+            if (!f.exists()) continue;
+            io.submit(() -> {
+                try {
+                    String code = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+                    addLoaded("本地:" + name, code, false);
+                } catch (Throwable e) {
+                    Log.w(TAG, "local plugin load failed " + name, e);
+                }
+            });
+        }
+    }
+
+    private List<String> localNames() {
+        String raw = prefs().getString(KEY_LOCAL, "");
+        List<String> list = new ArrayList<>();
+        if (raw.isEmpty()) return list;
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) list.add(arr.getString(i));
+        } catch (Exception ignored) {
+        }
+        return list;
+    }
+
+    private synchronized void rememberLocal(String name) {
+        List<String> names = localNames();
+        if (!names.contains(name)) {
+            names.add(name);
+            prefs().edit().putString(KEY_LOCAL, new JSONArray(names).toString()).apply();
+        }
     }
 
     /**
