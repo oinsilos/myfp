@@ -100,7 +100,10 @@ public class VodConfig extends BaseConfig {
 
     @Override
     protected Config defaultConfig() {
-        return Config.vod();
+        Config config = Config.vod();
+        // 首次启动无任何配置时，默认加载内置聚合点播源（assets/config/vod.json），开箱即用
+        if (config.isEmpty()) config = Config.create(VOD, "assets://config/vod.json").name("内置点播源");
+        return config;
     }
 
     @Override

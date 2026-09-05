@@ -1,6 +1,6 @@
-// 网易云音乐插件（Rhino 宿主内置示例）：真实音乐源闭环验证用。
+// 网易云音乐插件（MusicFree 契约内置音源）：搜索 / 播放 / 歌词 / 榜单 / 歌单 / 歌手全闭环。
 // - search：music.163.com/api/search/get（公开、无签名）
-// - getMediaSource：官方外链接口（部分老歌返回 404，播放内核会自动换源/跳过）
+// - getMediaSource：官方 player/url 接口 + 公开外链接口兜底（VIP/无版权歌自动抛错换源）
 // ES5 子集书写（var/普通函数/对象 async 方法简写），依赖宿主内置 axios 兼容层。
 (function () {
     'use strict';

@@ -103,7 +103,10 @@ public class LiveConfig extends BaseConfig {
 
     @Override
     protected Config defaultConfig() {
-        return Config.live();
+        Config config = Config.live();
+        // 首次启动无任何配置时，默认加载内置直播源（assets/config/live.json），开箱即用
+        if (config.isEmpty()) config = Config.create(LIVE, "assets://config/live.json").name("内置直播源");
+        return config;
     }
 
     @Override
