@@ -213,6 +213,47 @@ public final class MusicLibrary {
         }
     }
 
+    // ------------------------------------------------------------ 统一备份（收藏/历史/歌单整个音乐本地库）
+
+    /** 导出整个音乐本地库（收藏/最近/歌单），供统一备份使用。 */
+    public synchronized String exportJson() {
+        if (prefs == null) return "{}";
+        try {
+            JSONObject o = new JSONObject();
+            o.put("favorites", prefs.getString(KEY_FAVORITES, "[]"));
+            o.put("history", prefs.getString(KEY_HISTORY, "[]"));
+            o.put("playlists", prefs.getString(KEY_PLAYLISTS, "[]"));
+            return o.toString(2);
+        } catch (Exception e) {
+            Log.w(TAG, "export failed", e);
+            return "{}";
+        }
+    }
+
+    /** 恢复整个音乐本地库（覆盖式）。 */
+    public synchronized boolean importJson(String json) {
+        if (prefs == null || json == null) return false;
+        try {
+            JSONObject o = new JSONObject(json);
+            String fav = o.optString("favorites", "");
+            String his = o.optString("history", "");
+            String pls = o.optString("playlists", "");
+            // 容错解析校验：不是合法数组就当作空恢复
+            new JSONArray(fav);
+            new JSONArray(his);
+            new JSONArray(pls);
+            prefs.edit()
+                    .putString(KEY_FAVORITES, fav)
+                    .putString(KEY_HISTORY, his)
+                    .putString(KEY_PLAYLISTS, pls)
+                    .apply();
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "import failed", e);
+            return false;
+        }
+    }
+
     // ------------------------------------------------------------ 内部
 
     private int indexOf(List<MusicMedia> list, MusicMedia m) {

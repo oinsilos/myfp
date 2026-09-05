@@ -43,6 +43,7 @@ import com.fongmi.android.tv.ui.fragment.SettingDecodeFragment;
 import com.fongmi.android.tv.ui.fragment.SettingFragment;
 import com.fongmi.android.tv.ui.fragment.SettingPlayerFragment;
 import com.fongmi.android.tv.ui.fragment.SettingPreloadFragment;
+import com.fongmi.android.tv.ui.fragment.SharedSettingFragment;
 import com.fongmi.android.tv.ui.fragment.VodFragment;
 import com.fongmi.android.tv.utils.FileChooser;
 import com.fongmi.android.tv.utils.Notify;
@@ -113,14 +114,18 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     }
 
     private void initFragment(Bundle savedInstanceState) {
-        mManager = new FragmentStateManager(mBinding.container, getSupportFragmentManager(), position -> switch (position) {
-            case 0 -> VodFragment.newInstance();
-            case 1 -> SettingFragment.newInstance();
-            case 2 -> SettingPlayerFragment.newInstance();
-            case 3 -> SettingDanmakuFragment.newInstance();
-            case 4 -> SettingPreloadFragment.newInstance();
-            case 5 -> SettingDecodeFragment.newInstance();
-            default -> null;
+        mManager = new FragmentStateManager(mBinding.container, getSupportFragmentManager(), position -> {
+            // 0 视频点播 / 1 统一设置（三板块共用）/ 2 视频专属设置（fongmi 原设置迁移入口）及以下
+            return switch (position) {
+                case 0 -> VodFragment.newInstance();
+                case 1 -> SharedSettingFragment.newInstance();
+                case 2 -> SettingFragment.newInstance();
+                case 3 -> SettingPlayerFragment.newInstance();
+                case 4 -> SettingDanmakuFragment.newInstance();
+                case 5 -> SettingPreloadFragment.newInstance();
+                case 6 -> SettingDecodeFragment.newInstance();
+                default -> null;
+            };
         });
         if (savedInstanceState == null) change(0);
     }
@@ -241,11 +246,13 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
     protected void onBackInvoked() {
         if (!mBinding.navigation.getMenu().findItem(R.id.vod).isVisible()) {
             setNavigation();
-        } else if (mManager.isVisible(4) || mManager.isVisible(5)) {
+        } else if (mManager.isVisible(6) || mManager.isVisible(5)) { // 解码/预加载 → 播放器设置
+            change(3);
+        } else if (mManager.isVisible(4) || mManager.isVisible(3)) { // 弹幕/播放器 → 视频专属设置
             change(2);
-        } else if (mManager.isVisible(3) || mManager.isVisible(2)) {
+        } else if (mManager.isVisible(2)) { // 视频专属设置 → 统一设置
             change(1);
-        } else if (mManager.isVisible(1)) {
+        } else if (mManager.isVisible(1)) { // 统一设置 → 首页
             change(0);
         } else if (mManager.canBack(0)) {
             if (PlaybackService.isRunning()) Util.moveToBackground(this);

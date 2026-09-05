@@ -31,7 +31,6 @@ public final class ReaderStore {
     private static final String KEY_PROGRESS = "progress";
     private static final String KEY_BOOKMARKS = "bookmarks";
     private static final String KEY_SETTINGS = "reader_settings";
-    private static final String KEY_RULES = "text_rules";
 
     private static volatile ReaderStore instance;
 
@@ -72,109 +71,6 @@ public final class ReaderStore {
         }
     }
 
-    // ------------------------------------------------------------ 正文规则（净化/高亮/词典）
-
-    /** 高亮规则：正则/关键词 + 颜色（例如 #FFD54F）。 */
-    public static final class HighlightRule {
-        public final String p;
-        public final String c;
-
-        public HighlightRule(String p, String c) {
-            this.p = p == null ? "" : p;
-            this.c = c == null ? "" : c;
-        }
-    }
-
-    /** 词典规则：词 + 释义。 */
-    public static final class DictRule {
-        public final String w;
-        public final String d;
-
-        public DictRule(String w, String d) {
-            this.w = w == null ? "" : w;
-            this.d = d == null ? "" : d;
-        }
-    }
-
-    private List<String> clears = new ArrayList<>();
-    private List<HighlightRule> highlights = new ArrayList<>();
-    private List<DictRule> dicts = new ArrayList<>();
-
-    public List<String> clears() {
-        return clears;
-    }
-
-    public List<HighlightRule> highlights() {
-        return highlights;
-    }
-
-    public List<DictRule> dicts() {
-        return dicts;
-    }
-
-    /** 全量保存正文规则（UI 编辑完成后调用）。 */
-    public void saveRules(List<String> clearRules, List<HighlightRule> highlightRules, List<DictRule> dictRules) {
-        clears = new ArrayList<>(clearRules == null ? new ArrayList<>() : clearRules);
-        highlights = new ArrayList<>(highlightRules == null ? new ArrayList<>() : highlightRules);
-        dicts = new ArrayList<>(dictRules == null ? new ArrayList<>() : dictRules);
-        if (prefs == null) return;
-        try {
-            JSONArray cl = new JSONArray();
-            for (String c : clears) cl.put(c);
-            JSONArray hl = new JSONArray();
-            for (HighlightRule h : highlights) {
-                JSONObject o = new JSONObject();
-                o.put("p", h.p);
-                o.put("c", h.c);
-                hl.put(o);
-            }
-            JSONArray dc = new JSONArray();
-            for (DictRule d : dicts) {
-                JSONObject o = new JSONObject();
-                o.put("w", d.w);
-                o.put("d", d.d);
-                dc.put(o);
-            }
-            JSONObject root = new JSONObject();
-            root.put("clears", cl);
-            root.put("highlights", hl);
-            root.put("dicts", dc);
-            prefs.edit().putString(KEY_RULES, root.toString()).apply();
-        } catch (Exception e) {
-            Log.w(TAG, "save rules failed", e);
-        }
-    }
-
-    private void loadRules() {
-        if (prefs == null) return;
-        try {
-            JSONObject root = new JSONObject(prefs.getString(KEY_RULES, "{}"));
-            clears = new ArrayList<>();
-            highlights = new ArrayList<>();
-            dicts = new ArrayList<>();
-            JSONArray cl = root.optJSONArray("clears");
-            if (cl != null) for (int i = 0; i < cl.length(); i++) clears.add(cl.optString(i));
-            JSONArray hl = root.optJSONArray("highlights");
-            if (hl != null) {
-                for (int i = 0; i < hl.length(); i++) {
-                    JSONObject o = hl.optJSONObject(i);
-                    if (o == null) continue;
-                    highlights.add(new HighlightRule(o.optString("p"), o.optString("c")));
-                }
-            }
-            JSONArray dc = root.optJSONArray("dicts");
-            if (dc != null) {
-                for (int i = 0; i < dc.length(); i++) {
-                    JSONObject o = dc.optJSONObject(i);
-                    if (o == null) continue;
-                    dicts.add(new DictRule(o.optString("w"), o.optString("d")));
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "load rules failed", e);
-        }
-    }
-
     /** 书签（某本书内一个位置）：章号 + 章内段落号。 */
     public static final class Bookmark {
         public final int chapter;
@@ -207,7 +103,6 @@ public final class ReaderStore {
         prefs = context.getApplicationContext().getSharedPreferences("reader_library", Context.MODE_PRIVATE);
         cacheRoot = new File(context.getFilesDir(), "reader_cache");
         loadSettings();
-        loadRules();
     }
 
     // ------------------------------------------------------------ 阅读设置
@@ -728,7 +623,6 @@ public final class ReaderStore {
             o.put("shelf", new JSONArray(prefs.getString(KEY_SHELF, "[]")));
             o.put("progress", new JSONObject(prefs.getString(KEY_PROGRESS, "{}")));
             o.put("bookmarks", new JSONObject(prefs.getString(KEY_BOOKMARKS, "{}")));
-            o.put("text_rules", new JSONObject(prefs.getString(KEY_RULES, "{}")));
             o.put("reader_settings", new JSONObject(prefs.getString(KEY_SETTINGS, "{}")));
             o.put("reader_stats", new JSONObject(prefs.getString(KEY_STATS, "{}")));
             return o.toString(2);
@@ -750,15 +644,12 @@ public final class ReaderStore {
             if (progress != null) e.putString(KEY_PROGRESS, progress.toString());
             JSONObject bookmarks = o.optJSONObject("bookmarks");
             if (bookmarks != null) e.putString(KEY_BOOKMARKS, bookmarks.toString());
-            JSONObject rules = o.optJSONObject("text_rules");
-            if (rules != null) e.putString(KEY_RULES, rules.toString());
             JSONObject settings = o.optJSONObject("reader_settings");
             if (settings != null) e.putString(KEY_SETTINGS, settings.toString());
             JSONObject stats = o.optJSONObject("reader_stats");
             if (stats != null) e.putString(KEY_STATS, stats.toString());
             e.apply();
             loadSettings();
-            loadRules();
             return true;
         } catch (Exception ex) {
             Log.w(TAG, "import failed", ex);

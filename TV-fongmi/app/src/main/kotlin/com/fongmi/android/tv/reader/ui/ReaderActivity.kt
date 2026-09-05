@@ -43,7 +43,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -71,13 +70,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -93,6 +88,8 @@ import com.fongmi.android.tv.reader.EpubImporter
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
+import com.fongmi.android.tv.ui.common.UnifiedBackup
+import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
 import com.fongmi.android.tv.utils.Notify
 import com.github.catvod.net.OkHttp
 import java.nio.charset.StandardCharsets
@@ -125,9 +122,6 @@ class ReaderActivity : AppCompatActivity() {
         var sources by mutableStateOf<List<BookSource>>(emptyList())
         var sourceDialogVisible by mutableStateOf(false)
         var importing by mutableStateOf(false)
-        // 书源 JSON 规则编辑（含 @js: 源码）
-        var sourceEditVisible by mutableStateOf(false)
-        var sourceEditTarget by mutableStateOf<String?>(null)
         // 书籍详情 + 目录
         var book by mutableStateOf<Book?>(null)
         var detailLoading by mutableStateOf(false)
@@ -166,15 +160,10 @@ class ReaderActivity : AppCompatActivity() {
         var fulltextKeyword by mutableStateOf("")
         var fulltextSearching by mutableStateOf(false)
         var fulltextHits by mutableStateOf<List<FulltextHit>>(emptyList())
-        // 漫画阅读：章节含图片时提供 漫画/文字 切换；阅读统计弹窗
-        var comicMode by mutableStateOf(false)
-        var hasImages by mutableStateOf(false)
+        // 阅读统计弹窗
         var statsVisible by mutableStateOf(false)
-        // 备份 / 恢复
-        var backupVisible by mutableStateOf(false)
-        // 正文规则（净化/高亮/词典）编辑弹窗 + 词典命中弹窗
-        var rulesDialogVisible by mutableStateOf(false)
-        var dictDialogText by mutableStateOf<String?>(null)
+        // 备份 / 恢复 + 主题（统一设置弹窗，动画音乐小说共用同一份备份）
+        var unifiedSettingsVisible by mutableStateOf(false)
         // 缓存管理页：列出已缓存的书，支持单本/全部清除
         var cacheMode by mutableStateOf(false)
         var cacheBooks by mutableStateOf<List<ReaderStore.CachedBook>>(emptyList())
@@ -213,6 +202,8 @@ class ReaderActivity : AppCompatActivity() {
     private val ttsSpeaker = TtsSpeaker(this)
     /** 切章后等正文就绪继续朗读（自动切章 / 手动上下章）。 */
     private var ttsPendingCont = false
+    /** 朗读排队：正文加载完成后自动开始（首次点朗读时正文未就绪）。 */
+    private var ttsPendingStart = false
     /** RSS 文章收藏页的伪源 key（rssActive 取此值表示在看收藏）。 */
     private val RSS_FAV = "__favorites__"
     /** 当前章首可见段落号（LazyColumn 滚动实时更新，退出/切章时落盘）。 */
@@ -351,7 +342,7 @@ class ReaderActivity : AppCompatActivity() {
                     onOpenFulltext = { ui.fulltextVisible = true },
                     onOpenCacheHit = ::openFromCacheHit,
                     onOpenStats = { ui.statsVisible = true },
-                    onOpenBackup = { ui.backupVisible = true },
+                    onOpenBackup = { ui.unifiedSettingsVisible = true },
                     onExportBackup = { backupExportPicker.launch("reader_backup.json") },
                     onImportBackup = { backupImportPicker.launch(arrayOf("*/*")) },
                     onOpenCache = { ui.cacheMode = true; refreshCacheBooks() },
@@ -413,10 +404,6 @@ class ReaderActivity : AppCompatActivity() {
                     onToggleSource = { toggleSource(it) },
                     onRemoveSource = { removeSource(it) },
                     onTestSource = ::testSource,
-                    onEditSource = { url ->
-                        ui.sourceEditTarget = url
-                        ui.sourceEditVisible = true
-                    },
                 )
             }
         }
@@ -917,8 +904,12 @@ class ReaderActivity : AppCompatActivity() {
     /** 开始朗读当前章：从当前首可见段落读到章尾（自动切章由 onDone 驱动）。 */
     private fun beginTts(fromPara: Int = currentParaIndex) {
         if (ui.book == null) return
-        if (ui.content.isBlank() || ui.comicMode) {
-            Notify.show("正文未加载，无法朗读")
+        // 正文还在加载（网速慢/详情页）：排队等待，正文就绪后自动开始（maybeContinueTts 消费）
+        if (ui.contentLoading || ui.content.isBlank()) {
+            ttsPendingStart = true
+            ui.ttsVisible = true
+            ui.ttsStatus = "正文加载中…就绪后自动开始"
+            Notify.show("正文加载中，完成后自动开始朗读")
             return
         }
         val paras = htmlToParagraphs(ui.content)
@@ -926,6 +917,7 @@ class ReaderActivity : AppCompatActivity() {
             Notify.show("本章无可朗读内容")
             return
         }
+        ttsPendingStart = false
         ttsPendingCont = false
         ui.ttsVisible = true
         ui.ttsStatus = "准备朗读…"
@@ -949,6 +941,7 @@ class ReaderActivity : AppCompatActivity() {
     private fun stopTts() {
         ttsSpeaker.stop()
         ttsPendingCont = false
+        ttsPendingStart = false
         ui.ttsPlaying = false
         ui.ttsStatus = ""
     }
@@ -972,8 +965,13 @@ class ReaderActivity : AppCompatActivity() {
         step(delta)
     }
 
-    /** 切章后正文就绪回调：若处于朗读会话且待续，就从新章头继续读。 */
+    /** 切章/首次点朗读时正文未就绪：正文一到齐就自动开始（consumes pending flags）。 */
     private fun maybeContinueTts() {
+        if (ttsPendingStart) {
+            ttsPendingStart = false
+            if (ui.ttsVisible || ui.ttsPlaying || ttsSpeaker.isActive) beginTts()
+            return
+        }
         if (!ttsPendingCont) return
         ttsPendingCont = false
         if (ui.ttsPlaying || ttsSpeaker.isActive) beginTts()
@@ -1132,29 +1130,21 @@ class ReaderActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** 导出备份：阅读库 + 书源 + 订阅源合成单个 JSON。 */
+    /** 导出统一备份：阅读库 + 书源 + 订阅源 + 音乐收藏/歌单 单文件（与音乐模块共用）。 */
     private fun exportBackup(uri: Uri) {
         Thread {
             try {
-                val root = try {
-                    JSONObject(ReaderStore.get().exportJson())
-                } catch (e: Exception) {
-                    JSONObject()
-                }
-                root.put("sources", JSONObject().put("items", ReaderRepository.get().exportSources()).toString())
-                root.put("rss_sources", RssRepository.get().exportSources())
-                root.put("rss_favorites", RssRepository.get().exportFavorites())
                 contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
-                    it.write(root.toString(2))
+                    it.write(UnifiedBackup.export())
                 }
-                runOnUiThread { Notify.show("备份完成（书架/进度/书签/规则/书源/订阅源）") }
+                runOnUiThread { Notify.show("备份完成（书架/进度/书签/设置/书源/订阅源/音乐收藏歌单）") }
             } catch (e: Exception) {
                 runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
             }
         }.start()
     }
 
-    /** 恢复备份：解析 JSON 后逐项覆盖阅读库 / 书源 / 订阅源。 */
+    /** 恢复统一备份：解析 JSON 后逐项覆盖各模块本地库。 */
     private fun importBackup(uri: Uri) {
         Thread {
             try {
@@ -1164,23 +1154,13 @@ class ReaderActivity : AppCompatActivity() {
                     runOnUiThread { Notify.show("备份文件为空") }
                     return@Thread
                 }
-                val root = JSONObject(text)
-                var ok = ReaderStore.get().importJson(text)
-                val srcs = root.optString("sources", "")
-                if (srcs.isNotBlank()) {
-                    val items = try { JSONObject(srcs).optString("items", "") } catch (e: Exception) { "" }
-                    ok = ok || (items.isNotBlank() && ReaderRepository.get().importSources(items))
-                }
-                val rss = root.optString("rss_sources", "")
-                if (rss.isNotBlank()) ok = ok || RssRepository.get().importSources(rss)
-                val rfav = root.optString("rss_favorites", "")
-                if (rfav.isNotBlank()) ok = ok || RssRepository.get().importFavorites(rfav)
+                val ok = UnifiedBackup.import(text)
                 refreshSources()
                 refreshRssSources()
                 refreshShelves()
                 refreshRssFavs()
                 runOnUiThread {
-                    Notify.show(if (ok) "恢复完成" else "恢复失败：不是有效的备份文件")
+                    Notify.show(if (ok) "恢复完成（阅读/订阅/音乐）" else "恢复失败：不是有效的备份文件")
                 }
             } catch (e: Exception) {
                 runOnUiThread { Notify.show("恢复失败：" + (e.message ?: "")) }
@@ -1448,7 +1428,6 @@ class ReaderActivity : AppCompatActivity() {
         onToggleSource: (String) -> Unit,
         onRemoveSource: (String) -> Unit,
         onTestSource: (String) -> Unit,
-        onEditSource: (String) -> Unit,
     ) {
         var keyword by remember { mutableStateOf("") }
         Box(Modifier.fillMaxSize().background(Color(0xFF141414))) {
@@ -1463,9 +1442,6 @@ class ReaderActivity : AppCompatActivity() {
                         onNext = onNext,
                         onAddBookmark = onAddBookmark,
                         onOpenSettings = onOpenSettings,
-                        showComicToggle = ui.hasImages,
-                        comicMode = ui.comicMode,
-                        onToggleComic = { ui.comicMode = !ui.comicMode },
                         ttsPlaying = ui.ttsPlaying,
                         onToggleTts = { beginTtsLong() },
                         favVisible = ui.book?.source == "rss",
@@ -1597,23 +1573,7 @@ class ReaderActivity : AppCompatActivity() {
                 onToggle = onToggleSource,
                 onRemove = onRemoveSource,
                 onTest = onTestSource,
-                onEdit = onEditSource,
             )
-        }
-        if (ui.sourceEditVisible) {
-            val t = ui.sourceEditTarget?.let { u -> ui.sources.firstOrNull { it.url == u } }
-            if (t != null) {
-                SourceEditDialog(
-                    target = t,
-                    onClose = {
-                        ui.sourceEditVisible = false
-                        ui.sourceEditTarget = null
-                    },
-                    onSaved = { refreshSources() },
-                )
-            } else {
-                ui.sourceEditVisible = false
-            }
         }
         if (ui.importDialogVisible) {
             ImportDialog(
@@ -1652,17 +1612,23 @@ class ReaderActivity : AppCompatActivity() {
                 },
             )
         }
-        if (ui.backupVisible) {
-            BackupDialog(
+        if (ui.unifiedSettingsVisible) {
+            UnifiedSettingsDialog(
+                theme = ui.theme,
+                fontSize = ui.fontSize,
+                lineHeight = ui.lineHeight,
+                onTheme = { ui.theme = it; applySettings() },
+                onFontSize = { ui.fontSize = it; applySettings() },
+                onLineHeight = { ui.lineHeight = it; applySettings() },
                 onExport = {
-                    ui.backupVisible = false
+                    ui.unifiedSettingsVisible = false
                     onExportBackup()
                 },
                 onImport = {
-                    ui.backupVisible = false
+                    ui.unifiedSettingsVisible = false
                     onImportBackup()
                 },
-                onClose = { ui.backupVisible = false },
+                onClose = { ui.unifiedSettingsVisible = false },
             )
         }
         if (ui.settingsDialogVisible) {
@@ -1670,24 +1636,11 @@ class ReaderActivity : AppCompatActivity() {
                 fontSize = ui.fontSize,
                 lineHeight = ui.lineHeight,
                 theme = ui.theme,
-                tocRegex = ReaderStore.get().txtTocRegex,
                 onFontSize = { ui.fontSize = it; applySettings() },
                 onLineHeight = { ui.lineHeight = it; applySettings() },
                 onTheme = { ui.theme = it; applySettings() },
-                onTocRegex = { v ->
-                    ReaderStore.get().txtTocRegex = v.trim()
-                    ReaderStore.get().saveSettings()
-                },
-                onOpenRules = { ui.rulesDialogVisible = true },
                 onClose = { ui.settingsDialogVisible = false },
             )
-        }
-        if (ui.rulesDialogVisible) {
-            RulesDialog(onClose = { ui.rulesDialogVisible = false })
-        }
-        val ddict = ui.dictDialogText
-        if (ddict != null) {
-            DictDialog(text = ddict, dicts = ReaderStore.get().dicts(), onClose = { ui.dictDialogText = null })
         }
         if (ui.rssSourceDialogVisible) {
             RssSourceDialog(
@@ -2608,9 +2561,6 @@ class ReaderActivity : AppCompatActivity() {
         onNext: () -> Unit,
         onAddBookmark: () -> Unit,
         onOpenSettings: () -> Unit,
-        showComicToggle: Boolean,
-        comicMode: Boolean,
-        onToggleComic: () -> Unit,
         ttsPlaying: Boolean,
         onToggleTts: () -> Unit,
         favVisible: Boolean,
@@ -2627,10 +2577,6 @@ class ReaderActivity : AppCompatActivity() {
                 Text(if (favOn) "★ 已藏" else "☆ 收藏", fontSize = 13.sp, color = if (favOn) Color(0xFFFFD54F) else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable(onClick = onToggleFav).padding(horizontal = 6.dp, vertical = 6.dp))
             }
-            if (showComicToggle) {
-                Text(if (comicMode) "文字" else "漫画", fontSize = 13.sp, color = Color(0xFFFFD54F),
-                    modifier = Modifier.clickable(onClick = onToggleComic).padding(horizontal = 6.dp, vertical = 6.dp))
-            }
             Text("☆ 书签", fontSize = 13.sp, color = Color(0xFFFFD54F),
                 modifier = Modifier.clickable(onClick = onAddBookmark).padding(horizontal = 6.dp, vertical = 6.dp))
             Text(if (ttsPlaying) "停止朗读" else "朗读", fontSize = 13.sp,
@@ -2645,10 +2591,17 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
+    /** 正文块：段落 / 图片 / 视频，按原文档顺序内嵌渲染（图片视频直接混在文章流里，不再切换模式）。 */
+    private sealed class RBlock {
+        data class Text(val text: String) : RBlock()
+        data class Image(val url: String) : RBlock()
+        data class Video(val url: String) : RBlock()
+    }
+
     /**
-     * 正文阅读（对齐 legado/国内小说 App 的做法：不用 WebView，Compose 自己排版文本）。
-     * - 段落是渲染与定位的最小单位：断点/书签存“章内段落号”，打开时 scrollToItem 精确恢复，与字号/布局无关
-     * - 字号/行距/主题实时应用到 Text，进度条按段落比例
+     * 正文阅读：段落 + 图片 + 视频全部按原顺序内嵌在同一个 LazyColumn（对齐国内小说/资讯 App 排版）。
+     * - 块（段落/图片/视频）是渲染与定位的最小单位：断点/书签存「块号」，打开时 scrollToItem 精确恢复
+     * - 字号/行距/主题实时应用到 Text，进度条按块比例
      */
     @Composable
     private fun ReaderBody(loading: Boolean, content: String, error: String) {
@@ -2665,88 +2618,61 @@ class ReaderActivity : AppCompatActivity() {
             }
             return
         }
-        // 漫画阅读：章节正文带 <img> 时提供 漫画/文字 切换；漫画模式直接竖排渲染图片
-        val images = remember(content) { extractImageUrls(content) }
-        LaunchedEffect(images) { ui.hasImages = images.isNotEmpty() }
-        if (images.isNotEmpty() && ui.comicMode) {
-            ComicBody(images)
-            return
-        }
         val fs = ui.fontSize.coerceIn(12, 30)
         val lineSize = (fs * ui.lineHeight).coerceAtLeast(fs + 2f).sp
         val (bg, fg) = themeColors()
-        val paras = remember(content) { htmlToParagraphs(content) }
-        val clears = ReaderStore.get().clears()
-        val highlights = ReaderStore.get().highlights()
-        val dicts = ReaderStore.get().dicts()
-        // 段落 → 净化后带高亮/词典标注的富文本（规则变化会自动重算）
-        val styledParas = remember(content, clears, highlights, dicts) {
-            paras.mapNotNull { p ->
-                val cleaned = applyClears(p, clears)
-                if (cleaned.trim().isEmpty()) null else styledPara(cleaned, highlights, dicts)
-            }
-        }
+        val base = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url ?: ""
+        val blocks = remember(content, base) { contentBlocks(content, base) }
         val listState = rememberLazyListState()
-        // 渲染标识：正文 + 字号 + 行距 + 主题任一变化 → 恢复同一段落位置（设置变更重排等价保留进度）
+        // 渲染标识：正文 + 字号 + 行距 + 主题任一变化 → 恢复同一块位置（设置变更重排等价保留进度）
         val renderKey = content.hashCode().toString() + "|$fs|${ui.lineHeight}|${ui.theme}"
         Column(Modifier.fillMaxSize().background(bg)) {
-            // 订阅源视频：识别正文里的 mp4/m3u8 直链，内嵌播放
-            if (ui.book?.source == "rss") {
-                val videos = remember(content) { extractVideoUrls(content) }
-                if (videos.isNotEmpty()) {
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                            .background(Color(0xFF16222B)).padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("订阅视频：", fontSize = 12.sp, color = Color(0xFFFFD54F))
-                        videos.forEachIndexed { i, v ->
-                            Text(
-                                "▶ 播放 ${i + 1}",
-                                fontSize = 12.sp,
-                                color = Color(0xFF81C784),
-                                modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0x26FFFFFF))
-                                    .clickable { ui.videoPlayUrl = v }
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                        }
-                    }
-                }
-            }
             LinearProgressIndicator(
                 progress = { ui.readPercent },
                 modifier = Modifier.fillMaxWidth().height(3.dp),
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                itemsIndexed(styledParas) { _, styled ->
-                    ClickableText(
-                        text = styled,
-                        style = androidx.compose.ui.text.TextStyle(
+                itemsIndexed(blocks) { _, blk ->
+                    when (blk) {
+                        is RBlock.Text -> Text(
+                            blk.text,
                             color = fg,
                             fontSize = fs.sp,
                             lineHeight = lineSize,
-                        ),
-                        onClick = { ui.dictDialogText = styled.text },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp),
-                    )
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp),
+                        )
+                        is RBlock.Image -> InlineImage(blk.url)
+                        is RBlock.Video -> Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp)
+                                .clip(RoundedCornerShape(8.dp)).background(Color(0x1FFFFFFF))
+                                .clickable { ui.videoPlayUrl = blk.url }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("▶ 视频", fontSize = 13.sp, color = Color(0xFF81C784))
+                            Spacer(Modifier.width(10.dp))
+                            Text(blk.url, fontSize = 11.sp, color = Color(0xFF999999), maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Spacer(Modifier.width(10.dp))
+                            Text("点击播放", fontSize = 12.sp, color = Color(0xFF4FC3F7))
+                        }
+                    }
                 }
             }
         }
-        // 初次布局 / 内容或设置变化时：一次性恢复到目标段落（消费 restorePara）
-        LaunchedEffect(styledParas, renderKey) {
+        // 初次布局 / 内容或设置变化时：一次性恢复到目标块（消费 restorePara）
+        LaunchedEffect(blocks, renderKey) {
             val rp = restorePara
-            if (rp in styledParas.indices) {
+            if (rp in blocks.indices) {
                 restorePara = -1
                 listState.scrollToItem(rp)
             }
             currentParaIndex = listState.firstVisibleItemIndex
-            currentParaCount = styledParas.size
-            ui.readPercent = if (styledParas.isEmpty()) 0f else (currentParaIndex.toFloat() / styledParas.size)
+            currentParaCount = blocks.size
+            ui.readPercent = if (blocks.isEmpty()) 0f else (currentParaIndex.toFloat() / blocks.size)
         }
-        // 滚动跟踪：首可见段落号变化 → 节流保存断点
-        LaunchedEffect(styledParas) {
+        // 滚动跟踪：首可见块号变化 → 节流保存断点
+        LaunchedEffect(blocks) {
             snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
                 if (idx != currentParaIndex) {
                     currentParaIndex = idx
@@ -2756,39 +2682,9 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** 漫画正文：竖排渲染章节里的全部图片，滚动位置计入阅读进度。 */
+    /** 内嵌图片：Glide 整宽加载，失败/加载中给占位反馈。 */
     @Composable
-    private fun ComicBody(urls: List<String>) {
-        val base = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url ?: ""
-        val listState = rememberLazyListState()
-        LaunchedEffect(urls) {
-            val rp = restorePara
-            if (rp in urls.indices) {
-                restorePara = -1
-                listState.scrollToItem(rp)
-            }
-            currentParaIndex = listState.firstVisibleItemIndex
-            currentParaCount = urls.size
-            ui.readPercent = if (urls.isEmpty()) 0f else (currentParaIndex.toFloat() / urls.size).coerceIn(0f, 1f)
-        }
-        LaunchedEffect(urls) {
-            snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
-                if (idx != currentParaIndex) {
-                    currentParaIndex = idx
-                    maybeAutoSaveProgress()
-                }
-            }
-        }
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().background(Color(0xFF101010))) {
-            itemsIndexed(urls) { _, u ->
-                ComicImage(resolveImageSrc(base, u))
-            }
-        }
-    }
-
-    /** 单页漫画图：Glide 整宽加载，失败/加载中给占位反馈。 */
-    @Composable
-    private fun ComicImage(url: String) {
+    private fun InlineImage(url: String) {
         val context = LocalContext.current
         var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
         var failed by remember(url) { mutableStateOf(false) }
@@ -2796,7 +2692,7 @@ class ReaderActivity : AppCompatActivity() {
             bitmap = withContext(Dispatchers.IO) {
                 try {
                     Glide.with(context).asBitmap()
-                        .apply(RequestOptions().timeout(12_000))
+                        .apply(RequestOptions().timeout(15_000))
                         .load(url).submit().get()
                 } catch (e: Exception) {
                     null
@@ -2805,28 +2701,51 @@ class ReaderActivity : AppCompatActivity() {
             if (bitmap == null) failed = true
         }
         val bmp = bitmap
-        if (failed) {
-            Box(Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
-                Text("图片加载失败", fontSize = 12.sp, color = Color(0xFF666666))
-            }
-        } else if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "漫画页",
-                contentScale = ContentScale.FillWidth,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        } else {
-            Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(26.dp))
+        Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            when {
+                failed -> Text("图片加载失败", fontSize = 12.sp, color = Color(0xFF666666),
+                    modifier = Modifier.padding(vertical = 18.dp))
+                bmp != null -> Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "正文图片",
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                else -> CircularProgressIndicator(modifier = Modifier.size(26.dp).padding(vertical = 24.dp))
             }
         }
     }
-
-    /** 提取正文 HTML 里的图片地址（漫画章节判定与漫画模式渲染用）。 */
-    private fun extractImageUrls(html: String): List<String> {
-        val re = Regex("(?i)<img[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']")
-        return re.findAll(html).map { it.groupValues[1] }.filter { it.isNotBlank() }.toList()
+    /** HTML 正文 → 有序块列表：段落文本与 <img>、mp4/m3u8 视频直链按原文档顺序交错（图片视频内嵌文中）。 */
+    private fun contentBlocks(html: String, base: String): List<RBlock> {
+        if (html.isBlank()) return emptyList()
+        val imgRe = Regex("(?i)<img[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']")
+        val vidRe = Regex("""https?://[^\s"'<>),；，。！？】]+\.(?:m3u8|mp4)(?:[?#][^\s"'<>),；，。！？】]*)?(?=[\s"'<>),；，。！？】]|$)""", RegexOption.IGNORE_CASE)
+        data class M(val start: Int, val end: Int, val url: String, val isImg: Boolean)
+        val marks = ArrayList<M>()
+        imgRe.findAll(html).forEach { marks.add(M(it.range.first, it.range.last + 1, resolveImageSrc(base, it.groupValues[1]), true)) }
+        vidRe.findAll(html).forEach { marks.add(M(it.range.first, it.range.last + 1, it.value, false)) }
+        marks.sortBy { it.start }
+        val out = ArrayList<RBlock>()
+        val sb = StringBuilder()
+        fun flush() {
+            val t = sb.toString()
+            sb.setLength(0)
+            if (t.isBlank()) return
+            // 文本切片里若有残留视频链接（非独立标签），剔除避免重复
+            val cleaned = vidRe.replace(t, " ")
+            for (p in htmlToParagraphs(cleaned)) if (p.isNotBlank()) out.add(RBlock.Text(p))
+        }
+        var cursor = 0
+        for (m in marks) {
+            if (m.start > cursor) sb.append(html, cursor, m.start)
+            flush()
+            if (m.isImg) out.add(RBlock.Image(m.url)) else out.add(RBlock.Video(m.url))
+            cursor = m.end
+        }
+        if (cursor < html.length) sb.append(html, cursor, html.length)
+        flush()
+        return out
     }
 
     /** 图片相对路径按章节目录解析成绝对地址（data/ 等协议原样返回）。 */
@@ -2842,62 +2761,10 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** 净化规则：逐个正则删除匹配文本（支持去广告行/无关内容）。 */
-    private fun applyClears(text: String, clears: List<String>): String {
-        var t = text
-        for (c in clears) {
-            if (c.isBlank()) continue
-            try {
-                t = Regex(c, RegexOption.IGNORE_CASE).replace(t, "")
-            } catch (ignored: Exception) {
-            }
-        }
-        return t
-    }
-
-    /** 高亮/词典标注：给命中词加 SpanStyle（高亮=黄，词典=蓝加下划线）。 */
-    private fun styledPara(text: String, highlights: List<ReaderStore.HighlightRule>, dicts: List<ReaderStore.DictRule>): AnnotatedString {
-        val builder = AnnotatedString.Builder(text)
-        for (r in highlights) {
-            if (r.p.isBlank()) continue
-            try {
-                val color = parseHexColor(r.c, 0xFFFFD54F)
-                for (m in Regex(r.p, RegexOption.IGNORE_CASE).findAll(text)) {
-                    builder.addStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold), m.range.first, m.range.last + 1)
-                }
-            } catch (ignored: Exception) {
-            }
-        }
-        for (r in dicts) {
-            if (r.w.isBlank()) continue
-            try {
-                for (m in Regex(Regex.escape(r.w), RegexOption.IGNORE_CASE).findAll(text)) {
-                    builder.addStyle(
-                        SpanStyle(color = Color(0xFF4FC3F7), fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline),
-                        m.range.first, m.range.last + 1,
-                    )
-                }
-            } catch (ignored: Exception) {
-            }
-        }
-        return builder.toAnnotatedString()
-    }
-
-    /** "#RRGGBB" → Color（非法则回退默认色 def）。 */
-    private fun parseHexColor(hex: String, def: Long): Color {
-        if (hex.isBlank()) return Color(def)
-        return try {
-            Color(hex.trim().removePrefix("#").toLong(16) or 0xFF000000L)
-        } catch (e: Exception) {
-            Color(def)
-        }
-    }
-
     /** HTML 正文 → 段落列表：块级/换行标签转换行，剥除其余标签，解码常用实体。 */
     private fun htmlToParagraphs(html: String): List<String> {
         var s = html ?: return emptyList()
         s = Regex("(?i)<(br|/p|/div|/h[1-6]|/li|/section)\\s*/?>").replace(s, "\n")
-        s = Regex("(?i)<img[^>]*>").replace(s, "[图片]\n")
         s = Regex("(?i)<[^>]+>").replace(s, "")
         s = s.replace("&nbsp;", " ")
             .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
@@ -2924,7 +2791,6 @@ class ReaderActivity : AppCompatActivity() {
         onToggle: (String) -> Unit,
         onRemove: (String) -> Unit,
         onTest: (String) -> Unit,
-        onEdit: (String) -> Unit,
     ) {
         var url by remember { mutableStateOf("") }
         Dialog(
@@ -2951,8 +2817,6 @@ class ReaderActivity : AppCompatActivity() {
                             }
                             Text("测试", fontSize = 12.sp, color = Color(0xFF81C784),
                                 modifier = Modifier.clickable { onTest(s.url) }.padding(6.dp))
-                            Text("编辑", fontSize = 12.sp, color = Color(0xFF4FC3F7),
-                                modifier = Modifier.clickable { onEdit(s.url) }.padding(6.dp))
                             Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80),
                                 modifier = Modifier.clickable { onRemove(s.url) }.padding(6.dp))
                         }
@@ -2974,144 +2838,6 @@ class ReaderActivity : AppCompatActivity() {
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
             }
         }
-    }
-
-    /** 书源 JSON 某个字段取值；group 为 null 表示顶层字段，无值返回空串。 */
-    private fun srcLine(json: String, group: String?, field: String): String = try {
-        val o = JSONObject(json)
-        val g = if (group == null) o else o.optJSONObject(group)
-        g?.optString(field) ?: ""
-    } catch (e: Exception) {
-        ""
-    }
-
-    /** 设置书源 JSON 某个字段；值为空则删除该字段（保持 JSON 干净）。 */
-    private fun setSrcLine(json: String, group: String?, field: String, value: String): String = try {
-        val o = JSONObject(json)
-        val g = if (group == null) o else o.optJSONObject(group) ?: JSONObject().also { o.put(group, it) }
-        if (value.isBlank()) g.remove(field) else g.put(field, value)
-        o.toString(2)
-    } catch (e: Exception) {
-        json
-    }
-
-    /** 书源 JSON 规则编辑弹窗：可视化字段（legado 风格）与 JSON 源码（含 @js: 表达式）切换编辑，测试不落盘。 */
-    @Composable
-    private fun SourceEditDialog(target: BookSource, onClose: () -> Unit, onSaved: () -> Unit) {
-        var tab by remember { mutableStateOf(0) }
-        var json by remember { mutableStateOf(target.toJson()) }
-        var testing by remember { mutableStateOf(false) }
-        val tabs = listOf("基础", "搜索", "详情", "目录", "正文", "JSON 源码")
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text("编辑书源 · ${target.name}", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    tabs.forEachIndexed { i, n ->
-                        Text(
-                            n,
-                            fontSize = 13.sp,
-                            color = if (tab == i) Color(0xFF141414) else Color(0xFFCCCCCC),
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(if (tab == i) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
-                                .clickable { tab = i }
-                                .padding(horizontal = 14.dp, vertical = 5.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                }
-                Column(
-                    Modifier.weight(1f).fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp, vertical = 8.dp),
-                ) {
-                    when (tab) {
-                        0 -> {
-                            RuleField("书源名称 bookSourceName", srcLine(json, null, "bookSourceName")) { setSrcLine(json, null, "bookSourceName", it).also { j -> json = j } }
-                            RuleField("书源地址 bookSourceUrl", srcLine(json, null, "bookSourceUrl")) { setSrcLine(json, null, "bookSourceUrl", it).also { j -> json = j } }
-                            RuleField("搜索模板 searchUrl（{{key}} 为关键词）", srcLine(json, null, "searchUrl")) { setSrcLine(json, null, "searchUrl", it).also { j -> json = j } }
-                        }
-                        1 -> {
-                            Text("搜索规则 ruleSearch：CSS 选择器或 @js: 表达式（result 为整个响应）。示例：@js:result.bookList.map(e=>({bookName:e.n, bookUrl:e.u}))", fontSize = 11.sp, color = Color(0xFF888888))
-                            RuleField("bookList 列表容器", srcLine(json, "ruleSearch", "bookList")) { setSrcLine(json, "ruleSearch", "bookList", it).also { j -> json = j } }
-                            RuleField("bookName 书名", srcLine(json, "ruleSearch", "bookName")) { setSrcLine(json, "ruleSearch", "bookName", it).also { j -> json = j } }
-                            RuleField("author 作者", srcLine(json, "ruleSearch", "author")) { setSrcLine(json, "ruleSearch", "author", it).also { j -> json = j } }
-                            RuleField("bookUrl 详情链接（@attr:href / @json:）", srcLine(json, "ruleSearch", "bookUrl")) { setSrcLine(json, "ruleSearch", "bookUrl", it).also { j -> json = j } }
-                            RuleField("coverUrl 封面", srcLine(json, "ruleSearch", "coverUrl")) { setSrcLine(json, "ruleSearch", "coverUrl", it).also { j -> json = j } }
-                        }
-                        2 -> {
-                            Text("详情规则 ruleBookInfo（html 响应或 @js:）", fontSize = 11.sp, color = Color(0xFF888888))
-                            RuleField("name 书名", srcLine(json, "ruleBookInfo", "name")) { setSrcLine(json, "ruleBookInfo", "name", it).also { j -> json = j } }
-                            RuleField("author 作者", srcLine(json, "ruleBookInfo", "author")) { setSrcLine(json, "ruleBookInfo", "author", it).also { j -> json = j } }
-                            RuleField("intro 简介", srcLine(json, "ruleBookInfo", "intro")) { setSrcLine(json, "ruleBookInfo", "intro", it).also { j -> json = j } }
-                            RuleField("coverUrl 封面", srcLine(json, "ruleBookInfo", "coverUrl")) { setSrcLine(json, "ruleBookInfo", "coverUrl", it).also { j -> json = j } }
-                            RuleField("tocUrl 目录页链接", srcLine(json, "ruleBookInfo", "tocUrl")) { setSrcLine(json, "ruleBookInfo", "tocUrl", it).also { j -> json = j } }
-                        }
-                        3 -> {
-                            Text("目录规则 ruleToc：chapterList 定位章节容器，chapterName/chapterUrl 在容器内求值", fontSize = 11.sp, color = Color(0xFF888888))
-                            RuleField("chapterList 章节列表", srcLine(json, "ruleToc", "chapterList")) { setSrcLine(json, "ruleToc", "chapterList", it).also { j -> json = j } }
-                            RuleField("chapterName 章节名", srcLine(json, "ruleToc", "chapterName")) { setSrcLine(json, "ruleToc", "chapterName", it).also { j -> json = j } }
-                            RuleField("chapterUrl 章节链接", srcLine(json, "ruleToc", "chapterUrl")) { setSrcLine(json, "ruleToc", "chapterUrl", it).also { j -> json = j } }
-                        }
-                        4 -> {
-                            Text("正文规则 ruleContent：content 为正文选择器；支持 @js: 处理分段文本", fontSize = 11.sp, color = Color(0xFF888888))
-                            RuleField("content 正文", srcLine(json, "ruleContent", "content")) { setSrcLine(json, "ruleContent", "content", it).also { j -> json = j } }
-                        }
-                        else -> {
-                            OutlinedTextField(
-                                value = json,
-                                onValueChange = { json = it },
-                                modifier = Modifier.fillMaxWidth().height(480.dp),
-                                placeholder = { Text("legado BookSource JSON（含 @js: 规则源码，可整段编辑后保存）", color = Color(0xFF666666), fontSize = 13.sp) },
-                            )
-                        }
-                    }
-                }
-                Text("规则字段即 legado 风格：裸 CSS / @css: / @attr:href / @text / @json:path / @js:表达式，可用 @ 串联", fontSize = 10.sp,
-                    color = Color(0xFF666666), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
-                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
-                    Spacer(Modifier.width(10.dp))
-                    TextButton(onClick = {
-                        if (testing) return@TextButton
-                        testing = true
-                        ReaderRepository.get().testSourceJson(json).whenComplete { ok, _ ->
-                            runOnUiThread {
-                                testing = false
-                                Notify.show(if (ok) "测试通过：当前规则可搜索到结果" else "测试失败：无结果或源不可达")
-                            }
-                        }
-                    }) { Text(if (testing) "测试中…" else "测试", fontSize = 13.sp, color = Color(0xFF81C784)) }
-                    Spacer(Modifier.width(16.dp))
-                    Button(onClick = {
-                        if (ReaderRepository.get().updateSource(json)) {
-                            onSaved()
-                            Notify.show("书源已保存")
-                            onClose()
-                        } else {
-                            Notify.show("保存失败：JSON 不合法或缺少必要字段")
-                        }
-                    }) { Text("保存", fontSize = 13.sp) }
-                }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
-            }
-        }
-    }
-
-    /** 编辑弹窗内的单个规则输入行。 */
-    @Composable
-    private fun RuleField(label: String, value: String, onValue: (String) -> Unit) {
-        Text(label, fontSize = 12.sp, color = Color(0xFFAAAAAA), modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValue,
-            modifier = Modifier.fillMaxWidth(),
-            maxLines = 2,
-        )
     }
 
     /** 导入书籍：本地文件（TXT/EPUB）/ 远程直链 二选一。 */
@@ -3295,49 +3021,6 @@ class ReaderActivity : AppCompatActivity() {
                         }
                     }
                 }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
-            }
-        }
-    }
-
-    /** 备份 / 恢复：导出/导入单个 JSON（书架/进度/书签/正文规则/阅读设置/书源/订阅源）。 */
-    @Composable
-    private fun BackupDialog(onExport: () -> Unit, onImport: () -> Unit, onClose: () -> Unit) {
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text("备份 / 恢复", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp))
-                Text("单一 JSON 覆盖书架、阅读进度、书签、净化/高亮/词典规则、阅读设置、书源与 RSS 订阅源", fontSize = 11.sp,
-                    color = Color(0xFF888888), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
-                Row(
-                    Modifier.fillMaxWidth().clickable(onClick = onExport)
-                        .padding(horizontal = 24.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("导出备份", fontSize = 15.sp, color = Color(0xFFE0E0E0))
-                    Spacer(Modifier.weight(1f))
-                    Text("保存 .json", fontSize = 12.sp, color = Color(0xFF888888))
-                    Spacer(Modifier.width(10.dp))
-                    Text("导出", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                }
-                HorizontalDivider(color = Color(0x16FFFFFF))
-                Row(
-                    Modifier.fillMaxWidth().clickable(onClick = onImport)
-                        .padding(horizontal = 24.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("从备份恢复", fontSize = 15.sp, color = Color(0xFFE0E0E0))
-                    Spacer(Modifier.weight(1f))
-                    Text("选择 .json", fontSize = 12.sp, color = Color(0xFF888888))
-                    Spacer(Modifier.width(10.dp))
-                    Text("恢复", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                }
-                HorizontalDivider(color = Color(0x16FFFFFF))
                 Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
             }
@@ -3545,33 +3228,15 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** 从正文 HTML/文本中提取 mp4/m3u8 直链（去重保序）。 */
-    private fun extractVideoUrls(html: String): List<String> {
-        if (html.isBlank()) return emptyList()
-        val out = LinkedHashSet<String>()
-        for (m in Regex("https?://[^\\s\"'<>),；，。！？】]+", RegexOption.IGNORE_CASE).findAll(html)) {
-            var s = m.value.trimEnd('"', '\'', ')', ']', '}', '>', ',', '.', ';', '，', '。', '；', '！', '？')
-            if (s.endsWith("/")) s = s.dropLast(1)
-            val path = s.substringAfter("://", "").lowercase()
-            if (path.endsWith(".mp4") || path.endsWith(".m3u8") || path.contains(".mp4?") || path.contains(".m3u8?")) {
-                out.add(s)
-            }
-        }
-        return out.toList()
-    }
-
-    /** 阅读设置弹窗：字号滑动调节 / 行距 / 主题 / 本地 TXT 切章正则，改动即生效并持久化。 */
+    /** 阅读设置弹窗：字号滑动调节 / 行距 / 主题，改动即生效并持久化。 */
     @Composable
     private fun SettingsDialog(
         fontSize: Int,
         lineHeight: Float,
         theme: String,
-        tocRegex: String,
         onFontSize: (Int) -> Unit,
         onLineHeight: (Float) -> Unit,
         onTheme: (String) -> Unit,
-        onTocRegex: (String) -> Unit,
-        onOpenRules: () -> Unit,
         onClose: () -> Unit,
     ) {
         var sliderValue by remember { mutableStateOf(fontSize.toFloat()) }
@@ -3633,143 +3298,8 @@ class ReaderActivity : AppCompatActivity() {
                             Spacer(Modifier.width(8.dp))
                         }
                     }
-                    // 本地 TXT 切章正则（txtTocRule）
-                    HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 8.dp))
-                    Text("本地 TXT 切章正则", fontSize = 14.sp, color = Color(0xFFDDDDDD))
-                    OutlinedTextField(
-                        value = tocRegex,
-                        onValueChange = onTocRegex,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        placeholder = { Text("示例：第[0-9零一二三四五六七八九十百千万]+[章节卷回部篇集]", color = Color(0xFF666666), fontSize = 12.sp) },
-                        maxLines = 1,
-                    )
-                    Text("导入 .txt 时按此正则切章；新导入生效", fontSize = 11.sp, color = Color(0xFF888888))
-                    // 正文规则入口
-                    Text(
-                        "正文净化 / 高亮 / 词典 ›",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable(onClick = onOpenRules).padding(vertical = 10.dp),
-                    )
+                    // 本地 TXT 切章：内置默认正则即可，不再提供设置项
                     Spacer(Modifier.height(16.dp))
-                }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
-            }
-        }
-    }
-
-    /** 正文规则编辑：净化（正则删除）/ 高亮（词/正则+可选颜色）/ 词典（词=释义），文本形式逐行编辑。 */
-    @Composable
-    private fun RulesDialog(onClose: () -> Unit) {
-        val store = ReaderStore.get()
-        var tab by remember { mutableStateOf(0) }
-        var clearsText by remember { mutableStateOf(store.clears().joinToString("\n")) }
-        var highlightsText by remember {
-            mutableStateOf(store.highlights().joinToString("\n") { h -> (if (h.c.isBlank()) "" else h.c + " ") + h.p }.trim())
-        }
-        var dictsText by remember { mutableStateOf(store.dicts().joinToString("\n") { it.w + "=" + it.d }) }
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text("正文规则", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    for ((i, n) in listOf("净化", "高亮", "词典").withIndex()) {
-                        Text(
-                            n,
-                            fontSize = 13.sp,
-                            color = if (tab == i) Color(0xFF141414) else Color(0xFFCCCCCC),
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(if (tab == i) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
-                                .clickable { tab = i }
-                                .padding(horizontal = 16.dp, vertical = 5.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                when (tab) {
-                    0 -> OutlinedTextField(
-                        value = clearsText,
-                        onValueChange = { clearsText = it },
-                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
-                        placeholder = { Text("每行一条正则，命中文本将删除\n示例：本章未完待续", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 12,
-                    )
-                    1 -> OutlinedTextField(
-                        value = highlightsText,
-                        onValueChange = { highlightsText = it },
-                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
-                        placeholder = { Text("每行：关键词/正则，可加颜色前缀\n示例：#FFD54F 主角名", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 12,
-                    )
-                    else -> OutlinedTextField(
-                        value = dictsText,
-                        onValueChange = { dictsText = it },
-                        modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp),
-                        placeholder = { Text("每行：词=释义\n点击正文中蓝色下划线词可查看释义", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 12,
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
-                    Spacer(Modifier.width(20.dp))
-                    Button(onClick = {
-                        val clears = clearsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList().distinct()
-                        val highlights = highlightsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { line ->
-                            val sp = line.split(Regex("\\s+"), limit = 2)
-                            if (sp.size == 2 && sp[0].startsWith("#")) {
-                                ReaderStore.HighlightRule(sp[1], sp[0])
-                            } else {
-                                ReaderStore.HighlightRule(line, "")
-                            }
-                        }.toList()
-                        val dicts = dictsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { line ->
-                            val i = line.indexOf('=')
-                            if (i > 0) ReaderStore.DictRule(line.substring(0, i).trim(), line.substring(i + 1).trim())
-                            else ReaderStore.DictRule(line, "(未填释义)")
-                        }.toList()
-                        ReaderStore.get().saveRules(clears, highlights, dicts)
-                        Notify.show("规则已保存（打开章节时生效）")
-                        onClose()
-                    }) { Text("保存", fontSize = 13.sp) }
-                }
-                Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
-            }
-        }
-    }
-
-    /** 词典弹窗：列出段落中命中的词典词与释义。 */
-    @Composable
-    private fun DictDialog(text: String, dicts: List<ReaderStore.DictRule>, onClose: () -> Unit) {
-        val hits = dicts.filter { it.w.isNotBlank() && text.contains(it.w, ignoreCase = true) }
-        Dialog(
-            onDismissRequest = onClose,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Column(Modifier.fillMaxSize().background(Color(0xE6000000))) {
-                Text("词典释义", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 6.dp))
-                if (hits.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("本段未命中词典词（可在设置→正文规则中添加）", fontSize = 13.sp, color = Color(0xFF777777))
-                    }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 6.dp)) {
-                        itemsIndexed(hits) { _, h ->
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp)) {
-                                Text(h.w, fontSize = 15.sp, color = Color(0xFF4FC3F7), fontWeight = FontWeight.Bold)
-                                Text(h.d.ifEmpty { "（未填释义）" }, fontSize = 13.sp, color = Color(0xFFBBBBBB),
-                                    modifier = Modifier.padding(top = 2.dp))
-                            }
-                            HorizontalDivider(color = Color(0x14FFFFFF))
-                        }
-                    }
                 }
                 Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))

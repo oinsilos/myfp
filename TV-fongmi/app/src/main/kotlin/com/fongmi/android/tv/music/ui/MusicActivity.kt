@@ -94,6 +94,9 @@ import com.fongmi.android.tv.music.model.RepeatMode
 import com.fongmi.android.tv.music.plugin.MusicRepository
 import com.fongmi.android.tv.music.plugin.MusicSource
 import com.fongmi.android.tv.music.service.MusicPlaybackService
+import com.fongmi.android.tv.reader.ReaderStore
+import com.fongmi.android.tv.ui.common.UnifiedBackup
+import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
 import com.fongmi.android.tv.utils.Notify
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -176,6 +179,8 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         var playlistDialogTarget by mutableStateOf<String?>(null)
         // “我的音乐”子 Tab：0 收藏 / 1 最近 / 2 本地 / 3 下载 / 4 歌单
         var libTab by mutableStateOf(0)
+        // 统一设置弹窗（与小说模块共用：主题/皮肤 + 备份/恢复，单一 JSON）
+        var unifiedSettingsVisible by mutableStateOf(false)
     }
 
     /** 详情视图（歌单详情 / 榜单详情 / 歌手热歌 / 导入结果 共用）。 */
@@ -214,6 +219,52 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     /** 歌单文本文件选择器（.txt/.lst 等，每行一个歌名/歌手）。 */
     private val importTextPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importTextPlaylist(uri)
+    }
+
+    /** 统一备份导出（与小说模块共用单一 JSON）。 */
+    private val backupExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) exportBackup(uri)
+    }
+
+    /** 统一备份恢复。 */
+    private val backupImportPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importBackup(uri)
+    }
+
+    /** 导出统一备份：音乐收藏/最近/歌单 + 小说书架/进度/书源/订阅源 单文件。 */
+    private fun exportBackup(uri: Uri) {
+        Thread {
+            try {
+                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                    it.write(UnifiedBackup.export())
+                }
+                runOnUiThread { Notify.show("备份完成（音乐收藏/歌单/阅读/订阅）") }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+            }
+        }.start()
+    }
+
+    /** 恢复统一备份（覆盖音乐收藏/最近/歌单与阅读各库）。 */
+    private fun importBackup(uri: Uri) {
+        Thread {
+            try {
+                val text = contentResolver.openInputStream(uri)
+                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                if (text.isBlank()) {
+                    runOnUiThread { Notify.show("备份文件为空") }
+                    return@Thread
+                }
+                val ok = UnifiedBackup.import(text)
+                runOnUiThread {
+                    refreshLibrary()
+                    refreshPlaylists()
+                    Notify.show(if (ok) "恢复完成（音乐/阅读/订阅）" else "恢复失败：不是有效的备份文件")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("恢复失败：" + (e.message ?: "")) }
+            }
+        }.start()
     }
 
     /** 文本歌单导入：读文本 → 逐行作为关键词批量聚合搜索 → 结果替换当前搜索列表。 */
@@ -1304,6 +1355,35 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 onOk = ::submitPlaylistDialog,
             )
         }
+        if (ui.unifiedSettingsVisible) {
+            // 统一设置与小说模块共用：主题/皮肤（作用阅读与界面）+ 备份/恢复（单一 JSON 含音乐本地库）
+            UnifiedSettingsDialog(
+                theme = ReaderStore.get().theme,
+                fontSize = ReaderStore.get().fontSize,
+                lineHeight = ReaderStore.get().lineHeight,
+                onTheme = {
+                    ReaderStore.get().theme = it
+                    ReaderStore.get().saveSettings()
+                },
+                onFontSize = {
+                    ReaderStore.get().fontSize = it
+                    ReaderStore.get().saveSettings()
+                },
+                onLineHeight = {
+                    ReaderStore.get().lineHeight = it
+                    ReaderStore.get().saveSettings()
+                },
+                onExport = {
+                    ui.unifiedSettingsVisible = false
+                    backupExportPicker.launch("tv_fongmi_backup.json")
+                },
+                onImport = {
+                    ui.unifiedSettingsVisible = false
+                    backupImportPicker.launch(arrayOf("*/*"))
+                },
+                onClose = { ui.unifiedSettingsVisible = false },
+            )
+        }
     }
 
     /** 顶部 Tab：搜索 / 歌单 / 我的音乐。 */
@@ -1319,6 +1399,13 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                 if (index < 1) Spacer(Modifier.width(18.dp))
             }
             Spacer(Modifier.weight(1f))
+            Text(
+                "设置",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { ui.unifiedSettingsVisible = true }.padding(vertical = 4.dp),
+            )
+            Spacer(Modifier.width(14.dp))
             Text(
                 "音源 " + ui.currentSource + " ▾",
                 fontSize = 10.sp,
