@@ -569,10 +569,29 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** 退出阅读页（返回目录）：落盘当前章内进度。 */
+    /** 退出阅读页（返回目录/列表）：落盘当前章内进度。 */
     private fun leaveReader() {
         saveProgress()
         ui.reading = false
+    }
+
+    /** 系统返回键：按层级逐级返回，而不是直接退出 App（阅读→详情→列表→搜索）。 */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            ui.reading -> leaveReader() // 返回详情页或 RSS 文章列表，进度已保存
+            ui.book != null && ui.book?.source != "rss" -> { // 详情 → 搜索
+                ui.book = null
+                ui.shelfMode = false
+                ui.cacheMode = false
+            }
+            ui.shelfMode || ui.cacheMode -> { // 书架/缓存 → 搜索
+                ui.shelfMode = false
+                ui.cacheMode = false
+            }
+            ui.rssMode -> ui.rssMode = false // RSS → 搜索
+            else -> super.onBackPressed()
+        }
     }
 
     private fun saveProgress() {
@@ -890,7 +909,6 @@ class ReaderActivity : AppCompatActivity() {
                         error = ui.rssError,
                         onSelectSource = onSelectRssSource,
                         onOpenArticle = onOpenRssArticle,
-                        onManage = { ui.rssSourceDialogVisible = true },
                     )
                 } else if (ui.cacheMode) {
                     CacheBody(
@@ -1389,7 +1407,6 @@ class ReaderActivity : AppCompatActivity() {
         error: String,
         onSelectSource: (String) -> Unit,
         onOpenArticle: (Int) -> Unit,
-        onManage: () -> Unit,
     ) {
         Column(Modifier.fillMaxSize()) {
             Row(
@@ -1410,9 +1427,9 @@ class ReaderActivity : AppCompatActivity() {
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Spacer(Modifier.weight(1f))
-                Text("管理", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable(onClick = onManage).padding(horizontal = 4.dp, vertical = 4.dp))
+                if (sources.none { it.enabled }) {
+                    Text("暂无启用源：点右上角「源管理」添加", fontSize = 12.sp, color = Color(0xFF666666))
+                }
             }
             HorizontalDivider(color = Color(0x16FFFFFF), modifier = Modifier.padding(bottom = 4.dp))
             when {
