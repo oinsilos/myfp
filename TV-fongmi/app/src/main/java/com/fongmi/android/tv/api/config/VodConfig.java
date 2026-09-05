@@ -98,12 +98,40 @@ public class VodConfig extends BaseConfig {
         return TAG;
     }
 
+    /** 内置聚合源版本：内置源清单变更后 +1，旧版内置源创建的失效配置会被清理回退（否则 DB 残留导致影视一直加载失败源）。 */
+    private static final int BUILTIN_VERSION = 2;
+    /** 旧版内置源 URL 特征（spider 401 / 国内不可达 / 已移除），命中则视为"内置源旧配置"可清理。 */
+    private static final String[] OLD_BUILTIN_HINTS = {
+            "bitbucket.org/xduo", "jihulab.com/duomv", "盒子迷", "jundie.top", "weidonglong", "dxawi.github.io"
+    };
+
     @Override
     protected Config defaultConfig() {
         Config config = Config.vod();
-        // 首次启动无任何配置时，默认加载内置聚合点播源（assets/config/vod.json），开箱即用
-        if (config.isEmpty()) config = Config.create(VOD, "assets://config/vod.json").name("内置点播源");
+        if (builtinStale()) {
+            // 内置源已更新：删除旧内置源自动创建的配置（用户手动添加的配置不受影响），回到新内置源
+            Config.delete(config.getUrl(), VOD);
+            prefs().edit().putInt("vod_builtin_version", BUILTIN_VERSION).apply();
+            config = Config.create(VOD, "assets://config/vod.json").name("内置点播源");
+        } else if (config.isEmpty()) {
+            // 首次启动无任何配置时，默认加载内置聚合点播源（assets/config/vod.json），开箱即用
+            config = Config.create(VOD, "assets://config/vod.json").name("内置点播源");
+        }
         return config;
+    }
+
+    /** 内置源配置是否已过期：版本戳落后 或 当前配置命中旧失效内置源。 */
+    private boolean builtinStale() {
+        if (prefs().getInt("vod_builtin_version", 0) < BUILTIN_VERSION) return true;
+        Config config = Config.vod();
+        String url = config == null ? "" : config.getUrl();
+        if (url.startsWith("assets://")) return false;
+        for (String hint : OLD_BUILTIN_HINTS) if (url.contains(hint)) return true;
+        return false;
+    }
+
+    private android.content.SharedPreferences prefs() {
+        return App.get().getSharedPreferences("vod_builtin", android.content.Context.MODE_PRIVATE);
     }
 
     @Override

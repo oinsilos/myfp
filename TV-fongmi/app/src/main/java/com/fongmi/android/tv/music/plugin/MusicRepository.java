@@ -308,8 +308,14 @@ public final class MusicRepository {
         String kw = keyword == null ? "" : keyword;
         List<CompletableFuture<Aggregated>> futures = new ArrayList<>();
         for (Plugin p : copy) {
-            CompletableFuture<Aggregated> f = p.source.search(kw, 1, "music").thenApply(items ->
-                    (items == null || items.isEmpty()) ? null : new Aggregated(p.label, p.source.platform(), items));
+            CompletableFuture<Aggregated> f = p.source.search(kw, 1, "music")
+                    .thenApply(items ->
+                            (items == null || items.isEmpty()) ? null : new Aggregated(p.label, p.source.platform(), items))
+                    // 单源异常（如某插件内部 TypeError）按空组剔除，绝不拖垮整个聚合结果
+                    .exceptionally(e -> {
+                        Log.w(TAG, "searchAll source failed: " + p.label + " -> " + brief(e));
+                        return null;
+                    });
             futures.add(withTimeout(f, SOURCE_TIMEOUT_MS, null));
         }
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
@@ -473,9 +479,17 @@ public final class MusicRepository {
             MusicSource source = new MusicSource();
             source.load(code);
             synchronized (this) {
-                // 避免重复：platform 相同则跳过（内置覆盖导入同名优先内置）
-                for (Plugin p : plugins) {
-                    if (builtin && !p.builtin && source.platform().equals(p.source.platform())) return false;
+                // 同 platform 去重（内置优先）：导入的旧版同名插件（如旧"酷我"）会被内置覆盖，
+                // 避免列表出现两个同名源且旧版插件（含 bug/混淆）把聚合搜索拖崩。
+                for (int i = 0; i < plugins.size(); i++) {
+                    Plugin p = plugins.get(i);
+                    if (!source.platform().equals(p.source.platform())) continue;
+                    if (builtin && !p.builtin) {
+                        plugins.remove(i);
+                        if (current == p) current = null;
+                        break;
+                    }
+                    return false;
                 }
                 plugins.add(new Plugin(source, label, builtin));
                 if (current == null) current = plugins.get(plugins.size() - 1);

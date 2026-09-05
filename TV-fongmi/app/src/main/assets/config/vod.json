@@ -1,6 +1,6 @@
 {
   "urls": [
-    { "name": "牛播聚合(dxawi)", "url": "https://dxawi.github.io/0/0.json" },
-    { "name": "萤幕点播(yingm)", "url": "https://www.yingm.cc/dm/dm.json" }
+    { "name": "萤幕点播(yingm)", "url": "https://www.yingm.cc/dm/dm.json" },
+    { "name": "牛播聚合(dxawi)", "url": "https://dxawi.github.io/0/0.json" }
   ]
 }
