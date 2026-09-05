@@ -176,6 +176,47 @@ public final class ReaderStore {
         return fs == null ? 0 : fs.length;
     }
 
+    /** 缓存条目（缓存管理页用）：一本有缓存的书 + 已缓存章节数。 */
+    public static final class CachedBook {
+        public final Book book;
+        public final int count;
+
+        CachedBook(Book book, int count) {
+            this.book = book;
+            this.count = count;
+        }
+    }
+
+    /** 对照书架列出“已有章节缓存”的书（按书架顺序）。 */
+    public List<CachedBook> cachedBooks() {
+        List<CachedBook> out = new ArrayList<>();
+        if (cacheRoot == null) return out;
+        for (Book b : shelf()) {
+            File d = new File(cacheRoot, md5(b.url));
+            if (!d.exists()) continue;
+            File[] fs = d.listFiles((x, name) -> name.endsWith(".html"));
+            int n = fs == null ? 0 : fs.length;
+            if (n > 0) out.add(new CachedBook(b, n));
+        }
+        return out;
+    }
+
+    /** 清除全部书籍缓存，返回清掉的文件数。 */
+    public int clearAllCache() {
+        if (cacheRoot == null || !cacheRoot.exists()) return 0;
+        File[] dirs = cacheRoot.listFiles(File::isDirectory);
+        int n = 0;
+        if (dirs != null) {
+            for (File d : dirs) {
+                File[] fs = d.listFiles();
+                if (fs == null) continue;
+                n += fs.length;
+                for (File f : fs) f.delete();
+            }
+        }
+        return n;
+    }
+
     /** 清空某书缓存。 */
     public void clearCache(String bookUrl) {
         File dir = bookCacheDir(bookUrl);

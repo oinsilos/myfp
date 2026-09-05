@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -18,9 +19,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,12 +46,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,14 +62,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
+import com.bumptech.glide.Glide
+import com.bumptech.glide.request.RequestOptions
 import com.fongmi.android.tv.reader.Book
 import com.fongmi.android.tv.reader.BookSource
 import com.fongmi.android.tv.reader.ReaderRepository
@@ -68,6 +84,8 @@ import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.utils.Notify
 import java.nio.charset.StandardCharsets
 import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 阅读（书源）界面：搜索 → 书籍详情/目录 → WebView 正文阅读。
@@ -106,6 +124,11 @@ class ReaderActivity : AppCompatActivity() {
         var fontSize by mutableStateOf(17)
         var lineHeight by mutableStateOf(1.9f)
         var theme by mutableStateOf("dark")
+        // 缓存管理页：列出已缓存的书，支持单本/全部清除
+        var cacheMode by mutableStateOf(false)
+        var cacheBooks by mutableStateOf<List<ReaderStore.CachedBook>>(emptyList())
+        // 章内阅读百分比（滚动节流更新，供阅读页顶部进度条展示）
+        var readPercent by mutableStateOf(0f)
     }
 
     private val ui = UiState()
@@ -113,6 +136,8 @@ class ReaderActivity : AppCompatActivity() {
     private var currentPercent = 0f
     /** 滚动进度节流落盘时间戳（2s 最多写一次，进程被杀也能续读）。 */
     private var lastAutoSaveAt = 0L
+    /** 最近一次 WebView 加载正文对应的章节号（切章瞬间防旧章滚动污染新章进度）。 */
+    private var loadedChapterIndex = -1
     private val mainHandler = Handler(Looper.getMainLooper())
     /** 待恢复的章内滚动位置（openChapter 从进度库读到后置值；WebView 加载完消费后复位 -1）。 */
     private var restorePercent = -1f
@@ -181,6 +206,18 @@ class ReaderActivity : AppCompatActivity() {
                     onOpenSettings = { ui.settingsDialogVisible = true },
                     onCacheBook = ::cacheCurrentBook,
                     onImportLocalTxt = { localTxtPicker.launch(arrayOf("text/*")) },
+                    onOpenCache = { ui.cacheMode = true; refreshCacheBooks() },
+                    onCloseCache = { ui.cacheMode = false },
+                    onClearBookCache = { url ->
+                        ReaderStore.get().clearCache(url)
+                        refreshCacheBooks()
+                        Notify.show("已清除该书缓存")
+                    },
+                    onClearAllCache = {
+                        val n = ReaderStore.get().clearAllCache()
+                        refreshCacheBooks()
+                        Notify.show("已清除全部缓存（$n 章）")
+                    },
                     onOpenSources = { ui.sourceDialogVisible = true },
                     onImport = { importSource(it) },
                     onToggleSource = { toggleSource(it) },
@@ -428,12 +465,17 @@ class ReaderActivity : AppCompatActivity() {
         ReaderStore.get().saveProgress(book.url, ui.chapterIndex, currentPercent)
     }
 
-    /** 滚动中节流保存进度（2s 一次），防止进程被杀时丢失断点。 */
+    /** 滚动中节流保存进度（2s 一次），防止进程被杀时丢失断点；同时刷新阅读页进度条。 */
     private fun maybeAutoSaveProgress() {
         val now = System.currentTimeMillis()
         if (now - lastAutoSaveAt < 2000L) return
         lastAutoSaveAt = now
+        ui.readPercent = currentPercent
         mainHandler.post { saveProgress() }
+    }
+
+    private fun refreshCacheBooks() {
+        ui.cacheBooks = ReaderStore.get().cachedBooks()
     }
 
     /** 设置变更：写入 ReaderStore 持久化，并以新样式重载当前章（进度位置保留）。 */
@@ -482,12 +524,6 @@ class ReaderActivity : AppCompatActivity() {
         val book = ui.book ?: return
         ReaderStore.get().removeBookmark(book.url, chapter)
         refreshBookmarks()
-    }
-
-    /** 书架/进度/书签 复用的进度文案。 */
-    private fun progressText(url: String, chapters: Int): String {
-        val p = ReaderStore.get().progress(url) ?: return ""
-        return "读到第 ${p.chapter + 1} 章 · ${(p.percent * 100).toInt()}%"
     }
 
     private fun step(delta: Int) {
@@ -556,6 +592,10 @@ class ReaderActivity : AppCompatActivity() {
         onOpenSettings: () -> Unit,
         onCacheBook: () -> Unit,
         onImportLocalTxt: () -> Unit,
+        onOpenCache: () -> Unit,
+        onCloseCache: () -> Unit,
+        onClearBookCache: (String) -> Unit,
+        onClearAllCache: () -> Unit,
         onOpenSources: () -> Unit,
         onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
@@ -575,20 +615,12 @@ class ReaderActivity : AppCompatActivity() {
                         onAddBookmark = onAddBookmark,
                         onOpenSettings = onOpenSettings,
                     )
+                } else if (ui.cacheMode) {
+                    CacheBar(onBack = onCloseCache, onClearAll = onClearAllCache)
                 } else if (currentBook != null) {
-                    BookBar(
-                        book = currentBook,
-                        onBack = onBackFromBook,
-                        inShelf = ui.inShelf,
-                        onToggleShelf = onToggleShelf,
-                    )
+                    BookBar(book = currentBook, onBack = onBackFromBook)
                 } else if (ui.shelfMode) {
-                    ShelfBar(
-                        count = ui.shelves.size,
-                        onBack = onBackFromShelf,
-                        onOpenSources = onOpenSources,
-                        onImportLocalTxt = onImportLocalTxt,
-                    )
+                    ShelfBar(count = ui.shelves.size, onBack = onBackFromShelf, onOpenCache = onOpenCache, onOpenSources = onOpenSources)
                 } else {
                     SearchTop(
                         keyword = keyword,
@@ -607,6 +639,12 @@ class ReaderActivity : AppCompatActivity() {
                         content = ui.content,
                         error = ui.contentError,
                         baseUrl = ui.book?.chapters?.getOrNull(ui.chapterIndex)?.url,
+                    )
+                } else if (ui.cacheMode) {
+                    CacheBody(
+                        books = ui.cacheBooks,
+                        onOpen = onOpenShelfBook,
+                        onClear = onClearBookCache,
                     )
                 } else if (currentBook != null) {
                     BookBody(
@@ -627,6 +665,7 @@ class ReaderActivity : AppCompatActivity() {
                         shelves = ui.shelves,
                         onOpenBook = onOpenShelfBook,
                         onRemove = onRemoveShelf,
+                        onImportLocalTxt = onImportLocalTxt,
                     )
                 } else {
                     SearchBody(
@@ -747,47 +786,77 @@ class ReaderActivity : AppCompatActivity() {
         return url
     }
 
-    /** 书架顶栏：返回搜索 + 标题；右侧导入 TXT 与书源入口。 */
+    /** 书架顶栏：返回搜索 + 标题；右侧缓存管理与书源入口。 */
     @Composable
-    private fun ShelfBar(count: Int, onBack: () -> Unit, onOpenSources: () -> Unit, onImportLocalTxt: () -> Unit) {
+    private fun ShelfBar(count: Int, onBack: () -> Unit, onOpenCache: () -> Unit, onOpenSources: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text("书架 ($count)", fontSize = 15.sp, color = Color(0xFFE0E0E0))
             Spacer(Modifier.weight(1f))
-            Text("导入TXT", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onImportLocalTxt).padding(horizontal = 6.dp, vertical = 6.dp))
+            Text("缓存", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onOpenCache).padding(horizontal = 6.dp, vertical = 6.dp))
             Text("书源", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onOpenSources).padding(horizontal = 6.dp, vertical = 6.dp))
         }
     }
 
-    /** 书架列表：点击续读（自动跳到上次读到的章节），行尾可移除。 */
+    /** 书架：封面 + 书名 + 进度，行尾移出；列表顶部固定「导入本地 TXT」入口。 */
     @Composable
-    private fun ShelfBody(shelves: List<Book>, onOpenBook: (Book) -> Unit, onRemove: (String) -> Unit) {
-        if (shelves.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("书架空空如也：从搜索结果点开书籍 → 右上角收藏", fontSize = 13.sp, color = Color(0xFF666666))
-            }
-            return
-        }
+    private fun ShelfBody(shelves: List<Book>, onOpenBook: (Book) -> Unit, onRemove: (String) -> Unit, onImportLocalTxt: () -> Unit) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+            item(key = "import") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { onImportLocalTxt() }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(46.dp).clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF245060)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("TXT", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4FC3F7))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("导入本地 TXT 小说", fontSize = 14.sp, color = Color(0xFFE0E0E0))
+                        Text("选择 .txt 文件，按「第X章」自动切分章节加入书架，离线可读", fontSize = 11.sp,
+                            color = Color(0xFF888888), maxLines = 2)
+                    }
+                    Text("导入", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = Color(0x16FFFFFF))
+            }
+            if (shelves.isEmpty()) {
+                item(key = "empty") {
+                    Box(Modifier.fillMaxWidth().padding(top = 60.dp), contentAlignment = Alignment.Center) {
+                        Text("书架还空着：搜索到书后点「加入书架」", fontSize = 13.sp, color = Color(0xFF666666))
+                    }
+                }
+                return@LazyColumn
+            }
             itemsIndexed(shelves) { _, book ->
+                val p = ReaderStore.get().progress(book.url)
                 Row(
                     Modifier.fillMaxWidth().clickable { onOpenBook(book) }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    ReaderCover(
+                        url = book.cover,
+                        name = book.name,
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
+                    )
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(book.name, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
-                        Text(
-                            listOfNotNull(book.author.takeIf { it.isNotEmpty() }, sourceName(book.source), progressText(book.url, -1).takeIf { it.isNotEmpty() })
-                                .joinToString(" · "),
-                            fontSize = 12.sp,
-                            color = Color(0xFF888888),
-                            maxLines = 1,
-                        )
+                        val sub = listOfNotNull(
+                            book.author.takeIf { it.isNotEmpty() },
+                            if (p != null) "读到第${p.chapter + 1}章 ${(p.percent * 100).toInt()}%" else "未开始阅读",
+                        ).joinToString(" · ")
+                        Text(sub, fontSize = 12.sp, color = Color(0xFF888888), maxLines = 1)
                     }
                     Text("移出", fontSize = 12.sp, color = Color(0xFFFF8A80),
                         modifier = Modifier.clickable { onRemove(book.url) }.padding(horizontal = 8.dp, vertical = 6.dp))
@@ -797,20 +866,15 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
+    /** 详情页顶栏：返回 + 书名（书架操作统一在详情页按钮区，避免重复入口）。 */
     @Composable
-    private fun BookBar(book: Book, onBack: () -> Unit, inShelf: Boolean, onToggleShelf: () -> Unit) {
+    private fun BookBar(book: Book, onBack: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 返回", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text(book.name, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
             Spacer(Modifier.weight(1f))
-            Text(
-                if (inShelf) "✓ 在书架" else "＋ 书架",
-                fontSize = 13.sp,
-                color = if (inShelf) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onToggleShelf).padding(horizontal = 6.dp, vertical = 6.dp),
-            )
         }
     }
 
@@ -841,40 +905,88 @@ class ReaderActivity : AppCompatActivity() {
             return
         }
         val progress = ReaderStore.get().progress(book.url)
-        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
-            item {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(book.name, fontSize = 17.sp, color = Color(0xFFF0F0F0))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (book.author.isNotEmpty()) {
-                            Text(book.author, fontSize = 12.sp, color = Color(0xFF999999), modifier = Modifier.padding(top = 2.dp))
+        val startChapter = if (progress != null && progress.chapter in 0 until book.chapters.size) progress.chapter else 0
+        // 详情页：头部区块占满两列，章节目录用 2 列宫格（对齐国内小说 App 排版）
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 16.dp),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Column(Modifier.padding(horizontal = 8.dp, vertical = 10.dp)) {
+                    // 封面 + 标题/作者/简介
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        ReaderCover(
+                            url = book.cover,
+                            name = book.name,
+                            modifier = Modifier.size(92.dp).clip(RoundedCornerShape(8.dp)),
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(book.name, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF5F5F5), maxLines = 2)
+                            Text(
+                                listOfNotNull(book.author.takeIf { it.isNotEmpty() }, sourceName(book.source))
+                                    .joinToString(" · "),
+                                fontSize = 12.sp,
+                                color = Color(0xFF999999),
+                                modifier = Modifier.padding(top = 3.dp),
+                                maxLines = 1,
+                            )
+                            if (book.intro.isNotEmpty()) {
+                                Text(book.intro, fontSize = 12.sp, color = Color(0xFFAAAAAA), lineHeight = 17.sp,
+                                    modifier = Modifier.padding(top = 6.dp), maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    // 操作按钮组：开始阅读 / 加入书架（唯一书架入口）/ 缓存
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { onOpenChapter(startChapter) }, modifier = Modifier.height(38.dp)) {
+                            Text(if (progress != null) "继续阅读" else "开始阅读", fontSize = 13.sp)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Button(
+                            onClick = onToggleShelf,
+                            modifier = Modifier.height(38.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = if (inShelf) Color(0xFF3A2F1A) else Color(0xFF1E3A46),
+                            ),
+                        ) {
+                            Text(if (inShelf) "已在书架" else "加入书架", fontSize = 13.sp)
                         }
                         Spacer(Modifier.weight(1f))
-                        Text(
-                            if (inShelf) "✓ 已收藏" else "＋ 收藏到书架",
-                            fontSize = 12.sp,
-                            color = if (inShelf) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable(onClick = onToggleShelf).padding(horizontal = 4.dp),
-                        )
+                        Text("缓存", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable(onClick = onCacheBook).padding(horizontal = 6.dp, vertical = 8.dp))
                     }
-                    if (book.intro.isNotEmpty()) {
-                        Text(book.intro, fontSize = 12.sp, color = Color(0xFFAAAAAA), lineHeight = 18.sp,
-                            modifier = Modifier.padding(top = 8.dp))
+                    if (cacheText.isNotEmpty()) {
+                        Text(cacheText, fontSize = 11.sp, color = Color(0xFF888888),
+                            modifier = Modifier.padding(top = 4.dp))
                     }
-                    // 断点续读：显示上次读到哪，一键继续
+                    // 继续阅读进度卡片
                     if (progress != null && progress.chapter in 0 until book.chapters.size) {
-                        Text(
-                            "继续阅读：${book.chapters[progress.chapter].name}（${(progress.percent * 100).toInt()}%）",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { onOpenChapter(progress.chapter) }
-                                .padding(top = 8.dp, bottom = 2.dp),
-                        )
+                        Column(
+                            Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF1E1E1E)).clickable { onOpenChapter(progress.chapter) }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                            Text(
+                                "读到 ${book.chapters[progress.chapter].name} · ${(progress.percent * 100).toInt()}%，点此继续",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.percent },
+                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                            )
+                        }
                     }
-                    // 书签列表
+                    // 书签
                     if (bookmarks.isNotEmpty()) {
                         Text("书签 (${bookmarks.size})", fontSize = 13.sp, color = Color(0xFFCCCCCC),
-                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+                            modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
                         bookmarks.forEach { bm ->
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text(
@@ -884,41 +996,85 @@ class ReaderActivity : AppCompatActivity() {
                                     modifier = Modifier.weight(1f).clickable { onOpenBookmark(bm.chapter) }
                                         .padding(vertical = 4.dp),
                                     maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Text("×", fontSize = 14.sp, color = Color(0xFFFF8A80),
                                     modifier = Modifier.clickable { onRemoveBookmark(bm.chapter) }.padding(horizontal = 8.dp))
                             }
                         }
                     }
-                    // 批2：缓存整本书（后台逐章写入本地，离线可读）
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "缓存全书",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable(onClick = onCacheBook).padding(vertical = 4.dp),
-                        )
-                        if (cacheText.isNotEmpty()) {
-                            Spacer(Modifier.width(10.dp))
-                            Text(cacheText, fontSize = 11.sp, color = Color(0xFF888888), maxLines = 1)
-                        }
-                    }
-                    Text("目录（${book.chapters.size} 章）", fontSize = 13.sp, color = Color(0xFFCCCCCC),
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+                    Text("目录（${book.chapters.size} 章）", fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                        color = Color(0xFFCCCCCC), modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
                 }
             }
-            itemsIndexed(book.chapters) { index, chapter ->
+            items(book.chapters.size, key = { it }) { index ->
+                val chapter = book.chapters[index]
+                val cur = progress != null && progress.chapter == index
                 Text(
                     chapter.name,
                     fontSize = 13.sp,
-                    color = Color(0xFFBBBBBB),
-                    modifier = Modifier.fillMaxWidth().clickable { onOpenChapter(index) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    color = if (cur) MaterialTheme.colorScheme.primary else Color(0xFFCCCCCC),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (cur) Color(0xFF1E2B33) else Color(0xFF212121))
+                        .clickable { onOpenChapter(index) }
+                        .padding(vertical = 10.dp, horizontal = 6.dp),
                 )
-                HorizontalDivider(color = Color(0x10FFFFFF))
+            }
+        }
+    }
+
+    /** 缓存管理顶栏：返回书架 + 全部清除。 */
+    @Composable
+    private fun CacheBar(onBack: () -> Unit, onClearAll: () -> Unit) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("‹ 书架", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
+            Spacer(Modifier.weight(1f))
+            Text("缓存管理", fontSize = 15.sp, color = Color(0xFFE0E0E0))
+            Spacer(Modifier.weight(1f))
+            Text("全部清除", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                modifier = Modifier.clickable(onClick = onClearAll).padding(horizontal = 6.dp, vertical = 6.dp))
+        }
+    }
+
+    /** 缓存管理：列出每本已缓存书（名称 + 已缓存章节数），可打开/清除；支持整本缓存入口引导。 */
+    @Composable
+    private fun CacheBody(books: List<ReaderStore.CachedBook>, onOpen: (Book) -> Unit, onClear: (String) -> Unit) {
+        if (books.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("暂无章节缓存\n书籍详情页点「缓存」可整本缓存，离线阅读", fontSize = 13.sp, color = Color(0xFF666666),
+                    textAlign = TextAlign.Center)
+            }
+            return
+        }
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+            itemsIndexed(books) { _, entry ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpen(entry.book) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ReaderCover(
+                        url = entry.book.cover,
+                        name = entry.book.name,
+                        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.book.name, fontSize = 14.sp, color = Color(0xFFE0E0E0), maxLines = 1)
+                        Text("已缓存 ${entry.count} 章", fontSize = 11.sp, color = Color(0xFF888888))
+                    }
+                    Text("打开", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onOpen(entry.book) }.padding(horizontal = 8.dp, vertical = 6.dp))
+                    Text("清除", fontSize = 12.sp, color = Color(0xFFFF8A80),
+                        modifier = Modifier.clickable { onClear(entry.book.url) }.padding(horizontal = 8.dp, vertical = 6.dp))
+                }
+                HorizontalDivider(color = Color(0x14FFFFFF))
             }
         }
     }
@@ -971,54 +1127,62 @@ class ReaderActivity : AppCompatActivity() {
         val (bgHex, fgHex) = themeColors()
         // 渲染标识：正文内容 + 字号 + 行距 + 主题 任一变化都触发重载（设置变更后样式即时生效）
         val renderKey = content.hashCode().toString() + "|$fs|$lh|$theme"
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    webChromeClient = WebChromeClient()
-                    // 断点续读：仅当加载完成的页面确为“当前最终正文”时才恢复滚动位置。
-                    // （旧实现会在空内容/中间态加载完成时提前消费 restorePercent，导致真正正文永不滚动）
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            val cur = ui.content
-                            val curKey = cur.hashCode().toString() + "|" + ui.fontSize + "|" + ui.lineHeight + "|" + ui.theme
-                            val v = view
-                            if (cur.isNotEmpty() && v != null && v.tag == curKey && restorePercent >= 0f) {
-                                val rp = restorePercent
-                                restorePercent = -1f
-                                v.post { scrollToPercent(v, rp) }
+        Column(Modifier.fillMaxSize()) {
+            // 章内进度条（滚动节流刷新，断点位置一目了然）
+            LinearProgressIndicator(
+                progress = { ui.readPercent },
+                modifier = Modifier.fillMaxWidth().height(3.dp),
+            )
+            AndroidView(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                        webChromeClient = WebChromeClient()
+                        // 断点续读：仅当加载完成的页面确为“当前最终正文”时才恢复滚动位置。
+                        // （旧实现会在空内容/中间态加载完成时提前消费 restorePercent，导致真正正文永不滚动）
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                val cur = ui.content
+                                val curKey = cur.hashCode().toString() + "|" + ui.fontSize + "|" + ui.lineHeight + "|" + ui.theme
+                                val v = view
+                                if (cur.isNotEmpty() && v != null && v.tag == curKey && restorePercent >= 0f) {
+                                    val rp = restorePercent
+                                    restorePercent = -1f
+                                    v.post { scrollToPercent(v, rp) }
+                                }
                             }
                         }
+                        settings.javaScriptEnabled = false
+                        settings.defaultTextEncodingName = "utf-8"
+                        // 章内滚动进度实时跟踪 + 节流落盘（切章瞬间旧章滚动不污染新章进度，见 loadedChapterIndex）
+                        setOnScrollChangeListener { _, scrollY, _, _, _ ->
+                            val max = contentHeight - height
+                            currentPercent = if (max <= 0) 0f else (scrollY.toFloat() / max).coerceIn(0f, 1f)
+                            if (loadedChapterIndex == ui.chapterIndex) maybeAutoSaveProgress()
+                        }
                     }
-                    settings.javaScriptEnabled = false
-                    settings.defaultTextEncodingName = "utf-8"
-                    // 章内滚动进度实时跟踪 + 节流落盘（保存断点/书签用）
-                    setOnScrollChangeListener { _, scrollY, _, _, _ ->
-                        val max = contentHeight - height
-                        currentPercent = if (max <= 0) 0f else (scrollY.toFloat() / max).coerceIn(0f, 1f)
-                        maybeAutoSaveProgress()
+                },
+                update = { web ->
+                    if (web.tag != renderKey) {
+                        web.tag = renderKey
+                        try {
+                            web.setBackgroundColor(android.graphics.Color.parseColor(bgHex))
+                        } catch (ignored: Throwable) {
+                        }
+                        val html = wrapHtml(content, bgHex, fgHex, fs, lh, baseUrl)
+                        // 断点/书签恢复只在最终正文上消费一次，加载完成后等布局稳定再滚动（超长窗口兜底）
+                        if (content.isNotEmpty() && restorePercent >= 0f) {
+                            val rp = restorePercent
+                            restorePercent = -1f
+                            web.postDelayed({ scrollToPercent(web, rp) }, 120)
+                        }
+                        loadedChapterIndex = ui.chapterIndex
+                        web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
                     }
-                }
-            },
-            update = { web ->
-                if (web.tag != renderKey) {
-                    web.tag = renderKey
-                    try {
-                        web.setBackgroundColor(android.graphics.Color.parseColor(bgHex))
-                    } catch (ignored: Throwable) {
-                    }
-                    val html = wrapHtml(content, bgHex, fgHex, fs, lh, baseUrl)
-                    // 断点/书签恢复只在最终正文上消费一次，加载完成后重试滚动直到布局就绪（contentHeight>0）
-                    if (content.isNotEmpty() && restorePercent >= 0f) {
-                        val rp = restorePercent
-                        restorePercent = -1f
-                        web.postDelayed({ scrollToPercent(web, rp) }, 120)
-                    }
-                    web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null)
-                }
-            },
-        )
+                },
+            )
+        }
     }
 
     /** 主题 → (背景色, 前景色)。 */
@@ -1039,15 +1203,25 @@ class ReaderActivity : AppCompatActivity() {
                 "</style></head><body>" + content + "</body></html>"
     }
 
-    /** 滚动到章内百分比；布局未完成（contentHeight=0）时每 100ms 重试，最多约 2.5s。 */
+    /**
+     * 滚动到章内百分比。WebView 的 contentHeight 在 loadDataWithBaseURL 后异步就绪，
+     * 直接滚动多半拿到的还是 0 → 断点恢复失败。这里等 contentHeight 连续 3 次采样一致
+     * （布局稳定）再滚动，最长给 30s（首帧 WebView 冷启动 + 大章节解析都够）。
+     */
     private fun scrollToPercent(web: WebView, percent: Float) {
         var tries = 0
+        var lastH = -1
+        var stable = 0
         web.post(object : Runnable {
             override fun run() {
-                val max = web.contentHeight - web.height
-                if (max > 0) {
-                    web.scrollTo(0, (percent * max).toInt())
-                } else if (++tries < 25) {
+                val h = web.contentHeight
+                if (h > 0 && h == lastH) stable++
+                else stable = 0
+                lastH = h
+                if (stable >= 3) {
+                    val max = (h - web.height).coerceAtLeast(0)
+                    if (max > 0) web.scrollTo(0, (percent * max).toInt())
+                } else if (++tries < 300) {
                     web.postDelayed(this, 100)
                 }
             }
@@ -1183,6 +1357,41 @@ class ReaderActivity : AppCompatActivity() {
                 }
                 Text("点击下方关闭", fontSize = 12.sp, color = Color(0xFF555555), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().clickable { onClose() }.padding(vertical = 10.dp))
+            }
+        }
+    }
+
+    /** 封面桥：优先 Glide 加载封面，无封面/失败时用色块 + 书名首字占位。 */
+    @Composable
+    private fun ReaderCover(url: String?, name: String, modifier: Modifier = Modifier) {
+        val context = LocalContext.current
+        var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
+        LaunchedEffect(url) {
+            if (url.isNullOrEmpty()) {
+                bitmap = null
+                return@LaunchedEffect
+            }
+            bitmap = withContext(Dispatchers.IO) {
+                try {
+                    Glide.with(context).asBitmap()
+                        .apply(RequestOptions().override(160, 160).timeout(8000))
+                        .load(url).submit().get()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "封面",
+                modifier = modifier,
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(modifier.background(Color(0xFF2A2A2A)), contentAlignment = Alignment.Center) {
+                Text(name.take(1).ifEmpty { "书" }, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFF666666))
             }
         }
     }
