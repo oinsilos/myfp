@@ -211,6 +211,54 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         if (uri != null) importLocalPlugin(uri)
     }
 
+    /** 歌单文本文件选择器（.txt/.lst 等，每行一个歌名/歌手）。 */
+    private val importTextPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importTextPlaylist(uri)
+    }
+
+    /** 文本歌单导入：读文本 → 逐行作为关键词批量聚合搜索 → 结果替换当前搜索列表。 */
+    private fun importTextPlaylist(uri: Uri) {
+        Thread {
+            try {
+                val text = contentResolver.openInputStream(uri)
+                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                val keywords = text.lineSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("#") }
+                    .toList()
+                    .distinct()
+                    .take(50)
+                if (keywords.isEmpty()) {
+                    runOnUiThread { Notify.show("文本为空：每行放一个歌名（可带 - 歌手）") }
+                    return@Thread
+                }
+                runOnUiThread {
+                    ui.importDialogVisible = false
+                    ui.searching = true
+                }
+                MusicRepository.get().searchMany(keywords).whenComplete { groups, err ->
+                    runOnUiThread {
+                        ui.searching = false
+                        if (err != null) {
+                            Notify.show("导入搜索失败：" + friendly(err))
+                        } else {
+                            val g = groups ?: emptyList()
+                            ui.searchGroups = g
+                            ui.results = g.flatMap { it.items }
+                            ui.tab = 0
+                            Notify.show(
+                                if (ui.results.isEmpty()) "未找到：请检查关键词"
+                                else "歌单搜索完成：${keywords.size} 个关键词，共 ${ui.results.size} 首"
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("文本读取失败：" + (e.message ?: "未知错误")) }
+            }
+        }.start()
+    }
+
     /** 遥控器/实体媒体键：播放暂停、上下首（覆盖系统不接管的按键；耳机键经 MediaSession 走服务侧）。 */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
@@ -330,6 +378,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     onSwitchSource = ::switchSource,
                     onImportPlugin = ::importPlugin,
                     onPickLocalPlugin = { localPluginPicker.launch(arrayOf("*/*")) },
+                    onPickTextImport = { importTextPicker.launch(arrayOf("text/*")) },
                     onAddPlaylist = ::openPlaylistPicker,
                     onScanLocal = ::requestLocalMusic,
                     onPlayLocalFile = ::playLocalFile,
@@ -1103,6 +1152,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
         onSwitchSource: (String) -> Unit,
         onImportPlugin: (String) -> Unit,
         onPickLocalPlugin: () -> Unit,
+        onPickTextImport: () -> Unit,
         onAddPlaylist: (MusicMedia) -> Unit,
         onScanLocal: () -> Unit,
         onPlayLocalFile: (File) -> Unit,
@@ -1166,7 +1216,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                                 CircularProgressIndicator(
                                     Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).size(28.dp)
                                 )
-                            } else if (keyword.isNotBlank()) {
+                            } else if (keyword.isNotBlank() || ui.results.isNotEmpty()) {
                                 ResultList(
                                     groups = ui.searchGroups,
                                     items = ui.results,
@@ -1219,6 +1269,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
             ImportDialog(
                 onClose = { ui.importDialogVisible = false },
                 onOk = onDoImport,
+                onPickTextFile = onPickTextImport,
             )
         }
         if (ui.messageVisible) {
@@ -2416,6 +2467,7 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
     private fun ImportDialog(
         onClose: () -> Unit,
         onOk: (String) -> Unit,
+        onPickTextFile: () -> Unit,
     ) {
         var url by remember { mutableStateOf("") }
         Dialog(
@@ -2431,11 +2483,18 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     modifier = Modifier.fillMaxWidth().padding(top = 26.dp, bottom = 6.dp),
                 )
                 Text(
-                    "粘贴网易云歌单/榜单链接（如 music.163.com/playlist?id=xxx）或纯数字 id",
+                    "粘贴网易云歌单/榜单链接（如 music.163.com/playlist?id=xxx）或纯数字 id；",
                     fontSize = 12.sp,
                     color = Color(0xFF888888),
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                )
+                Text(
+                    "也可以选择「歌名集」文本文件（每行一个歌名，支持「歌名 - 歌手」），批量搜索后统一整理。",
+                    fontSize = 12.sp,
+                    color = Color(0xFF888888),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 2.dp),
                 )
                 Spacer(Modifier.height(16.dp))
                 OutlinedTextField(
@@ -2447,10 +2506,12 @@ class MusicActivity : AppCompatActivity(), MusicPlaybackService.Listener {
                     keyboardActions = KeyboardActions(onDone = { onOk(url) }),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 )
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     TextButton(onClick = onClose) { Text("取消", color = Color(0xFF888888)) }
-                    Spacer(Modifier.width(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Button(onClick = onPickTextFile) { Text("选文本文件", fontSize = 13.sp) }
+                    Spacer(Modifier.width(12.dp))
                     Button(onClick = { onOk(url) }) { Text("导入") }
                 }
                 Text(

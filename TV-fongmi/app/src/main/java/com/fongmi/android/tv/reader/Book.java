@@ -19,7 +19,7 @@ public final class Book {
         public String name = "";
         public String url = "";
 
-        Chapter(String name, String url) {
+        public Chapter(String name, String url) {
             this.name = name;
             this.url = url;
         }

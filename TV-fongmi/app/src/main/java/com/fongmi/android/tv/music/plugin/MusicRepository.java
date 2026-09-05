@@ -16,10 +16,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 音乐数据仓库（多源）：管理内置 + 用户导入的 MusicFree 插件。
@@ -306,6 +309,36 @@ public final class MusicRepository {
                     }
                     return out;
                 });
+    }
+
+    /**
+     * 批量关键词搜索并合并（文本歌单导入）：逐词串行搜全部音源，
+     * 结果按平台合并到一个分组（同一源的多首歌曲归入一组），去空组。
+     */
+    public CompletableFuture<List<Aggregated>> searchMany(List<String> keywords) {
+        if (keywords == null || keywords.isEmpty()) return CompletableFuture.completedFuture(Collections.emptyList());
+        return CompletableFuture.supplyAsync(() -> {
+            List<Aggregated> out = new ArrayList<>();
+            Map<String, Integer> indexByPlatform = new HashMap<>();
+            for (String kw : keywords) {
+                try {
+                    List<Aggregated> groups = searchAll(kw).get(SOURCE_TIMEOUT_MS + 5000L, TimeUnit.MILLISECONDS);
+                    for (Aggregated g : groups) {
+                        if (g.items.isEmpty()) continue;
+                        Integer idx = indexByPlatform.get(g.platform);
+                        if (idx == null) {
+                            indexByPlatform.put(g.platform, out.size());
+                            out.add(new Aggregated(g.label, g.platform, new ArrayList<>(g.items)));
+                        } else {
+                            out.get(idx).items.addAll(g.items);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // 单个关键词超时/失败不影响其余
+                }
+            }
+            return out;
+        }, io);
     }
 
     /** 到点强制 complete（底层任务继续跑，OkHttp 30s 超时兜底回收线程），聚合绝不无限等待。 */

@@ -7,6 +7,10 @@ import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,10 +30,21 @@ public final class ReaderStore {
     private static final String KEY_SHELF = "shelf";
     private static final String KEY_PROGRESS = "progress";
     private static final String KEY_BOOKMARKS = "bookmarks";
+    private static final String KEY_SETTINGS = "reader_settings";
 
     private static volatile ReaderStore instance;
 
     private SharedPreferences prefs;
+    private File cacheRoot;
+
+    // ------------------------------------------------------------ 阅读设置（内存缓存，save 时落盘）
+
+    /** 正文字号（sp）。 */
+    public int fontSize = 17;
+    /** 行高倍数。 */
+    public float lineHeight = 1.9f;
+    /** 主题：dark 深色 / sepia 暖黄 / night 夜间。 */
+    public String theme = "dark";
 
     /** 阅读进度（章节号 + 章内 0~1 进度）。 */
     public static final class Progress {
@@ -69,6 +84,105 @@ public final class ReaderStore {
     public synchronized void init(Context context) {
         if (prefs != null) return;
         prefs = context.getApplicationContext().getSharedPreferences("reader_library", Context.MODE_PRIVATE);
+        cacheRoot = new File(context.getFilesDir(), "reader_cache");
+        loadSettings();
+    }
+
+    // ------------------------------------------------------------ 阅读设置
+
+    private void loadSettings() {
+        if (prefs == null) return;
+        try {
+            JSONObject o = new JSONObject(prefs.getString(KEY_SETTINGS, "{}"));
+            int fs = o.optInt("fontSize", 17);
+            if (fs >= 12 && fs <= 30) fontSize = fs;
+            float lh = (float) o.optDouble("lineHeight", 1.9);
+            if (lh >= 1.2f && lh <= 3.0f && !Float.isNaN(lh)) lineHeight = lh;
+            String t = o.optString("theme", "dark");
+            if ("dark".equals(t) || "sepia".equals(t) || "night".equals(t)) theme = t;
+        } catch (Exception e) {
+            Log.w(TAG, "load settings failed", e);
+        }
+    }
+
+    public void saveSettings() {
+        if (prefs == null) return;
+        try {
+            JSONObject o = new JSONObject();
+            o.put("fontSize", fontSize);
+            o.put("lineHeight", lineHeight);
+            o.put("theme", theme);
+            prefs.edit().putString(KEY_SETTINGS, o.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "save settings failed", e);
+        }
+    }
+
+    // ------------------------------------------------------------ 章节缓存（私有目录 reader_cache/<md5(bookUrl)>/<index>.html）
+
+    private File bookCacheDir(String bookUrl) {
+        if (cacheRoot == null || bookUrl == null || bookUrl.isEmpty()) return null;
+        File dir = new File(cacheRoot, md5(bookUrl));
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    private static String md5(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] d = md.digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            return String.valueOf(s.hashCode());
+        }
+    }
+
+    /** 某章缓存文件（index 从 0 起）。 */
+    public File cacheFile(String bookUrl, int index) {
+        File dir = bookCacheDir(bookUrl);
+        return dir == null ? null : new File(dir, index + ".html");
+    }
+
+    /** 读缓存正文；无缓存返回 null。 */
+    public String cachedChapter(String bookUrl, int index) {
+        File f = cacheFile(bookUrl, index);
+        if (f == null || !f.exists()) return null;
+        try {
+            return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 写入章节缓存。 */
+    public boolean cacheChapter(String bookUrl, int index, String html) {
+        File f = cacheFile(bookUrl, index);
+        if (f == null || html == null) return false;
+        try {
+            Files.write(f.toPath(), html.getBytes(StandardCharsets.UTF_8));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 已缓存章节数（0~total）。 */
+    public int cachedCount(String bookUrl) {
+        File dir = bookCacheDir(bookUrl);
+        if (dir == null) return 0;
+        File[] fs = dir.listFiles((d, name) -> name.endsWith(".html"));
+        return fs == null ? 0 : fs.length;
+    }
+
+    /** 清空某书缓存。 */
+    public void clearCache(String bookUrl) {
+        File dir = bookCacheDir(bookUrl);
+        if (dir == null) return;
+        File[] fs = dir.listFiles();
+        if (fs == null) return;
+        for (File f : fs) f.delete();
     }
 
     // ------------------------------------------------------------ 书架
