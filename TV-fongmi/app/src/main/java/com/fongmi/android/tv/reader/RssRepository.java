@@ -305,6 +305,62 @@ public final class RssRepository {
         }
     }
 
+    /** 已缓存的条目（书架打开 RSS 书时离线重建目录与正文）。 */
+    public List<RssArticle> cachedArticles(String url) {
+        List<RssArticle> cached = readCache(url);
+        return cached == null ? new ArrayList<>() : cached;
+    }
+
+    // ------------------------------------------------------------ OPML
+
+    /** 导出全部订阅源为 OPML 文本。 */
+    public String exportOpml() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                .append("<opml version=\"2.0\">\n<head><title>TV-fongmi 阅读订阅</title></head>\n<body>\n")
+                .append("<outline text=\"订阅源\" title=\"订阅源\">\n");
+        for (RssSource s : sources()) {
+            sb.append("<outline type=\"rss\" text=\"").append(esc(s.name))
+                    .append("\" title=\"").append(esc(s.name))
+                    .append("\" xmlUrl=\"").append(esc(s.url)).append("\"/>\n");
+        }
+        sb.append("</outline>\n</body>\n</opml>");
+        return sb.toString();
+    }
+
+    /** 导入 OPML：解析所有含 xmlUrl 的 outline，批量添加源；返回新增数量。 */
+    public int importOpml(String content) {
+        if (content == null || content.isEmpty()) return 0;
+        int added = 0;
+        try {
+            XmlPullParser p = XmlPullParserFactory.newInstance().newPullParser();
+            p.setInput(new StringReader(content));
+            int evt;
+            while ((evt = p.next()) != XmlPullParser.END_DOCUMENT) {
+                if (evt == XmlPullParser.START_TAG && "outline".equals(p.getName())) {
+                    String xmlUrl = p.getAttributeValue(null, "xmlUrl");
+                    if (xmlUrl != null && !xmlUrl.trim().isEmpty()) {
+                        String name = p.getAttributeValue(null, "title");
+                        if (name == null || name.isEmpty()) name = p.getAttributeValue(null, "text");
+                        if (name == null || name.isEmpty()) name = "订阅源";
+                        addSource(name, xmlUrl.trim());
+                        added++;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "import opml failed", e);
+            return 0;
+        }
+        return added;
+    }
+
+    private static String esc(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&apos;");
+    }
+
     private static String md5(String s) {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");

@@ -136,6 +136,8 @@ class ReaderActivity : AppCompatActivity() {
         var rssLoading by mutableStateOf(false)
         var rssError by mutableStateOf("")
         var rssSourceDialogVisible by mutableStateOf(false)
+        /** 当前 RSS 源是否已在书架（RssBar 收藏按钮即时刷新）。 */
+        var rssInShelf by mutableStateOf(false)
     }
 
     private val ui = UiState()
@@ -148,6 +150,15 @@ class ReaderActivity : AppCompatActivity() {
     /** 待恢复的段落号（openChapter 从进度库读到后置值；阅读页首次布局消费后复位 -1）。 */
     private var restorePara = -1
     private val mainHandler = Handler(Looper.getMainLooper())
+    /** RSS 定时自动刷新（30 分钟一次，仅 RSS 页可见且未在阅读时执行）。 */
+    private val rssRefreshTick = object : Runnable {
+        override fun run() {
+            if (ui.rssMode && !ui.reading && !ui.rssLoading && ui.rssActive.isNotEmpty()) {
+                loadRssArticles(ui.rssActive, background = true)
+            }
+            mainHandler.postDelayed(this, 30 * 60_000L)
+        }
+    }
     /** 搜索兜底：底层（书源网络/规则求值）无论怎样，25s 内必须结束搜索态，绝不无限转圈。 */
     private val uiHandler = Handler(Looper.getMainLooper())
     private val SEARCH_TIMEOUT_MS = 25_000L
@@ -155,6 +166,16 @@ class ReaderActivity : AppCompatActivity() {
     /** 本地 TXT 书籍文件选择器（SAF）。 */
     private val localTxtPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importLocalTxt(uri)
+    }
+
+    /** OPML 导入（批量添加订阅源）。 */
+    private val opmlImportPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importOpmlFile(uri)
+    }
+
+    /** OPML 导出（保存全部订阅源）。 */
+    private val opmlExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/xml")) { uri ->
+        if (uri != null) exportOpmlFile(uri)
     }
 
     companion object {
@@ -233,11 +254,19 @@ class ReaderActivity : AppCompatActivity() {
                         if (ui.rssActive.isEmpty()) {
                             ui.rssActive = RssRepository.get().sources().firstOrNull()?.url ?: ""
                         }
+                        refreshRssShelfState()
                         if (ui.rssActive.isNotEmpty() && ui.rssArticles.isEmpty()) loadRssArticles(ui.rssActive)
                     },
                     onBackFromRss = { ui.rssMode = false },
                     onSelectRssSource = ::loadRssArticles,
                     onOpenRssArticle = ::openRssArticle,
+                    onRefreshRss = {
+                        if (ui.rssActive.isNotEmpty()) loadRssArticles(ui.rssActive)
+                        else Notify.show("请先选择订阅源")
+                    },
+                    onToggleRssShelf = ::toggleRssShelf,
+                    onImportOpml = { opmlImportPicker.launch(arrayOf("*/*")) },
+                    onExportOpml = { opmlExportPicker.launch("rss_subscriptions.opml") },
                     onRssImport = { name, url ->
                         if (url.isBlank()) {
                             Notify.show("请输入源名称和地址")
@@ -267,6 +296,12 @@ class ReaderActivity : AppCompatActivity() {
                 )
             }
         }
+        mainHandler.postDelayed(rssRefreshTick, 30 * 60_000L)
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacks(rssRefreshTick)
+        super.onDestroy()
     }
 
     /** 退到后台/切走时立即落盘进度，保证系统杀进程后也能断点续读。 */
@@ -323,6 +358,22 @@ class ReaderActivity : AppCompatActivity() {
                 val p = ReaderStore.get().progress(book.url)
                 if (p != null && p.chapter in 0 until book.chapters.size) openChapter(p.chapter)
                 else if (book.chapters.isNotEmpty()) openChapter(0)
+            }
+            return
+        }
+        // RSS 源收藏书：从条目缓存重建目录，直接续读（离线可用）
+        if (book.url.startsWith("rss_src://")) {
+            ui.detailLoading = false
+            refreshBookmarks()
+            val sourceUrl = book.url.removePrefix("rss_src://")
+            val arts = RssRepository.get().cachedArticles(sourceUrl)
+            if (arts.isNotEmpty() && book.chapters.isEmpty()) {
+                for (a in arts) book.chapters.add(Book.Chapter(a.title.ifEmpty { "文章" }, a.link.ifEmpty { "rss" }))
+            }
+            if (autoContinue) {
+                val p = ReaderStore.get().progress(book.url)
+                val idx = if (p != null && p.chapter in 0 until book.chapters.size) p.chapter else 0
+                if (book.chapters.isNotEmpty()) openChapter(idx) else Notify.show("该源暂无缓存文章，先去 RSS 页刷新")
             }
             return
         }
@@ -549,19 +600,20 @@ class ReaderActivity : AppCompatActivity() {
         ui.rssSources = RssRepository.get().sources()
     }
 
-    /** 拉取订阅源文章列表（失败时回落缓存）。 */
-    private fun loadRssArticles(url: String) {
+    /** 拉取订阅源文章列表（失败时回落缓存）；background=true 时不清空旧列表（定时刷新）。 */
+    private fun loadRssArticles(url: String, background: Boolean = false) {
         if (url.isEmpty()) return
         ui.rssActive = url
         ui.rssLoading = true
         ui.rssError = ""
-        ui.rssArticles = emptyList()
+        if (!background) ui.rssArticles = emptyList()
+        refreshRssShelfState()
         RssRepository.get().refresh(url).whenComplete { list, _ ->
             runOnUiThread {
                 ui.rssLoading = false
                 val items = list ?: emptyList()
-                ui.rssArticles = items
-                if (items.isEmpty()) {
+                if (items.isNotEmpty()) ui.rssArticles = items
+                if (ui.rssArticles.isEmpty()) {
                     ui.rssError = if (url.isBlank()) "请先添加订阅源"
                     else "该源暂无内容（可能网络失败且无缓存）"
                 }
@@ -575,7 +627,7 @@ class ReaderActivity : AppCompatActivity() {
         if (index !in arts.indices) return
         val source = ui.rssSources.firstOrNull { it.url == ui.rssActive }
         val name = source?.name?.ifEmpty { "RSS" } ?: "RSS"
-        val book = Book("rss://" + abs(ui.rssActive.hashCode()), name, "RSS 源", "")
+        val book = Book("rss_src://" + ui.rssActive, name, "RSS 源", "")
         book.source = "rss"
         for (a in arts) {
             book.chapters.add(Book.Chapter(a.title.ifEmpty { "文章" }, a.link.ifEmpty { "rss" }))
@@ -586,6 +638,63 @@ class ReaderActivity : AppCompatActivity() {
         ui.detailLoading = false
         ui.inShelf = false
         openChapter(index)
+    }
+
+    /** 当前 RSS 源是否已在书架（RssBar 收藏按钮）。 */
+    private fun refreshRssShelfState() {
+        ui.rssInShelf = ui.rssActive.isNotEmpty() && ReaderStore.get().inShelf("rss_src://" + ui.rssActive)
+    }
+
+    /** 收藏/移出当前 RSS 源（整个源作为一本书进书架，点开直接续读文章）。 */
+    private fun toggleRssShelf() {
+        val url = ui.rssActive
+        if (url.isEmpty()) return
+        val source = ui.rssSources.firstOrNull { it.url == url }
+        val name = source?.name?.ifEmpty { "RSS" } ?: "RSS"
+        val bookUrl = "rss_src://" + url
+        if (ui.rssInShelf) {
+            ReaderStore.get().removeFromShelf(bookUrl)
+            Notify.show("已从书架移出")
+        } else {
+            val b = Book(bookUrl, name, "RSS 源", "")
+            b.source = "rss"
+            for (a in ui.rssArticles) b.chapters.add(Book.Chapter(a.title.ifEmpty { "文章" }, a.link.ifEmpty { "rss" }))
+            ReaderStore.get().addToShelf(b)
+            Notify.show("已收藏到书架（${b.chapters.size} 篇文章）")
+        }
+        ui.rssInShelf = !ui.rssInShelf
+        refreshShelves()
+    }
+
+    /** 导入 OPML：读取文本 → 批量添加订阅源。 */
+    private fun importOpmlFile(uri: Uri) {
+        Thread {
+            try {
+                val text = contentResolver.openInputStream(uri)
+                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                val n = RssRepository.get().importOpml(text)
+                runOnUiThread {
+                    refreshRssSources()
+                    Notify.show(if (n > 0) "OPML 导入完成：新增 $n 个订阅源" else "OPML 内未找到订阅源")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("OPML 导入失败：" + (e.message ?: "")) }
+            }
+        }.start()
+    }
+
+    /** 导出 OPML：全部订阅源写入用户选择的文件。 */
+    private fun exportOpmlFile(uri: Uri) {
+        Thread {
+            try {
+                contentResolver.openOutputStream(uri)?.bufferedWriter(StandardCharsets.UTF_8)?.use {
+                    it.write(RssRepository.get().exportOpml())
+                }
+                runOnUiThread { Notify.show("已导出订阅源 OPML") }
+            } catch (e: Exception) {
+                runOnUiThread { Notify.show("导出失败：" + (e.message ?: "")) }
+            }
+        }.start()
     }
 
     /** 设置变更：写入 ReaderStore 持久化，并以新样式重载当前章（进度位置保留）。 */
@@ -715,6 +824,10 @@ class ReaderActivity : AppCompatActivity() {
         onRssImport: (String, String) -> Unit,
         onToggleRssSource: (String) -> Unit,
         onRemoveRssSource: (String) -> Unit,
+        onRefreshRss: () -> Unit,
+        onToggleRssShelf: () -> Unit,
+        onImportOpml: () -> Unit,
+        onExportOpml: () -> Unit,
         onOpenSources: () -> Unit,
         onImport: (String) -> Unit,
         onToggleSource: (String) -> Unit,
@@ -737,8 +850,11 @@ class ReaderActivity : AppCompatActivity() {
                 } else if (ui.rssMode) {
                     RssBar(
                         title = ui.rssSources.firstOrNull { it.url == ui.rssActive }?.name ?: "RSS 订阅",
+                        inShelf = ui.rssInShelf,
                         onBack = onBackFromRss,
                         onManage = { ui.rssSourceDialogVisible = true },
+                        onToggleShelf = onToggleRssShelf,
+                        onRefresh = onRefreshRss,
                     )
                 } else if (ui.cacheMode) {
                     CacheBar(onBack = onCloseCache, onClearAll = onClearAllCache)
@@ -840,6 +956,8 @@ class ReaderActivity : AppCompatActivity() {
                 onAdd = onRssImport,
                 onToggle = onToggleRssSource,
                 onRemove = onRemoveRssSource,
+                onImportOpml = onImportOpml,
+                onExportOpml = onExportOpml,
             )
         }
     }
@@ -1232,17 +1350,32 @@ class ReaderActivity : AppCompatActivity() {
         }
     }
 
-    /** RSS 顶栏：返回搜索 + 源名 + 源管理。 */
+    /** RSS 顶栏：返回搜索 + 源名 + 收藏到书架 + 刷新 + 源管理。 */
     @Composable
-    private fun RssBar(title: String, onBack: () -> Unit, onManage: () -> Unit) {
+    private fun RssBar(
+        title: String,
+        inShelf: Boolean,
+        onBack: () -> Unit,
+        onManage: () -> Unit,
+        onToggleShelf: () -> Unit,
+        onRefresh: () -> Unit,
+    ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ 搜索", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack).padding(horizontal = 6.dp, vertical = 6.dp))
             Spacer(Modifier.weight(1f))
             Text(title, fontSize = 15.sp, color = Color(0xFFE0E0E0), maxLines = 1)
             Spacer(Modifier.weight(1f))
+            Text(
+                if (inShelf) "已在书架" else "收藏",
+                fontSize = 12.sp,
+                color = if (inShelf) Color(0xFFFFB74D) else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onToggleShelf).padding(horizontal = 5.dp, vertical = 6.dp),
+            )
+            Text("刷新", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable(onClick = onRefresh).padding(horizontal = 5.dp, vertical = 6.dp))
             Text("源管理", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onManage).padding(horizontal = 6.dp, vertical = 6.dp))
+                modifier = Modifier.clickable(onClick = onManage).padding(horizontal = 5.dp, vertical = 6.dp))
         }
     }
 
@@ -1324,7 +1457,7 @@ class ReaderActivity : AppCompatActivity() {
             .trim()
     }
 
-    /** 订阅源管理：列表（开关/删除）+ 添加（名称 + 地址）。 */
+    /** 订阅源管理：列表（开关/删除）+ OPML 导入导出 + 添加（名称 + 地址）。 */
     @Composable
     private fun RssSourceDialog(
         sources: List<RssRepository.RssSource>,
@@ -1332,6 +1465,8 @@ class ReaderActivity : AppCompatActivity() {
         onAdd: (String, String) -> Unit,
         onToggle: (String) -> Unit,
         onRemove: (String) -> Unit,
+        onImportOpml: () -> Unit,
+        onExportOpml: () -> Unit,
     ) {
         var name by remember { mutableStateOf("") }
         var url by remember { mutableStateOf("") }
@@ -1370,6 +1505,11 @@ class ReaderActivity : AppCompatActivity() {
                             HorizontalDivider(color = Color(0x16FFFFFF))
                         }
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onImportOpml) { Text("导入 OPML", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
+                    Spacer(Modifier.width(16.dp))
+                    TextButton(onClick = onExportOpml) { Text("导出 OPML", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                     OutlinedTextField(
