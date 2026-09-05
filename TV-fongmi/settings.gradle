@@ -17,7 +17,7 @@ dependencyResolutionManagement {
         google()
         flatDir { dirs "$rootDir/app/libs" }
         maven { url = "https://jitpack.io" }
-        maven { url = uri("$rootDir/../legado-beta/third_party/maven") }
+        maven { url = uri("$rootDir/third_party/maven") }
     }
 }
 
