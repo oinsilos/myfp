@@ -223,6 +223,20 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         else if ("read".equals(tab)) change(3);
     }
 
+    /** 统一设置页「音乐音源」卡片：切入音乐板块并弹出插件源管理。 */
+    public void openMusicSources() {
+        change(2);
+        Fragment f = mManager.getFragment(2);
+        if (f instanceof MusicFragment) ((MusicFragment) f).openSourceDialog();
+    }
+
+    /** 统一设置页「书源管理」卡片：切入小说板块并弹出书源管理。 */
+    public void openReadSources() {
+        change(3);
+        Fragment f = mManager.getFragment(3);
+        if (f instanceof ReaderFragment) ((ReaderFragment) f).openSourceDialog();
+    }
+
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void onConfigEvent(ConfigEvent event) {
         switch (event.type()) {
@@ -232,9 +246,7 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
             case COMMON:
                 setNavigation();
                 break;
-            case BOOT:
-                LiveActivity.start(this);
-                break;
+            // BOOT（开机直接进直播）已随直播板块入口一并移除
         }
     }
 

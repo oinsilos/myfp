@@ -91,6 +91,7 @@ import com.fongmi.android.tv.reader.EpubImporter
 import com.fongmi.android.tv.reader.ReaderRepository
 import com.fongmi.android.tv.reader.ReaderStore
 import com.fongmi.android.tv.reader.RssRepository
+import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.ui.common.UnifiedBackup
 import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
 import com.fongmi.android.tv.utils.Notify
@@ -218,6 +219,13 @@ class ReaderFragment : Fragment() {
     private var lastAutoSaveAt = 0L
     /** 待恢复的段落号（openChapter 从进度库读到后置值；阅读页首次布局消费后复位 -1）。 */
     private var restorePara = -1
+    /** 全局主题订阅：设置在其它板块修改后即时换肤（已归属 ThemeStore，不再依赖板块内设置）。 */
+    private val themeListener: (String) -> Unit = { t ->
+        mainHandler.post {
+            ui.theme = t
+            if (ui.reading) openChapter(ui.chapterIndex)
+        }
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
     /** RSS 定时自动刷新（30 分钟一次，仅 RSS 页可见且未在阅读时执行）。 */
     private val rssRefreshTick = object : Runnable {
@@ -277,9 +285,11 @@ class ReaderFragment : Fragment() {
         ReaderStore.get().init(requireContext())
         RssRepository.get().init(requireContext())
         val rdr = ReaderStore.get()
+        ThemeStore.get().init(requireContext())
+        ThemeStore.get().addListener(themeListener)
         ui.fontSize = rdr.fontSize
         ui.lineHeight = rdr.lineHeight
-        ui.theme = rdr.theme
+        ui.theme = ThemeStore.get().theme
         ui.ttsSpeed = rdr.ttsSpeed
         ui.ttsEngine = rdr.ttsEngine
         ui.ttsOnlineUrl = rdr.ttsOnlineUrl
@@ -422,6 +432,7 @@ class ReaderFragment : Fragment() {
     }
 
     override fun onDestroy() {
+        ThemeStore.get().removeListener(themeListener)
         ttsSpeaker.release()
         super.onDestroy()
     }
@@ -863,6 +874,11 @@ class ReaderFragment : Fragment() {
         mainHandler.post { importLocalBook(uri) }
     }
 
+    /** 底部设置 tab 的「书源管理」入口：切入本板块并弹出书源管理。 */
+    fun openSourceDialog() {
+        mainHandler.post { ui.sourceDialogVisible = true }
+    }
+
     private fun saveProgress() {
         val book = ui.book ?: return
         if (ui.content.isEmpty()) return
@@ -1150,13 +1166,13 @@ class ReaderFragment : Fragment() {
         }.start()
     }
 
-    /** 设置变更：写入 ReaderStore 持久化，并以新样式重载当前章（进度位置保留）。 */
+    /** 阅读设置变更：主题写全局 ThemeStore，字号/行距写 ReaderStore（均持久化），并以新样式重载当前章。 */
     private fun applySettings() {
         val s = ReaderStore.get()
         s.fontSize = ui.fontSize
         s.lineHeight = ui.lineHeight
-        s.theme = ui.theme
         s.saveSettings()
+        ThemeStore.get().theme = ui.theme
         if (ui.reading) openChapter(ui.chapterIndex)
     }
 

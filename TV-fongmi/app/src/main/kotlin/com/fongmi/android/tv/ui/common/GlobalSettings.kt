@@ -145,6 +145,9 @@ public fun UnifiedSettingsPage(
         Text("视频 · 音乐 · 小说 三板块共用：主题/皮肤 与 备份/恢复", fontSize = 11.sp,
             color = Color(0xFF888888), textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth())
+        Text("护眼（暖色）用于小说正文；视频/音乐播放页恒定深色", fontSize = 11.sp,
+            color = Color(0xFF777777), textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
         // 主题 / 皮肤
         Text("主题 / 皮肤", fontSize = 14.sp, color = Color(0xFFDDDDDD),
             modifier = Modifier.padding(top = 14.dp))
@@ -165,7 +168,7 @@ public fun UnifiedSettingsPage(
         }
         HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 12.dp))
         // 阅读字号 / 行距
-        Text("阅读字号  ${fontSize}sp", fontSize = 14.sp, color = Color(0xFFDDDDDD))
+        Text("阅读字号（仅小说）  ${fontSize}sp", fontSize = 14.sp, color = Color(0xFFDDDDDD))
         Slider(
             value = sliderValue,
             onValueChange = { sliderValue = it },
@@ -173,7 +176,7 @@ public fun UnifiedSettingsPage(
             valueRange = 12f..30f,
             modifier = Modifier.fillMaxWidth(),
         )
-        Text("行距", fontSize = 14.sp, color = Color(0xFFDDDDDD))
+        Text("行距（仅小说）", fontSize = 14.sp, color = Color(0xFFDDDDDD))
         Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
             for (opt in listOf(1.5f, 1.8f, 2.0f, 2.4f)) {
                 val sel = Math.abs(lineHeight - opt) < 0.01f

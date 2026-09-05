@@ -98,6 +98,7 @@ import com.fongmi.android.tv.music.plugin.MusicRepository
 import com.fongmi.android.tv.music.plugin.MusicSource
 import com.fongmi.android.tv.music.service.MusicPlaybackService
 import com.fongmi.android.tv.reader.ReaderStore
+import com.fongmi.android.tv.ui.common.ThemeStore
 import com.fongmi.android.tv.ui.common.UnifiedBackup
 import com.fongmi.android.tv.ui.common.UnifiedSettingsDialog
 import com.fongmi.android.tv.utils.Notify
@@ -349,6 +350,7 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         // init 为后台异步加载（Rhino 引擎初始化不阻塞 UI，避免模拟器/低端机 ANR）
         MusicRepository.get().init(requireContext())
         MusicLibrary.get().init(requireContext())
+        ThemeStore.get().init(requireContext())
         refreshLibrary()
         MusicDownloader.get().init(requireContext())
         MusicDownloader.get().setListener(object : MusicDownloader.Listener {
@@ -468,7 +470,11 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
         }
     }
 
-    /** 刷新音源列表与当前源显示（插件为加载完成前显示「加载中…」，失败显示「加载失败」并附原因）。 */
+    /** 底部设置 tab 的「音乐音源」入口：切入本板块并弹出音源/插件源管理。 */
+    fun openSourceDialog() {
+        handler.post { ui.sourceDialogVisible = true }
+    }
+
     private fun refreshSourceInfo() {
         ui.sources = MusicRepository.get().plugins()
         val p = MusicRepository.get().platform()
@@ -1341,14 +1347,13 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
             )
         }
         if (ui.unifiedSettingsVisible) {
-            // 统一设置与小说模块共用：主题/皮肤（作用阅读与界面）+ 备份/恢复（单一 JSON 含音乐本地库）
+            // 统一设置与阅读模块共用：主题（全局 ThemeStore）+ 备份/恢复（单一 JSON 含音乐本地库）
             UnifiedSettingsDialog(
-                theme = ReaderStore.get().theme,
+                theme = ThemeStore.get().theme,
                 fontSize = ReaderStore.get().fontSize,
                 lineHeight = ReaderStore.get().lineHeight,
                 onTheme = {
-                    ReaderStore.get().theme = it
-                    ReaderStore.get().saveSettings()
+                    ThemeStore.get().theme = it
                 },
                 onFontSize = {
                     ReaderStore.get().fontSize = it
