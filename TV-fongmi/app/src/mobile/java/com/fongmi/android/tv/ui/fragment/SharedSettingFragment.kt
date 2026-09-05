@@ -109,6 +109,7 @@ class SharedSettingFragment : Fragment() {
     private val musicSourceVisible = mutableStateOf(false)
     private val readSourceVisible = mutableStateOf(false)
     private val videoSettingVisible = mutableStateOf(false)
+    private val netSettingVisible = mutableStateOf(false)
 
     /** 板块内「去设置导入」跳转：音乐音源管理弹窗。 */
     fun openMusicSourceDialog() {
@@ -201,7 +202,8 @@ class SharedSettingFragment : Fragment() {
                 // ---- 板块入口卡片：源配置管理收敛到这里，板块内仅保留切换 ----
                 Text("板块设置", fontSize = 13.sp, color = Color(0xFF999999),
                     modifier = Modifier.padding(top = 18.dp, bottom = 6.dp))
-                SectionRow("视频设置", "点播源 · DNS · 壁纸 · 无痕 · 播放器 · 弹幕 · 预加载 · 解码", onOpenVideoSettings)
+                SectionRow("视频设置", "点播源 · 壁纸 · 无痕 · 尺寸 · 播放器 · 弹幕 · 预加载 · 解码", onOpenVideoSettings)
+                SectionRow("网络设置", "DNS(DoH) · 播放器 UA（三板块共用）") { netSettingVisible.value = true }
                 SectionRow("音乐音源", "切换 · 插件导入 · 本地 JS（设置内完成，板块里只留切换）") { musicSourceVisible.value = true }
                 SectionRow("书源管理", "切换 · 导入 · 测试 · 删除（设置内完成，板块里只留切换）") { readSourceVisible.value = true }
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 16.dp))
@@ -319,6 +321,9 @@ class SharedSettingFragment : Fragment() {
                 onClose = { videoSettingVisible.value = false },
                 onOpenPage = { pos -> (requireActivity() as? HomeActivity)?.change(pos) },
             )
+        }
+        if (netSettingVisible.value) {
+            NetSettingsDialog(onClose = { netSettingVisible.value = false })
         }
     }
 
@@ -513,21 +518,90 @@ class SharedSettingFragment : Fragment() {
         }
     }
 
-    /** 视频设置弹窗（视频板块式紧凑弹窗，驻留设置 tab）：点播源配置 / DNS / UA / 无痕 / 尺寸 / 壁纸 / 子页入口。 */
+    /** 网络设置弹窗（三板块共用）：DNS(DoH) + 播放器 UA，作用于全局 OkHttp。 */
+    @Composable
+    private fun NetSettingsDialog(onClose: () -> Unit) {
+        var ua by remember { mutableStateOf(Setting.getUa()) }
+        var dnsTick by remember { mutableStateOf(0) }
+        val context = LocalContext.current
+        val dohList = remember { Doh.get(context).ifEmpty { VodConfig.get().getDoh() } }
+        val dohNames = remember(dnsTick) { dohList.map { it.getName() } }
+        val dohIndex = remember(dnsTick) { dohList.indexOf(Doh.objectFrom(Setting.getDoh())).coerceAtLeast(0) }
+        Dialog(
+            onDismissRequest = onClose,
+            properties = DialogProperties(usePlatformDefaultWidth = true, decorFitsSystemWindows = false),
+        ) {
+            Column(
+                Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(14.dp))
+                    .widthIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 18.dp),
+            ) {
+                Text("网络设置", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                Text("DNS(DoH) · 播放器 UA（音乐 / 小说 / 视频共用，全局生效）", fontSize = 11.sp,
+                    color = Color(0xFF888888), textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
+                HorizontalDivider(color = Color(0x22FFFFFF))
+                Text("DNS（DoH）", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 2.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+                    dohNames.forEachIndexed { i, name ->
+                        val sel = i == dohIndex
+                        Text(
+                            name,
+                            fontSize = 12.sp,
+                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
+                                .clickable {
+                                    dohList.getOrNull(i)?.let {
+                                        OkHttp.dns().setDoh(it)
+                                        Setting.putDoh(it.toString())
+                                        dnsTick++
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                }
+                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 12.dp))
+                Text("播放器 UA", fontSize = 13.sp, color = Color(0xFFDDDDDD),
+                    modifier = Modifier.padding(start = 20.dp, bottom = 4.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = ua,
+                        onValueChange = { ua = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("自定义 User-Agent，可留空", color = Color(0xFF666666), fontSize = 13.sp) },
+                        maxLines = 1,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        Setting.putUa(ua.trim())
+                        Notify.show("UA 已保存")
+                    }) { Text("保存", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                }
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("完成", fontSize = 13.sp, color = Color(0xFF888888))
+                }
+            }
+        }
+    }
+
+    /** 视频设置弹窗（视频板块式紧凑弹窗，驻留设置 tab）：点播源 / 壁纸 / 无痕 / 尺寸 / 子页入口。 */
     @Composable
     private fun VideoSettingsDialog(
         onClose: () -> Unit,
         onOpenPage: (Int) -> Unit,
     ) {
         var url by remember { mutableStateOf(VodConfig.getUrl()) }
-        var ua by remember { mutableStateOf(Setting.getUa()) }
-        var dnsTick by remember { mutableStateOf(0) }
         var wallTick by remember { mutableStateOf(0) }
         val context = LocalContext.current
         val handler = remember { Handler(Looper.getMainLooper()) }
-        val dohList = remember { Doh.get(context).ifEmpty { VodConfig.get().getDoh() } }
-        val dohNames = remember(dnsTick) { dohList.map { it.getName() } }
-        val dohIndex = remember(dnsTick) { dohList.indexOf(Doh.objectFrom(Setting.getDoh())).coerceAtLeast(0) }
         val sizeList = remember { context.resources.getStringArray(R.array.select_size).toList() }
         val wall = remember(wallTick) { Setting.getWall() }
         Dialog(
@@ -542,7 +616,7 @@ class SharedSettingFragment : Fragment() {
             ) {
                 Text("视频设置", fontSize = 16.sp, color = Color.White, textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
-                Text("点播源 · DNS · 壁纸 · 无痕 · 尺寸（播放器/弹幕/预加载/解码在下方进入）", fontSize = 11.sp,
+                Text("点播源 · 壁纸 · 无痕 · 尺寸（DNS / UA 在「网络设置」共用）", fontSize = 11.sp,
                     color = Color(0xFF888888), textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 8.dp))
                 HorizontalDivider(color = Color(0x22FFFFFF))
@@ -593,50 +667,6 @@ class SharedSettingFragment : Fragment() {
                                 handler.post { Notify.show(if (ok) "测试通过" else "测试失败：源不可达") }
                             }.start()
                         }.padding(horizontal = 8.dp, vertical = 4.dp))
-                }
-                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
-                // ---- DNS(DoH) ----
-                Text("DNS（DoH）", fontSize = 13.sp, color = Color(0xFFDDDDDD),
-                    modifier = Modifier.padding(start = 20.dp, bottom = 2.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
-                    dohNames.forEachIndexed { i, name ->
-                        val sel = i == dohIndex
-                        Text(
-                            name,
-                            fontSize = 12.sp,
-                            color = if (sel) Color(0xFF141414) else Color(0xFFCCCCCC),
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(if (sel) Color(0xFF4FC3F7) else Color(0x26FFFFFF))
-                                .clickable {
-                                    dohList.getOrNull(i)?.let {
-                                        OkHttp.dns().setDoh(it)
-                                        Setting.putDoh(it.toString())
-                                        dnsTick++
-                                    }
-                                }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                }
-                HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
-                // ---- UA ----
-                Text("播放器 UA", fontSize = 13.sp, color = Color(0xFFDDDDDD),
-                    modifier = Modifier.padding(start = 20.dp, bottom = 4.dp))
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = ua,
-                        onValueChange = { ua = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("自定义 User-Agent，可留空", color = Color(0xFF666666), fontSize = 13.sp) },
-                        maxLines = 1,
-                        singleLine = true,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = {
-                        Setting.putUa(ua.trim())
-                        Notify.show("UA 已保存")
-                    }) { Text("保存", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
                 }
                 HorizontalDivider(color = Color(0x22FFFFFF), modifier = Modifier.padding(vertical = 10.dp))
                 // ---- 无痕 / 尺寸 / 壁纸 ----

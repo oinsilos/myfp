@@ -23,4 +23,11 @@
         app:iconTint="@color/white"
         app:showAsAction="always" />
 
+<item
+        android:id="@+id/live"
+        android:icon="@drawable/ic_action_live"
+        android:title="@string/nav_live"
+        app:iconTint="@color/white"
+        app:showAsAction="always" />
+
 </menu>

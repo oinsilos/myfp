@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -43,6 +44,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
@@ -1796,6 +1798,37 @@ class ReaderFragment : Fragment() {
                         modifier = Modifier.clickable(onClick = onOpenNewGroup)
                             .clip(RoundedCornerShape(14.dp)).background(Color(0x26FFFFFF))
                             .padding(horizontal = 12.dp, vertical = 3.dp))
+                }
+            }
+            // 继续阅读（未读完的书横滑卡片，按最近阅读排前）
+            val continueBooks = shelves
+                .map { b -> b to ReaderStore.get().progress(b.url) }
+                .filter { (_, p) -> p != null && p.percent < 0.99f }
+                .sortedByDescending { (_, p) -> p!!.lastRead }
+            if (continueBooks.isNotEmpty()) {
+                item(key = "continue") {
+                    Text("继续阅读", fontSize = 13.sp, color = Color(0xFF999999),
+                        modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 2.dp))
+                    LazyRow(Modifier.fillMaxWidth().padding(end = 8.dp)) {
+                        itemsIndexed(continueBooks) { _, (book, p) ->
+                            Column(
+                                Modifier.width(112.dp).padding(6.dp).clickable { onOpenBook(book) },
+                            ) {
+                                ReaderCover(
+                                    url = book.cover,
+                                    name = book.name,
+                                    modifier = Modifier.fillMaxWidth().aspectRatio(0.72f).clip(RoundedCornerShape(6.dp)),
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(book.name, fontSize = 12.sp, color = Color(0xFFDDDDDD),
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val pct = (p.percent * 100).toInt().coerceIn(1, 99)
+                                Text("读到第${p.chapter + 1}章 · $pct%", fontSize = 10.sp, color = Color(0xFF888888),
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = Color(0x14FFFFFF), modifier = Modifier.padding(top = 6.dp))
                 }
             }
             val shown = shelves.filter {

@@ -34,6 +34,7 @@ import com.fongmi.android.tv.impl.SiteListener;
 import com.fongmi.android.tv.model.SiteViewModel;
 import com.fongmi.android.tv.ui.activity.HistoryActivity;
 import com.fongmi.android.tv.ui.activity.KeepActivity;
+import com.fongmi.android.tv.ui.activity.LiveActivity;
 import com.fongmi.android.tv.ui.activity.SearchActivity;
 import com.fongmi.android.tv.ui.adapter.TypeAdapter;
 import com.fongmi.android.tv.ui.base.BaseFragment;
@@ -188,6 +189,7 @@ public class VodFragment extends BaseFragment implements ConfigListener, SiteLis
         if (item.getItemId() == R.id.keep) KeepActivity.start(requireActivity());
         else if (item.getItemId() == R.id.search) SearchActivity.start(requireActivity());
         else if (item.getItemId() == R.id.history) HistoryActivity.start(requireActivity());
+        else if (item.getItemId() == R.id.live) LiveActivity.start(requireActivity());
         return true;
     }
 
