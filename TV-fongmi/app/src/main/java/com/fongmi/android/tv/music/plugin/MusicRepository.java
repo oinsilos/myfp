@@ -40,7 +40,7 @@ public final class MusicRepository {
     /** 本地文件导入的插件（文件名清单，文件缓存在 filesDir/plugins/，重启无网络也能加载）。 */
     private static final String KEY_LOCAL = "local_plugins";
     /** 内置插件清单（assets/music/ 下），新增内置源时在此追加文件名。 */
-    private static final String[] BUILTIN = {"kuwo_mao.js", "maoer_fm.js"};
+    private static final String[] BUILTIN = {"suyin_netease.js", "miyin_qq.js", "5sing.js", "ximalaya_api.js", "netease_cat.js"};
     /** 单源搜索超时：某源卡死/无响应按空组处理，聚合结果不被拖死。 */
     private static final long SOURCE_TIMEOUT_MS = 12_000L;
     /** 超时护栏专用守护线程池（仅负责 complete，不执行请求）。 */

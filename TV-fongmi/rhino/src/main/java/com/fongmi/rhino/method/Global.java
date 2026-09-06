@@ -216,7 +216,12 @@ public class Global {
         try {
             executor.submit(() -> {
                 if (destroyed) return null;
-                return fn.call(cx, scope, thisObj, new Object[0]);
+                Context ctx = Context.enter();
+                try {
+                    return fn.call(ctx, scope, thisObj, new Object[0]);
+                } finally {
+                    Context.exit();
+                }
             });
         } catch (Throwable ignored) {
         }
@@ -247,11 +252,25 @@ public class Global {
     }
 
     private void completeSuccess(Function complete, Req req, Response res) {
-        postCallback(complete, () -> complete.call(cx, scope, thisObj, new Object[]{Connect.success(cx, scope, req, res)}));
+        postCallback(complete, () -> {
+            Context ctx = Context.enter();
+            try {
+                complete.call(ctx, scope, thisObj, new Object[]{Connect.success(ctx, scope, req, res)});
+            } finally {
+                Context.exit();
+            }
+        });
     }
 
     private void completeError(Function complete) {
-        postCallback(complete, () -> complete.call(cx, scope, thisObj, new Object[]{Connect.error(cx, scope)}));
+        postCallback(complete, () -> {
+            Context ctx = Context.enter();
+            try {
+                complete.call(ctx, scope, thisObj, new Object[]{Connect.error(ctx, scope)});
+            } finally {
+                Context.exit();
+            }
+        });
     }
 
     private boolean postCallback(Function callback, Runnable runnable) {

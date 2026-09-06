@@ -37,7 +37,7 @@ class VodBrowse {
     static final String VOD_SEARCH = "VS:";
 
     private static final int SEARCH_LIMIT = 50;
-    private static final int SEARCH_TIMEOUT = 5;
+    private static final int SEARCH_TIMEOUT = 15; // 国内聚合源设备端搜索普遍 3-8s，5s 必超时返回空
     private static final char KEY_SEPARATOR = '|';
     private static final VodHistoryPolicy policy = new VodHistoryPolicy();
     private static final Map<String, Vod> vodCache = new ConcurrentHashMap<>();
@@ -66,22 +66,34 @@ class VodBrowse {
 
     @NonNull
     static ImmutableList<MediaItem> search(@NonNull String query) {
-        VodConfig.get().ensureLoaded();
-        String keyword = searchKey(query);
-        if (TextUtils.isEmpty(keyword)) return ImmutableList.of();
-        List<Site> sites = VodConfig.get().getSites().stream().filter(Site::isSearchable).toList();
-        List<ListenableFuture<List<MediaItem>>> futures = sites.stream().map(site -> Task.largeExecutor().submit(() -> searchSite(site, keyword))).toList();
-        List<MediaItem> items = collectResults(futures);
-        items.sort((a, b) -> matchScore(b, keyword) - matchScore(a, keyword));
-        ImmutableList<MediaItem> results = ImmutableList.copyOf(items.subList(0, Math.min(items.size(), SEARCH_LIMIT)));
-        searchCacheMap.put(keyword, results);
-        results.forEach(item -> searchItemMap.put(item.mediaId, item));
-        return results;
+        try {
+            VodConfig.get().ensureLoaded();
+            String keyword = searchKey(query);
+            if (TextUtils.isEmpty(keyword)) return ImmutableList.of();
+            List<Site> sites = VodConfig.get().getSites().stream().filter(Site::isSearchable).toList();
+            List<ListenableFuture<List<MediaItem>>> futures = sites.stream().map(site -> Task.largeExecutor().submit(() -> searchSite(site, keyword))).toList();
+            List<MediaItem> items = collectResults(futures);
+            items.sort((a, b) -> matchScore(b, keyword) - matchScore(a, keyword));
+            ImmutableList<MediaItem> results = ImmutableList.copyOf(items.subList(0, Math.min(items.size(), SEARCH_LIMIT)));
+            searchCacheMap.put(keyword, results);
+            results.forEach(item -> searchItemMap.put(item.mediaId, item));
+            return results;
+        } catch (Throwable e) {
+            e.printStackTrace();
+            return ImmutableList.of();
+        }
     }
 
     private static List<MediaItem> searchSite(@NonNull Site site, @NonNull String keyword) throws Exception {
-        Result result = SiteApi.searchContent(site, keyword, false, "1");
-        return result.getList().stream().map(vod -> BrowseTree.playable(searchId(site.getKey(), vod.getId()), vod.getName(), vod.getRemarks(), vod.getPic())).toList();
+        try {
+            Result result = SiteApi.searchContent(site, keyword, false, "1");
+            return result.getList().stream()
+                    .filter(v -> v.getName() != null && !v.getName().isEmpty())
+                    .map(vod -> BrowseTree.playable(searchId(site.getKey(), vod.getId()), vod.getName(), vod.getRemarks(), vod.getPic()))
+                    .toList();
+        } catch (Exception e) {
+            return java.util.Collections.emptyList();
+        }
     }
 
     private static List<MediaItem> collectResults(@NonNull List<ListenableFuture<List<MediaItem>>> futures) {
@@ -158,8 +170,14 @@ class VodBrowse {
         String historyKey = historyKey(search.siteKey, search.vodId);
         History existing = History.find(historyKey);
         if (existing != null) return resolveWithHistory(historyKey, existing);
-        VodConfig.get().ensureLoaded();
-        Vod vod = SiteApi.detailContent(search.siteKey, search.vodId).getVod();
+        Vod vod;
+        try {
+            VodConfig.get().ensureLoaded();
+            vod = SiteApi.detailContent(search.siteKey, search.vodId).getVod();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
         if (TextUtils.isEmpty(vod.getId()) || vod.getFlags().isEmpty()) return null;
         vodCache.put(historyKey, vod);
         History history = createHistory(historyKey, vod);

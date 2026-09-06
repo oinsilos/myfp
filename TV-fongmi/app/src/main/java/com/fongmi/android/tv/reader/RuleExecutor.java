@@ -79,6 +79,12 @@ public final class RuleExecutor {
                     return nodes.isEmpty() ? "" : nodes.first().ownText();
                 } else if (raw.equals("html")) {
                     return nodes.isEmpty() ? "" : nodes.first().html();
+                } else if (raw.startsWith("js:")) {
+                    // legado 兼容：js: 链步骤，result 变量绑定当前元素 onclick（无则 href），供正则提取
+                    String code = raw.substring(3).trim();
+                    String res = nodes.isEmpty() ? "" : nodes.first().attr("onclick");
+                    if (res.isEmpty() && !nodes.isEmpty()) res = nodes.first().attr("href");
+                    return jsEval(code, null, res);
                 }
             }
             // 无终止指令 → 返回元素自身（用于绝对化章节链接场景，取 href 属性兜底）
@@ -125,12 +131,17 @@ public final class RuleExecutor {
 
     /** 简易 @js: 表达式求值（Rhino；提供 book 变量与 JSON 全局）。 */
     static String jsEval(String code, String bookJson) {
+        return jsEval(code, bookJson, null);
+    }
+
+    static String jsEval(String code, String bookJson, String result) {
         if (code == null || code.isEmpty()) return "";
         Context cx = Context.enter();
         try {
             cx.setOptimizationLevel(-1);
             // corejs 的 initStandardObjects 返回 VarScope（scope 基类），句式与 rhino 模块 PluginSandbox 一致
             VarScope scope = (VarScope) cx.initStandardObjects();
+            if (result != null) ScriptableObject.putProperty(scope, "result", result);
             if (bookJson != null && !bookJson.isEmpty()) {
                 try {
                     // JSON 字面量即合法 JS 表达式：直接求值注入 book 变量（避开 NativeJSON 私有/版本化 API）

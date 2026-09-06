@@ -110,6 +110,19 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         checkAction(intent);
     }
 
+    /**
+     * TV 变体不提供音乐/小说独立入口（融合时已移除），
+     * 保留空实现以满足 main 共享代码（MusicActivity / ReaderActivity）的编译期引用，运行时不触发。
+     */
+    public void openMusicSourceManage() {
+    }
+
+    /**
+     * 同上：TV 变体无书源管理入口，空实现仅为满足 main 共享代码的编译期引用。
+     */
+    public void openReadSourceManage() {
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         SplashScreen.installSplashScreen(this);

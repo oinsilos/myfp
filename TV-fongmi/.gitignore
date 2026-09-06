@@ -1,16 +1,12 @@
 .idea
 .vscode
 .gradle
-.github/*
-!.github/workflows
-.github/workflows/*
-!.github/workflows/build.yml
+.github
 .settings
 *build
 *.jks
 *.properties
 !gradle/wrapper/gradle-wrapper.properties
 !gradle.properties
-lib-*.aar
 /Release
 /docs

@@ -137,11 +137,10 @@ public final class MusicSource {
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject g = arr.optJSONObject(i);
                     if (g == null) continue;
-                    SheetGroup group = new SheetGroup(
-                            g.optString("id"),
-                            g.optString("name"),
-                            parseSheets(g.optJSONArray("data"))
-                    );
+                    String gid = g.optString("id");
+                    String gname = g.optString("name");
+                    if (gname.isEmpty()) gname = g.optString("title");
+                    SheetGroup group = new SheetGroup(gid, gname, parseSheets(g.optJSONArray("data")));
                     groups.add(group);
                 }
                 return groups;
@@ -160,7 +159,10 @@ public final class MusicSource {
                 JSONArray data = root.optJSONArray("data");
                 if (data == null) return tags;
                 for (int i = 0; i < data.length(); i++) {
-                    String name = data.optJSONObject(i).optString("name");
+                    JSONObject o = data.optJSONObject(i);
+                    if (o == null) continue;
+                    String name = o.optString("name");
+                    if (name.isEmpty()) name = o.optString("title");
                     if (!name.isEmpty() && !tags.contains(name)) tags.add(name);
                 }
             } catch (JSONException ignored) {

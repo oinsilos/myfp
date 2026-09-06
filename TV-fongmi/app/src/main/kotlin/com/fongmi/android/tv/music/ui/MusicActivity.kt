@@ -2034,14 +2034,14 @@ class MusicFragment : Fragment(), MusicPlaybackService.Listener {
                 }
             } else {
                 LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 4.dp)) {
-                    // 官方榜
-                    ui.topGroups.forEach { group ->
-                        item(key = "g-" + group.name) {
+                    // 官方榜（key 必须全局唯一：多源同名榜单/同 id 会撞，加组索引前缀）
+                    ui.topGroups.forEachIndexed { gi, group ->
+                        item(key = "g-$gi-${group.name}") {
                             SheetGroupHeader(group.name)
                         }
-                        item(key = "gl-" + group.name) {
+                        item(key = "gl-$gi-${group.name}") {
                             LazyRow(contentPadding = PaddingValues(horizontal = 12.dp)) {
-                                items(group.items.size, key = { i -> "top-" + group.items[i].id }) { i ->
+                                items(group.items.size, key = { i -> "top-$gi-${group.id}-${group.items[i].id}" }) { i ->
                                     val sheet = group.items[i]
                                     SheetCard(
                                         sheet = sheet,

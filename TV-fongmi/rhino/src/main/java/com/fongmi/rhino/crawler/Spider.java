@@ -166,6 +166,7 @@ public class Spider extends com.github.catvod.crawler.Spider {
         if (!ScriptableObject.hasProperty(scope, "globalThis")) ScriptableObject.putProperty(scope, "globalThis", scope);
         global = Global.create(cx, scope, executor);
         new Require(cx, scope).bind();
+        cx.evaluateString(scope, Asset.read("js/lib/parser.js"), "parser.js", 1, null);
         cx.evaluateString(scope, Asset.read("js/lib/promise.js"), "promise.js", 1, null);
         cx.evaluateString(scope, Asset.read("js/lib/http.js"), "http.js", 1, null);
     }

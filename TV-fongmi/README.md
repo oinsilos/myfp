@@ -29,7 +29,7 @@
 | 項目      | 值                             |
 |---------|-------------------------------|
 | package | `com.fongmi.android.tv`       |
-| minSdk  | 24（Android 7.0 Nougat）        |
+| minSdk  | 26（Android 8.0 Oreo）        |
 | abi     | `arm64-v8a`、`armeabi-v7a`     |
 | flavor  | `leanback`（電視版）、`mobile`（手機版） |
 
@@ -42,6 +42,15 @@ TV/
 ```
 
 `app/src/main/` 為兩個版本共用的業務邏輯，`app/src/leanback/` 與 `app/src/mobile/` 各自實作對應 UI。
+
+### 四大板塊
+
+| 板塊 | 說明 | 技術 |
+|---|---|---|
+| 點播（Vod） | 多站點聚合搜尋、分類瀏覽、自動換源播放 | Java + XML（繼承上游） |
+| 直播（Live） | M3U / TXT / JSON 直播源、EPG 節目單、時移追看 | Java + XML（繼承上游） |
+| 音樂（Music） | 多音源聚合搜尋、歌詞、下載、睡眠定時 | Kotlin + Compose（MusicFree 插件契約，內置源位於 `assets/music/`） |
+| 閱讀（Reader） | 書源搜尋、目錄、正文排版、TTS 朗讀、EPUB 匯入 | Kotlin + Compose（legado 書源格式，內置源位於 `assets/reader/`） |
 
 ---
 

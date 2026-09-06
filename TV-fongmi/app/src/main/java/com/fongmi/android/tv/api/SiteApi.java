@@ -134,7 +134,12 @@ public class SiteApi {
             String detailContent = call(site, params);
             SpiderDebug.log("detail", detailContent);
             Result result = Result.fromType(site.getType(), detailContent);
-            Source.get().parse(result.getVod().setFlags());
+            try {
+                Source.get().parse(result.getVod().setFlags());
+            } catch (Throwable e) {
+                // 播放源解析失败不闪退：保留原始详情（列表/选集仍可用），播放时再报错
+                SpiderDebug.log("detail", "parse-error: " + e.getMessage());
+            }
             return result;
         }
     }

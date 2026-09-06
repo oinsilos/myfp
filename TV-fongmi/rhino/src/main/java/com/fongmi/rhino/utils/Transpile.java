@@ -31,6 +31,17 @@ public final class Transpile {
                 out.append(src, i, end);
                 i = end;
             } else if (c == '/' && i + 1 < n && src.charAt(i + 1) == '/') {
+                // 修复：压缩单行 JS 中 http:// 等 URL 的 // 会被误判为行注释而吞掉其后全部代码。
+                // 仅当前一字符为空白/行首/常见注释前置符时才算行注释；紧邻字母数字/冒号/括号等视为 URL 或除法。
+                if (i > 0) {
+                    char prev = src.charAt(i - 1);
+                    boolean prevIdent = isIdentChar(prev) || prev == ':' || prev == '.' || prev == ')' || prev == ']';
+                    if (prevIdent) {
+                        out.append(c);
+                        i++;
+                        continue;
+                    }
+                }
                 int end = src.indexOf('\n', i);
                 if (end < 0) end = n;
                 out.append(src, i, end);
@@ -258,7 +269,7 @@ public final class Transpile {
             }
             if (p < n && src.regionMatches(p, "from", 0, 4)) {
                 String[] s = readSpec(src, skipWs(src, p + 4));
-                out.append("const ").append(w[0]).append(" = __require(").append(quote(s[0])).append(");\n");
+                out.append("const ").append(w[0]).append(" = (function(m){ return m && m.default !== undefined ? m.default : m; })(__require(").append(quote(s[0])).append("));\n");
                 p = Integer.parseInt(s[1]);
             }
         } else if (p < n && (src.charAt(p) == '\'' || src.charAt(p) == '"')) {

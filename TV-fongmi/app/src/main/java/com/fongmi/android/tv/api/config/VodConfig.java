@@ -99,10 +99,10 @@ public class VodConfig extends BaseConfig {
     }
 
     /** 内置聚合源版本：内置源清单变更后 +1，旧版内置源创建的失效配置会被清理回退（否则 DB 残留导致影视一直加载失败源）。 */
-    private static final int BUILTIN_VERSION = 2;
+    private static final int BUILTIN_VERSION = 4;
     /** 旧版内置源 URL 特征（spider 401 / 国内不可达 / 已移除），命中则视为"内置源旧配置"可清理。 */
     private static final String[] OLD_BUILTIN_HINTS = {
-            "bitbucket.org/xduo", "jihulab.com/duomv", "盒子迷", "jundie.top", "weidonglong", "dxawi.github.io"
+            "bitbucket.org/xduo", "jihulab.com/duomv", "盒子迷", "jundie.top", "weidonglong", "dxawi.github.io", "yingm.cc"
     };
 
     @Override
@@ -142,8 +142,19 @@ public class VodConfig extends BaseConfig {
 
     @Override
     protected void load(Config config) throws Throwable {
-        String json = Decoder.getJson(UrlUtil.convert(config.getUrl()), TAG);
-        checkJson(config, Json.parse(json).getAsJsonObject());
+        try {
+            String json = Decoder.getJson(UrlUtil.convert(config.getUrl()), TAG);
+            checkJson(config, Json.parse(json).getAsJsonObject());
+        } catch (Throwable e) {
+            // 用户自定义配置加载失败（源失效/JSON 损坏/站点全部不可达）：回退内置聚合源，
+            // 保证源列表永不空、源切换入口始终可用（否则 SiteDialog 空列表直接 dismiss，表现为"入口存在但为空"）。
+            if (config.getUrl() != null && config.getUrl().startsWith("assets://")) throw e;
+            Config builtin = Config.create(VOD, "assets://config/vod.json", "内置点播源");
+            String json = Decoder.getJson(UrlUtil.convert(builtin.getUrl()), TAG);
+            checkJson(builtin, Json.parse(json).getAsJsonObject());
+            builtin.save();
+            this.config = builtin;
+        }
     }
 
     @Override

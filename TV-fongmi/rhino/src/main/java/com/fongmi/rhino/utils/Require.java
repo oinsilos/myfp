@@ -74,7 +74,7 @@ public final class Require {
         Scriptable empty = cx.newObject(scope);
         if (code == null) return empty;
         try {
-            String wrapped = "(function(){\nvar __module = { exports: {} };\n" + Transpile.toCommonJs(code) + "\nreturn __module.exports;\n})();";
+            String wrapped = "(function(){\nvar __module = { exports: {} };\nvar module = __module;\nvar exports = __module.exports;\n" + Transpile.toCommonJs(code) + "\nreturn __module.exports;\n})();";
             Object result = cx.evaluateString(scope, wrapped, name, 1, null);
             return result instanceof Scriptable ? (Scriptable) result : empty;
         } catch (Throwable e) {
