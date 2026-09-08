@@ -53,12 +53,19 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Build Leanback Release APK
-        run: ./gradlew :app:assembleLeanbackRelease --no-daemon --console=plain
+      - name: Build Release APKs (leanback + mobile)
+        run: ./gradlew :app:assembleLeanbackRelease :app:assembleMobileRelease --no-daemon --console=plain
 
-      - name: Upload APK
+      - name: Upload TV (leanback) APK
         uses: actions/upload-artifact@v4
         with:
           name: fongmi-leanback-release-apk
-          path: TV-fongmi/app/build/outputs/apk/**/*.apk
+          path: TV-fongmi/app/build/outputs/apk/leanback/release/*.apk
+          if-no-files-found: error
+
+      - name: Upload Phone (mobile) APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fongmi-mobile-release-apk
+          path: TV-fongmi/app/build/outputs/apk/mobile/release/*.apk
           if-no-files-found: error
