@@ -1,0 +1,67 @@
+﻿name: Build LxMusic APK
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'lx-music-mobile/**'
+  pull_request:
+    paths:
+      - 'lx-music-mobile/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: lx-music-mobile/package-lock.json
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Install SDK platform 36 & NDK 26 & build-tools 35
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;26.1.10909125"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Install npm dependencies
+        working-directory: lx-music-mobile
+        run: npm ci
+
+      - name: Grant execute permission
+        working-directory: lx-music-mobile/android
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        working-directory: lx-music-mobile/android
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon --console=plain \
+            -PMYAPP_UPLOAD_STORE_FILE=app/debug.keystore \
+            -PMYAPP_UPLOAD_STORE_PASSWORD=android \
+            -PMYAPP_UPLOAD_KEY_ALIAS=androiddebugkey \
+            -PMYAPP_UPLOAD_KEY_PASSWORD=android
+        env:
+          NODE_ENV: production
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lxmusic-release-apk
+          path: lx-music-mobile/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
