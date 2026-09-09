@@ -52,7 +52,7 @@ jobs:
         working-directory: lx-music-mobile/android
         run: |
           ./gradlew :app:assembleRelease --no-daemon --console=plain \
-            -PMYAPP_UPLOAD_STORE_FILE=app/debug.keystore \
+            -PMYAPP_UPLOAD_STORE_FILE=debug.keystore \
             -PMYAPP_UPLOAD_STORE_PASSWORD=android \
             -PMYAPP_UPLOAD_KEY_ALIAS=androiddebugkey \
             -PMYAPP_UPLOAD_KEY_PASSWORD=android
@@ -65,3 +65,4 @@ jobs:
           name: lxmusic-release-apk
           path: lx-music-mobile/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+
