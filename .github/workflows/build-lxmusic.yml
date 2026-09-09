@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -40,16 +40,6 @@ jobs:
           sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;26.1.10909125"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
-      - name: Create keystore.properties (debug signing)
-        working-directory: lx-music-mobile/android
-        run: |
-          cat > keystore.properties <<'EOF'
-          RELEASE_STORE_FILE=app/debug.keystore
-          RELEASE_STORE_PASSWORD=android
-          RELEASE_KEY_ALIAS=androiddebugkey
-          RELEASE_KEY_PASSWORD=android
-          EOF
-
       - name: Install npm dependencies
         working-directory: lx-music-mobile
         run: npm ci
@@ -60,7 +50,12 @@ jobs:
 
       - name: Build Release APK
         working-directory: lx-music-mobile/android
-        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon --console=plain \
+            -PMYAPP_UPLOAD_STORE_FILE=app/debug.keystore \
+            -PMYAPP_UPLOAD_STORE_PASSWORD=android \
+            -PMYAPP_UPLOAD_KEY_ALIAS=androiddebugkey \
+            -PMYAPP_UPLOAD_KEY_PASSWORD=android
         env:
           NODE_ENV: production
 
