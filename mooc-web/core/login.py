@@ -2,7 +2,7 @@
 
 import time
 
-from core import DEFAULT_TIMEOUT
+from core import DEFAULT_TIMEOUT, new_clean_session
 
 CHECK_URL = "https://www.icourse163.org/web/j/memberBean.getMocMemberPersonalDtoById.rpc"
 
@@ -24,7 +24,12 @@ def check_session(sess):
 
 
 def get_qrcode(sess):
-    """拉取扫码登录二维码,返回 (pollKey, 图片字节);失败返回 (None, None)。"""
+    """拉取扫码登录二维码,返回 (pollKey, 图片字节);失败返回 (None, None)。
+
+    sess 必须是纯净会话(无任何 cookie):
+    - 握手请求 code.do 在该会话上完成,保证 pollKey 与后续轮询同源;
+    - 二维码图片从 CDN 下载,改用一次性纯净会话,避免图片域 cookie 污染登录会话。
+    """
     url = "https://www.icourse163.org/logonByQRCode/code.do?width=182&height=182"
     try:
         response = sess.get(url, timeout=DEFAULT_TIMEOUT).json()
@@ -34,7 +39,12 @@ def get_qrcode(sess):
     if response and response.get("result"):
         pollkey = response["result"]["pollKey"]
         code_url = response["result"]["codeUrl"]
-        img = sess.get(code_url, timeout=DEFAULT_TIMEOUT).content
+        try:
+            # 图片走独立纯净会话,不把 CDN 域 cookie 写进登录会话
+            img = new_clean_session().get(code_url, timeout=DEFAULT_TIMEOUT).content
+        except Exception as e:
+            print(f"二维码图片下载失败:{e}")
+            return pollkey, None
         return pollkey, img
     print("扫码登录拉取失败")
     return None, None

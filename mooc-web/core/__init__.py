@@ -34,3 +34,14 @@ def new_session():
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
     return s
+
+
+def new_clean_session():
+    """创建纯净会话:带浏览器请求头,并显式清空 cookiejar。
+
+    扫码登录相关接口必须使用纯净会话,确保握手中不带任何历史 cookie,
+    避免旧凭证参与登录流程导致串号或污染待保存的 cookie。
+    """
+    s = new_session()
+    s.cookies.clear()
+    return s

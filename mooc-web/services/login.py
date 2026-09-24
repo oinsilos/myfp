@@ -2,6 +2,9 @@
 
 每个用户名同时最多一个登录流程;重复发起会取消旧流程。
 登录成功后自动持久化 cookie 并绑定该用户。
+
+注意:登录流程全程使用**纯净会话**(无任何 cookie),
+不会加载该用户已存凭证,避免旧 cookie 参与握手造成串号或污染新凭证。
 """
 
 import base64
@@ -9,7 +12,7 @@ import threading
 import time
 import uuid
 
-from core import new_session
+from core import new_clean_session
 from core.login import get_qrcode, poll_login
 
 # 单个登录流程最长存活时间(秒)
@@ -22,7 +25,8 @@ class LoginFlow:
     def __init__(self, username):
         self.username = username
         self.flow_id = uuid.uuid4().hex[:12]
-        self.session = new_session()
+        # 纯净会话:显式清空 cookiejar,保证扫码/轮询/换取 cookie 全程无历史 cookie
+        self.session = new_clean_session()
         self.status = "preparing"   # preparing/waiting/scanned/success/expired/error/canceled
         self.message = "正在获取二维码..."
         self.image = None           # 二维码 PNG 字节

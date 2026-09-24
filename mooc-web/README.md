@@ -43,7 +43,8 @@ mooc-web/
 浏览器(admin.html) ─> /api/admin/* ─> services.store(本地文件)
 ```
 
-- **登录链路**：`POST /api/user/login` → 无有效 cookie 时 `LoginFlowManager.start()` 后台线程拉取二维码并轮询 `poll.do`；成功后写 `data/cookies/cookie_{username}.json` 并登记用户。
+- 登录链路：`POST /api/user/login` → 无有效 cookie 时 `LoginFlowManager.start()` 后台线程拉取二维码并轮询 `poll.do`；成功后写 `data/cookies/cookie_{username}.json` 并登记用户。
+- **扫码会话隔离**：登录流程全程使用 `new_clean_session()` 创建的**纯净会话**（不带任何历史 cookie），不会加载该用户已存凭证；二维码握手（`code.do`）在该会话上完成以保证 pollKey 同源，而**二维码图片下载使用独立的一次性纯净会话**，避免图片 CDN 域 cookie 污染登录会话。落盘时仅保留认证域（`AUTH_COOKIE_DOMAINS = icourse163.org / 163.com`，按域名后缀匹配）的 cookie，剔除第三方域写入的追踪类 cookie。
 - **刷课链路**：`POST /api/user/brush/start` → `BrushManager` 起后台线程逐任务执行（视频/PPT/讨论/作业），任务完成后 `refresh_seq` 自增，前端据此刷新任务列表与进度；`POST /api/user/brush/stop` 置停止事件，任务在安全点退出。
 
 ## 并发模型

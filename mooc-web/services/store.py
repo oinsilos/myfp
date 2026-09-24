@@ -117,8 +117,12 @@ class Store:
         return sess
 
     def save_cookie_session(self, username: str, sess) -> None:
-        """持久化会话 cookie 并登记用户(扫脸登录成功后调用)。"""
-        save_cookie(sess, self.cookie_path(username))
+        """持久化会话 cookie 并登记用户(扫码登录成功后调用)。
+
+        仅保存认证域(icourse163.org)下的 cookie,过滤登录过程中第三方域
+        写入的 cookie,保证凭证文件干净、不与其它账号混合。
+        """
+        save_cookie(sess, self.cookie_path(username), only_auth_domain=True)
         with self._lock:
             self._users.setdefault(username, {"created_at": int(time.time()), "note": ""})
         self._save()
