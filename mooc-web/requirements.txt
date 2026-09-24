@@ -1,0 +1,6 @@
+fastapi>=0.100
+uvicorn[standard]>=0.27
+requests>=2.31
+beautifulsoup4>=4.12
+openai>=1.30
+tenacity>=8.2

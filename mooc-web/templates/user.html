@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>挑灯夜读 · MOOC刷课助手</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315181f'/%3E%3Cpath d='M16 6a6.5 6.5 0 0 1 6.5 6.5c0 3.6-2.6 6-4.5 9h-4c-1.9-3-4.5-5.4-4.5-9A6.5 6.5 0 0 1 16 6Zm2.6 16.6a.9.9 0 0 1 0 1.3l-2.6 2.5 2.6 2.5a.9.9 0 0 1-1.3 1.3l-3.1-3a.9.9 0 0 1 0-1.3l3.1-3a.9.9 0 0 1 1.3-.3Z' fill='%23e8b45a'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0e1014; --bg2:#12151c; --card:#191d26; --card2:#1e232e; --card3:#242a37;
+    --line:rgba(232,180,90,.16); --line-soft:rgba(255,255,255,.06);
+    --gold:#e8b45a; --gold-hi:#f4cf8b; --gold-dim:#9c8148;
+    --ink:#e9e2d0; --ink-dim:#a89f8d; --ink-faint:#6f6a5c;
+    --ok:#86c99a; --bad:#d98e73;
+    --v-video:#e8b45a; --v-ppt:#79b8a8; --v-diss:#9a8fd9; --v-hw:#d98e8e; --v-quiz:#8f9bb3;
+    --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong","SimSun",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Consolas,"Courier New",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:15px; line-height:1.7;
+    min-height:100vh; overflow-x:hidden;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(900px 520px at 12% -8%, rgba(232,180,90,.10), transparent 60%),
+      radial-gradient(720px 480px at 100% 0%, rgba(90,118,232,.05), transparent 55%),
+      var(--bg);
+  }
+  ::selection{background:rgba(232,180,90,.3)}
+  a{color:var(--gold)}
+  button{font-family:var(--sans); cursor:pointer}
+  input,select{font-family:var(--sans)}
+
+  /* ---------- 顶栏 ---------- */
+  .topbar{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 34px; background:rgba(14,16,20,.82); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex; align-items:center; gap:13px; text-decoration:none; color:var(--ink)}
+  .brand svg{width:34px;height:34px}
+  .brand .t1{font-family:var(--serif); font-size:21px; font-weight:700; letter-spacing:2px; color:var(--ink)}
+  .brand .t1 em{font-style:normal; color:var(--gold)}
+  .brand .t2{font-size:11px; letter-spacing:3px; color:var(--ink-faint)}
+  .topbar-right{display:flex; align-items:center; gap:14px}
+  .userchip{
+    display:none; align-items:center; gap:8px; padding:6px 14px; border:1px solid var(--line);
+    border-radius:999px; color:var(--gold-hi); font-size:13px; background:rgba(232,180,90,.06);
+  }
+  .userchip .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .btn-ghost{
+    background:transparent; border:1px solid var(--line); color:var(--ink-dim);
+    padding:7px 16px; border-radius:9px; font-size:13px; letter-spacing:1px;
+    transition:all .25s;
+  }
+  .btn-ghost:hover{color:var(--ink); border-color:var(--gold-dim)}
+
+  main{max-width:1180px; margin:0 auto; padding:40px 30px 90px}
+
+  /* ---------- 登录视图 ---------- */
+  #view-login{
+    max-width:470px; margin:6vh auto 0; text-align:center;
+    animation:rise .7s cubic-bezier(.2,.8,.2,1) both; padding-bottom:max(10vh,64px);
+  }
+  .login-seal{
+    width:84px; height:84px; margin:0 auto 26px; border-radius:24px;
+    background:linear-gradient(150deg,#1c212c,#141822); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 0 60px rgba(232,180,90,.12), inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .login-seal svg{width:44px;height:44px}
+  #view-login h1{
+    font-family:var(--serif); font-size:34px; font-weight:700; letter-spacing:6px;
+    margin-bottom:10px;
+  }
+  #view-login h1 em{font-style:normal; color:var(--gold)}
+  .login-sub{color:var(--ink-faint); font-size:14px; margin-bottom:36px; letter-spacing:1px}
+  .login-panel{
+    background:linear-gradient(165deg,var(--card),#151823); border:1px solid var(--line);
+    border-radius:18px; padding:34px 30px; text-align:left;
+    box-shadow:0 24px 70px rgba(0,0,0,.5);
+  }
+  .login-panel label{display:block; font-size:13px; color:var(--ink-dim); letter-spacing:2px; margin-bottom:9px}
+  .login-row{display:flex; gap:10px}
+  .login-row input{
+    flex:1; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:13px 16px; border-radius:11px; font-size:15px; outline:none; transition:border-color .25s;
+  }
+  .login-row input:focus{border-color:var(--gold-dim)}
+  .btn-gold{
+    background:linear-gradient(160deg,var(--gold-hi),var(--gold)); color:#241c0c;
+    border:none; padding:13px 26px; border-radius:11px; font-size:15px; font-weight:600;
+    letter-spacing:2px; transition:transform .2s, box-shadow .25s;
+    box-shadow:0 6px 22px rgba(232,180,90,.18);
+  }
+  .btn-gold:hover{transform:translateY(-1px); box-shadow:0 10px 28px rgba(232,180,90,.28)}
+  .btn-gold:disabled{opacity:.55; cursor:not-allowed; transform:none}
+  .login-hint{font-size:12px; color:var(--ink-faint); margin-top:15px; line-height:1.8}
+  .login-hint code{font-family:var(--mono); color:var(--ink-dim); background:rgba(255,255,255,.04); padding:2px 7px; border-radius:5px}
+
+  /* ---------- 区域切换 ---------- */
+  .view{display:none}
+  .view.active{display:block; animation:rise .5s ease both}
+  @keyframes rise{from{opacity:0; transform:translateY(18px)} to{opacity:1; transform:none}}
+
+  .pagehead{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:26px}
+  .pagehead h2{font-family:var(--serif); font-size:27px; letter-spacing:3px; font-weight:700}
+  .pagehead .sub{color:var(--ink-faint); font-size:13px; letter-spacing:1px}
+
+  /* ---------- 课程网格 ---------- */
+  .course-grid{
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(235px,1fr));
+    gap:22px;
+  }
+  .course-card{
+    background:linear-gradient(170deg,var(--card),#141824); border:1px solid var(--line-soft);
+    border-radius:15px; overflow:hidden; cursor:pointer; position:relative;
+    transition:transform .28s, border-color .28s, box-shadow .28s;
+    animation:rise .55s ease both;
+  }
+  .course-card:hover{
+    transform:translateY(-5px); border-color:rgba(232,180,90,.4);
+    box-shadow:0 18px 44px rgba(0,0,0,.5);
+  }
+  .course-card .thumb{
+    position:relative; aspect-ratio:16/9; background:linear-gradient(140deg,#222836,#181c26);
+    overflow:hidden;
+  }
+  .course-card .thumb img{width:100%; height:100%; object-fit:cover; display:block; transition:transform .5s}
+  .course-card:hover .thumb img{transform:scale(1.06)}
+  .course-card .thumb .ph{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-family:var(--serif); font-size:40px; color:rgba(232,180,90,.55);
+  }
+  .course-card .badge{
+    position:absolute; top:10px; right:10px; font-size:11px; letter-spacing:1px;
+    padding:3px 10px; border-radius:6px; background:rgba(10,12,14,.72); backdrop-filter:blur(4px);
+    color:var(--ok); border:1px solid rgba(134,201,154,.4);
+  }
+  .course-card .body{padding:15px 16px 17px}
+  .course-card .name{
+    font-family:var(--serif); font-size:15.5px; font-weight:600; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    min-height:2.9em;
+  }
+  .course-card .school{font-size:12px; color:var(--ink-faint); margin-top:5px; letter-spacing:1px}
+  .pbar{height:4px; background:rgba(255,255,255,.07); border-radius:3px; margin-top:12px; overflow:hidden}
+  .pbar i{
+    display:block; height:100%; width:0; border-radius:3px;
+    background:linear-gradient(90deg,var(--gold-dim),var(--gold-hi));
+    transition:width .8s cubic-bezier(.2,.7,.2,1);
+  }
+  .course-card .meta{
+    display:flex; justify-content:space-between; align-items:center; margin-top:8px;
+    font-size:12px; color:var(--ink-dim); font-family:var(--mono);
+  }
+  .course-card .meta .pct{color:var(--gold)}
+
+  .empty-tip{
+    text-align:center; color:var(--ink-faint); padding:70px 0; 
+    font-family:var(--serif); font-size:17px; letter-spacing:3px;
+  }
+  .loading-tip{text-align:center; color:var(--ink-faint); padding:70px 0; font-size:14px; letter-spacing:2px}
+
+  /* ---------- 课程详情 ---------- */
+  .detail-top{display:flex; align-items:center; gap:14px; margin-bottom:24px}
+  .detail-top .back{transition:transform .25s}
+  .detail-top .back:hover{transform:translateX(-3px)}
+  .detail-title{flex:1; min-width:0}
+  .detail-title h2{
+    font-family:var(--serif); font-size:24px; letter-spacing:2px; font-weight:700;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .detail-title .sch{font-size:12.5px; color:var(--ink-faint); letter-spacing:2px; margin-top:2px}
+
+  .stats-row{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:26px;
+  }
+  .stat{
+    background:linear-gradient(170deg,var(--card),#151823); border:1px solid var(--line-soft);
+    border-radius:14px; padding:20px 22px; position:relative; overflow:hidden;
+  }
+  .stat::after{
+    content:""; position:absolute; left:0; right:0; top:0; height:2px;
+    background:linear-gradient(90deg,transparent,rgba(232,180,90,.5),transparent);
+  }
+  .stat .v{
+    font-family:var(--serif); font-size:27px; font-weight:700; color:var(--gold-hi);
+    font-variant-numeric:tabular-nums; line-height:1.3;
+  }
+  .stat .v.pulse{animation:pulse .6s ease}
+  @keyframes pulse{0%{opacity:.25}100%{opacity:1}}
+  .stat .k{font-size:12px; color:var(--ink-faint); letter-spacing:2px; margin-top:5px}
+  .stat .percent{font-size:12px; color:var(--ink-dim); margin-left:8px; font-family:var(--mono)}
+
+  /* ---------- 刷课控制台 ---------- */
+  .console{
+    background:linear-gradient(170deg,var(--card),#141824); border:1px solid var(--line);
+    border-radius:16px; padding:24px 26px; margin-bottom:26px;
+  }
+  .console .head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px}
+  .console .head h3{font-family:var(--serif); font-size:18px; letter-spacing:3px}
+  .console .head .state{
+    font-size:12px; letter-spacing:1px; padding:4px 12px; border-radius:999px;
+    border:1px solid var(--line); color:var(--ink-faint);
+  }
+  .console .head .state.on{color:var(--ok); border-color:rgba(134,201,154,.4); background:rgba(134,201,154,.07)}
+  .ctl-row{display:flex; flex-wrap:wrap; gap:26px 40px; align-items:flex-end}
+  .ctl-group{display:flex; flex-direction:column; gap:8px}
+  .ctl-group .lab{font-size:12px; color:var(--ink-faint); letter-spacing:2px}
+  .seg{display:flex; gap:8px; flex-wrap:wrap}
+  .seg label{position:relative; cursor:pointer}
+  .seg input{position:absolute; opacity:0; pointer-events:none}
+  .seg .chip{
+    display:inline-block; padding:8px 16px; border-radius:10px; border:1px solid var(--line-soft);
+    color:var(--ink-dim); font-size:13px; letter-spacing:1px; user-select:none;
+    transition:all .22s; background:var(--bg2);
+  }
+  .seg input:checked + .chip{
+    color:#241c0c; background:linear-gradient(160deg,var(--gold-hi),var(--gold));
+    border-color:transparent; font-weight:600;
+    box-shadow:0 4px 14px rgba(232,180,90,.2);
+  }
+  .seg input:disabled + .chip{opacity:.4; cursor:not-allowed}
+  .type-chips{display:flex; gap:8px; flex-wrap:wrap}
+  .type-chips .chip{position:relative; padding:7px 14px}
+  .type-chips .chip::before{
+    content:""; display:inline-block; width:8px; height:8px; border-radius:2px;
+    margin-right:8px; background:var(--tc,var(--gold)); transform:translateY(-1px);
+  }
+  .speed-box{display:flex; align-items:center; gap:10px}
+  .speed-box input{
+    width:110px; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:8px 12px; border-radius:10px; font-size:14px; font-family:var(--mono); outline:none;
+  }
+  .speed-box input:focus{border-color:var(--gold-dim)}
+  .speed-box .unit{font-size:12px; color:var(--ink-faint)}
+  .btn-brush{
+    min-width:190px; padding:13px 30px; border-radius:12px; font-size:15px; font-weight:700;
+    letter-spacing:4px; border:none; transition:all .25s;
+  }
+  .btn-brush.start{
+    background:linear-gradient(160deg,var(--gold-hi),var(--gold)); color:#241c0c;
+    box-shadow:0 6px 22px rgba(232,180,90,.2);
+  }
+  .btn-brush.start:hover{box-shadow:0 10px 30px rgba(232,180,90,.32); transform:translateY(-1px)}
+  .btn-brush.stop{
+    background:linear-gradient(160deg,#e58a78,#cf5f4d); color:#fff;
+    box-shadow:0 6px 22px rgba(207,95,77,.28);
+  }
+  .btn-brush:disabled{opacity:.5; cursor:not-allowed; transform:none}
+  .job-now{
+    margin-top:18px; padding:13px 18px; border-radius:11px; border:1px dashed var(--line);
+    background:rgba(0,0,0,.25); font-family:var(--mono); font-size:13px; color:var(--ink-dim);
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  }
+  .job-now .spinner{
+    width:14px; height:14px; border-radius:50%; flex:none;
+    border:2px solid rgba(232,180,90,.25); border-top-color:var(--gold);
+    animation:spin 1s linear infinite;
+  }
+  .job-now.hidden{display:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .job-now .prog{color:var(--gold-hi)}
+  .job-now .cnt{color:var(--ink-faint); margin-left:auto}
+  .warn-other{
+    margin-top:18px; padding:11px 16px; border-radius:10px; font-size:13px;
+    background:rgba(154,143,217,.08); border:1px solid rgba(154,143,217,.3); color:#b8aee8;
+    display:none;
+  }
+  .warn-other.show{display:block}
+
+  /* ---------- 任务列表 ---------- */
+  .tasks-panel{
+    background:linear-gradient(170deg,var(--card),#141824); border:1px solid var(--line-soft);
+    border-radius:16px; overflow:hidden;
+  }
+  .tasks-panel .head{
+    padding:19px 26px; display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .tasks-panel .head h3{font-family:var(--serif); font-size:18px; letter-spacing:3px}
+  .tasks-panel .head .cnt{font-size:12.5px; color:var(--ink-faint); font-family:var(--mono)}
+  .task-row{
+    display:flex; align-items:center; gap:16px; padding:15px 26px;
+    border-bottom:1px solid var(--line-soft); transition:background .2s;
+  }
+  .task-row:last-child{border-bottom:none}
+  .task-row:hover{background:rgba(255,255,255,.025)}
+  .task-row .mark{
+    flex:none; width:26px; height:26px; border-radius:50%; display:flex;
+    align-items:center; justify-content:center; font-size:14px; font-weight:700;
+  }
+  .task-row.done .mark{background:rgba(134,201,154,.12); color:var(--ok); border:1px solid rgba(134,201,154,.35)}
+  .task-row.todo .mark{background:rgba(217,142,115,.08); color:var(--bad); border:1px dashed rgba(217,142,115,.4)}
+  .task-tag{
+    flex:none; font-size:11.5px; letter-spacing:1px; padding:3px 11px; border-radius:6px;
+    border:1px solid; white-space:nowrap;
+  }
+  .task-main{flex:1; min-width:0}
+  .task-main .ti{font-size:14px; line-height:1.55; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .task-row.done .ti{color:var(--ink-faint); text-decoration:line-through; text-decoration-color:rgba(232,180,90,.35)}
+  .task-main .ch{font-size:12px; color:var(--ink-faint); margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .task-aside{flex:none; text-align:right; min-width:150px}
+  .task-aside .pct{font-family:var(--mono); font-size:13px}
+  .task-aside .extra{font-size:12px; color:var(--ink-faint); margin-top:2px; font-family:var(--mono)}
+  .task-aside .bar{height:3px; background:rgba(255,255,255,.07); border-radius:2px; margin-top:7px; overflow:hidden}
+  .task-aside .bar i{display:block; height:100%; border-radius:2px}
+  .row-cur{background:rgba(232,180,90,.05)!important; box-shadow:inset 3px 0 0 var(--gold)}
+  .team-caption{
+    padding:12px 26px; font-size:12.5px; color:var(--ink-faint); border-bottom:1px solid var(--line-soft);
+    background:rgba(0,0,0,.16); letter-spacing:1px;
+  }
+
+  /* ---------- 日志 ---------- */
+  .log-panel{
+    background:#0b0d12; border:1px solid var(--line-soft); border-radius:14px;
+    margin-top:18px; overflow:hidden;
+  }
+  .log-panel .head{
+    padding:12px 18px; font-size:12px; letter-spacing:2px; color:var(--ink-faint);
+    border-bottom:1px solid var(--line-soft); display:flex; justify-content:space-between;
+  }
+  .log-panel .head .clear{cursor:pointer; color:var(--ink-faint); transition:color .2s}
+  .log-panel .head .clear:hover{color:var(--gold)}
+  #logbox{
+    height:220px; overflow-y:auto; padding:12px 18px;
+    font-family:var(--mono); font-size:12.5px; line-height:1.9;
+    scroll-behavior:smooth;
+  }
+  #logbox .ln{white-space:pre-wrap; word-break:break-all}
+  #logbox .ln .t{color:var(--ink-faint); margin-right:8px}
+  #logbox .ln.info{color:var(--ink-dim)}
+  #logbox .ln.ok{color:var(--ok)}
+  #logbox .ln.warn{color:var(--gold-hi)}
+  #logbox .ln.error{color:var(--bad)}
+  #logbox .ln.cmd{color:#9ab8e8}
+
+  /* ---------- 二维码弹窗 ---------- */
+  .modal-mask{
+    position:fixed; inset:0; z-index:60; background:rgba(8,9,12,.72);
+    backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center;
+    opacity:0; pointer-events:none; transition:opacity .3s;
+  }
+  .modal-mask.show{opacity:1; pointer-events:auto}
+  .modal{
+    width:min(400px,92vw); background:linear-gradient(170deg,#1b202b,#151823);
+    border:1px solid var(--line); border-radius:20px; padding:32px 34px 28px;
+    text-align:center; transform:translateY(26px) scale(.96); transition:transform .35s cubic-bezier(.2,.8,.2,1);
+    box-shadow:0 30px 90px rgba(0,0,0,.6);
+  }
+  .modal-mask.show .modal{transform:none}
+  .modal h3{font-family:var(--serif); font-size:21px; letter-spacing:4px; margin-bottom:6px}
+  .modal .desc{font-size:13px; color:var(--ink-faint); margin-bottom:22px}
+  .qr-frame{
+    width:218px; height:218px; margin:0 auto 20px; background:#fff; border-radius:14px;
+    display:flex; align-items:center; justify-content:center; padding:12px;
+    box-shadow:0 0 0 1px var(--line), 0 0 44px rgba(232,180,90,.16);
+  }
+  .qr-frame img{width:100%; height:100%; object-fit:contain; image-rendering:pixelated}
+  .qr-frame .qrfail{color:#666; font-size:13px}
+  .qr-status{
+    display:flex; align-items:center; justify-content:center; gap:9px;
+    font-size:14px; color:var(--gold-hi); min-height:24px; letter-spacing:1px;
+  }
+  .qr-status .spinner{
+    width:13px; height:13px; border-radius:50%; border:2px solid rgba(232,180,90,.25);
+    border-top-color:var(--gold); animation:spin 1s linear infinite; flex:none;
+  }
+  .qr-status.ok{color:var(--ok)}
+  .qr-status.err{color:var(--bad)}
+  .modal .m-actions{display:flex; gap:12px; justify-content:center; margin-top:20px}
+  .modal .m-actions button{min-width:120px}
+  .btn-line{
+    background:transparent; border:1px solid var(--line); color:var(--ink-dim);
+    padding:10px 22px; border-radius:10px; font-size:13.5px; letter-spacing:2px; transition:all .25s;
+  }
+  .btn-line:hover{color:var(--ink); border-color:var(--gold-dim)}
+
+  /* ---------- Toast ---------- */
+  #toasts{position:fixed; right:26px; bottom:26px; z-index:80; display:flex; flex-direction:column; gap:10px}
+  .toast{
+    padding:12px 20px; border-radius:11px; font-size:13.5px; letter-spacing:.5px;
+    background:#1b202b; border:1px solid var(--line); color:var(--ink);
+    box-shadow:0 12px 34px rgba(0,0,0,.5); animation:toastin .35s ease both;
+    max-width:340px;
+  }
+  .toast.warn{border-color:rgba(232,180,90,.45); color:var(--gold-hi)}
+  .toast.error{border-color:rgba(217,142,115,.5); color:#e8a48f}
+  .toast.ok{border-color:rgba(134,201,154,.5); color:var(--ok)}
+  @keyframes toastin{from{opacity:0; transform:translateX(30px)} to{opacity:1; transform:none}}
+  .toast.out{opacity:0; transform:translateX(30px); transition:all .4s}
+
+  @media (max-width:900px){
+    .stats-row{grid-template-columns:repeat(2,1fr)}
+    .topbar{padding:12px 20px}
+    main{padding:28px 18px 70px}
+    .task-aside{min-width:118px}
+    .task-row{gap:11px; padding:13px 16px}
+    .ctl-row{gap:20px}
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#">
+    <svg viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="7" fill="#15181f"/><path d="M16 6a6.5 6.5 0 0 1 6.5 6.5c0 3.6-2.6 6-4.5 9h-4c-1.9-3-4.5-5.4-4.5-9A6.5 6.5 0 0 1 16 6Zm2.6 16.6a.9.9 0 0 1 0 1.3l-2.6 2.5 2.6 2.5a.9.9 0 0 1-1.3 1.3l-3.1-3a.9.9 0 0 1 0-1.3l3.1-3a.9.9 0 0 1 1.3-.3Z" fill="#e8b45a"/></svg>
+    <div>
+      <div class="t1">挑灯<em>夜读</em></div>
+      <div class="t2">中国大学MOOC · 刷课助手</div>
+    </div>
+  </a>
+  <div class="topbar-right">
+    <div class="userchip" id="userchip"><span class="dot"></span><span id="chipname"></span></div>
+    <button class="btn-ghost" id="btn-switch" style="display:none">切换用户</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ 登录 ============ -->
+  <section class="view active" id="view-login">
+    <div class="login-seal">
+      <svg viewBox="0 0 32 32" fill="none"><path d="M16 3a7.5 7.5 0 0 1 7.5 7.5c0 4.2-3 7-5.2 10.5h-4.6C11.5 17.5 8.5 14.7 8.5 10.5A7.5 7.5 0 0 1 16 3Zm3 19.5a1 1 0 0 1 0 1.5l-3 2.8 3 2.8a1 1 0 1 1-1.5 1.3l-3.6-3.4a1 1 0 0 1 0-1.4l3.6-3.4A1 1 0 0 1 19 22.5Z" fill="#e8b45a"/></svg>
+    </div>
+    <h1>挑灯<em>夜读</em></h1>
+    <p class="login-sub">一盏灯，几门课 — 学海有涯，勤为径</p>
+    <div class="login-panel">
+      <label for="username">用 户 名</label>
+      <div class="login-row">
+        <input id="username" placeholder="输入你的用户名 / 学号" autocomplete="off">
+        <button class="btn-gold" id="btn-login">进 入</button>
+      </div>
+      <p class="login-hint">
+        后端将按用户名隔离存储登录凭证：<code>data/cookies/cookie_用户名.json</code><br>
+        已有有效凭证则直接进入；没有或已过期将弹出二维码，用「中国大学MOOC」App 扫码登录。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 课程列表 ============ -->
+  <section class="view" id="view-courses">
+    <div class="pagehead">
+      <h2 id="courses-title">我的课程</h2>
+      <span class="sub" id="courses-sub"></span>
+    </div>
+    <div class="course-grid" id="course-grid"></div>
+    <div class="empty-tip" id="courses-empty" style="display:none">未获取到课程，请确认已选课或重新登录</div>
+  </section>
+
+  <!-- ============ 课程详情 ============ -->
+  <section class="view" id="view-course">
+    <div class="detail-top">
+      <button class="btn-ghost back" id="btn-back">‹ 返回</button>
+      <div class="detail-title">
+        <h2 id="d-name"></h2>
+        <div class="sch" id="d-school"></div>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat">
+        <div class="v" id="st-time">--:--</div>
+        <div class="k">学习时长（秒 <span class="percent" id="st-time-s"></span>）</div>
+      </div>
+      <div class="stat">
+        <div class="v" id="st-comp">- / -</div>
+        <div class="k">已学课时 <span class="percent" id="st-comp-p"></span></div>
+      </div>
+      <div class="stat">
+        <div class="v" id="st-video">-</div>
+        <div class="k">已学视频（个）</div>
+      </div>
+      <div class="stat">
+        <div class="v" id="st-refresh">5s</div>
+        <div class="k">进度自动刷新周期</div>
+      </div>
+    </div>
+
+    <div class="console">
+      <div class="head">
+        <h3>刷 课 控 制 台</h3>
+        <span class="state" id="brush-state">待机</span>
+      </div>
+      <div class="ctl-row">
+        <div class="ctl-group">
+          <span class="lab">刷课模式</span>
+          <div class="seg" id="seg-mode">
+            <label><input type="radio" name="mode" value="all" checked><span class="chip">全部未完成</span></label>
+            <label><input type="radio" name="mode" value="types"><span class="chip">按类型刷</span></label>
+            <label><input type="radio" name="mode" value="duration"><span class="chip">刷时长（仅视频）</span></label>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <span class="lab">任务类型（“按类型刷”生效）</span>
+          <div class="type-chips" id="type-chips">
+            <label><input type="checkbox" value="1" data-name="视频" style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">视频</span></label>
+            <label><input type="checkbox" value="3" data-name="PPT" style="position:absolute;opacity:0"><span class="chip" style="--tc:#79b8a8">PPT</span></label>
+            <label><input type="checkbox" value="6" data-name="讨论" style="position:absolute;opacity:0"><span class="chip" style="--tc:#9a8fd9">讨论</span></label>
+            <label><input type="checkbox" value="11" data-name="作业" style="position:absolute;opacity:0"><span class="chip" style="--tc:#d98e8e">作业</span></label>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <span class="lab">速度（秒/次提交）</span>
+          <div class="speed-box">
+            <input id="speed" type="number" value="600" min="1" max="3600">
+            <span class="unit">默认 600</span>
+          </div>
+        </div>
+        <div class="ctl-group">
+          <button class="btn-brush start" id="btn-brush">启 动 刷 课</button>
+        </div>
+      </div>
+      <div class="warn-other" id="warn-other"></div>
+      <div class="job-now hidden" id="job-now">
+        <span class="spinner"></span>
+        <span id="job-task">-</span>
+        <span class="prog" id="job-prog"></span>
+        <span class="cnt" id="job-cnt"></span>
+      </div>
+    </div>
+
+    <div class="tasks-panel">
+      <div class="head">
+        <h3>学 习 任 务</h3>
+        <span class="cnt" id="task-cnt"></span>
+      </div>
+      <div id="task-list"></div>
+    </div>
+
+    <div class="log-panel">
+      <div class="head"><span>运行日志</span><span class="clear" id="log-clear">清空本地显示</span></div>
+      <div id="logbox"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 二维码弹窗 -->
+<div class="modal-mask" id="qr-mask">
+  <div class="modal">
+    <h3>扫码登录</h3>
+    <p class="desc">使用「中国大学MOOC」App 扫一扫</p>
+    <div class="qr-frame" id="qr-frame"><span class="qrfail">二维码加载中…</span></div>
+    <div class="qr-status" id="qr-status"><span class="spinner"></span><span id="qr-msg">等待扫码</span></div>
+    <div class="m-actions" id="qr-actions" style="display:none">
+      <button class="btn-gold" id="btn-qr-refresh">重新获取二维码</button>
+      <button class="btn-line" id="btn-qr-cancel">取 消</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+/* ================= 基础工具 ================= */
+const $ = (s) => document.querySelector(s);
+const enc = encodeURIComponent;
+
+function toast(msg, kind="info", ms=3600){
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(()=>{ el.classList.add("out"); setTimeout(()=>el.remove(), 450); }, ms);
+}
+
+async function api(url, opts){
+  const init = {headers:{}, ...(opts||{})};
+  if (init.body && typeof init.body === "object") {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(init.body);
+  }
+  const r = await fetch(url, init);
+  let j = null;
+  try{ j = await r.json(); }catch(e){}
+  if (!r.ok) {
+    const msg = (j && j.detail) || ("请求失败 HTTP " + r.status);
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
+  return j;
+}
+
+function fmtDur(sec){
+  sec = Math.max(0, Math.floor(sec||0));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  return h ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+           : `${m}:${String(s).padStart(2,"0")}`;
+}
+function fmtClock(sec){
+  sec = Math.max(0, Math.floor(sec||0));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  return h ? `${h}时${m}分` : `${m}分${String(sec%60).padStart(2,"0")}秒`;
+}
+function fmtDate(v){
+  if (!v) return "-";
+  const ms = v > 1e12 ? v : v*1000;
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function esc(s){ return String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ================= 全局状态 ================= */
+const S = {
+  user: null,
+  flowId: null,
+  flowTimer: null,
+  course: null,          // 当前选中课程
+  brush: { running:false, refresh_seq:-1, log:[], course:null },
+  brushTimer: null,
+  progressTimer: null,
+  lastSeq: null,
+  curTaskKey: null,
+};
+
+function showView(id){
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  $("#"+id).classList.add("active");
+  window.scrollTo({top:0});
+}
+function setChip(name){
+  $("#chipname").textContent = name || "";
+  $("#userchip").style.display = name ? "flex" : "none";
+  $("#btn-switch").style.display = name ? "inline-block" : "none";
+}
+function stopTimers(){
+  if (S.flowTimer){ clearInterval(S.flowTimer); S.flowTimer=null; }
+  if (S.brushTimer){ clearInterval(S.brushTimer); S.brushTimer=null; }
+  if (S.progressTimer){ clearInterval(S.progressTimer); S.progressTimer=null; }
+}
+
+/* ================= 登录与二维码 ================= */
+async function doLogin(){
+  const username = $("#username").value.trim();
+  if (!username) return toast("请输入用户名", "warn");
+  const btn = $("#btn-login"); btn.disabled = true; btn.textContent = "校验中…";
+  try {
+    const res = await api("/api/user/login", {method:"POST", body:{username}});
+    S.user = username;
+    if (res.status === "ok") {
+      toast("欢迎回来，凭证有效", "ok");
+      await enterCourses();
+    } else {
+      openQr(res);
+    }
+  } catch(e){
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false; btn.textContent = "进 入";
+  }
+}
+
+function openQr(res){
+  S.flowId = res.flow_id;
+  const frame = $("#qr-frame");
+  if (res.image_b64) {
+    frame.innerHTML = `<img src="${res.image_b64}" alt="二维码">`;
+  } else {
+    frame.innerHTML = '<span class="qrfail">二维码加载中…</span>';
+  }
+  $("#qr-actions").style.display = "none";
+  setQrStatus(res.message || "正在获取二维码…", "");
+  $("#qr-mask").classList.add("show");
+  if (S.flowTimer) clearInterval(S.flowTimer);
+  S.flowTimer = setInterval(pollFlow, 2000);
+}
+
+function setQrStatus(msg, cls){
+  const box = $("#qr-status");
+  box.className = "qr-status " + cls;
+  const ok = cls === "ok" || cls === "err";
+  box.innerHTML = (ok ? "" : '<span class="spinner"></span>') + `<span id="qr-msg">${esc(msg)}</span>`;
+}
+
+function showQrActions(onlyClose){
+  $("#qr-actions").style.display = "flex";
+  $("#btn-qr-refresh").style.display = onlyClose ? "none" : "";
+  $("#btn-qr-cancel").textContent = onlyClose ? "关 闭" : "取 消";
+}
+
+async function pollFlow(){
+  if (!S.flowId) return;
+  try{
+    const s = await api("/api/user/login/status?flow_id=" + enc(S.flowId));
+    if (s.status === "success") {
+      clearInterval(S.flowTimer); S.flowTimer=null;
+      setQrStatus("登录成功！正在加载课程…", "ok");
+      setTimeout(async ()=>{
+        $("#qr-mask").classList.remove("show");
+        toast("扫码登录成功", "ok");
+        await enterCourses();
+      }, 900);
+    } else if (s.status === "waiting") {
+      setQrStatus("请使用中国大学MOOC App 扫码", "");
+      // preparing 时图片可能尚未就绪,这里补齐
+      if (s.image_b64 && !$("#qr-frame img")) {
+        $("#qr-frame").innerHTML = `<img src="${s.image_b64}" alt="二维码">`;
+      }
+    } else if (s.status === "scanned") {
+      setQrStatus("已扫码，请在手机上确认登录", "");
+    } else if (s.status === "expired") {
+      clearInterval(S.flowTimer); S.flowTimer=null;
+      setQrStatus("二维码已过期", "err");
+      showQrActions(false);
+    } else if (s.status === "error") {
+      clearInterval(S.flowTimer); S.flowTimer=null;
+      setQrStatus(s.message || "登录异常", "err");
+      showQrActions(true);
+    } else if (s.status === "canceled") {
+      clearInterval(S.flowTimer); S.flowTimer=null;
+      $("#qr-mask").classList.remove("show");
+    }
+  }catch(e){ /* 网络抖动,继续轮询 */ }
+}
+
+/* ================= 课程列表 ================= */
+async function enterCourses(){
+  try{
+    const res = await api("/api/user/courses?username=" + enc(S.user));
+    renderCourses(res.courses || []);
+    setChip(S.user);
+    showView("view-courses");
+  }catch(e){
+    toast(e.message, "error");
+    if (e.status === 401) { goLogin(true); return; }
+    showView("view-login");
+  }
+}
+
+function renderCourses(list){
+  const grid = $("#course-grid");
+  $("#courses-empty").style.display = list.length ? "none" : "block";
+  $("#courses-sub").textContent = `共 ${list.length} 门课`;
+  grid.innerHTML = list.map((c,i)=>{
+    const pct = (c.lessonsCount||0) > 0 ? Math.round((c.learnedCount||0)*100/(c.lessonsCount||1)) : 0;
+    const img = c.imgUrl
+      ? `<img src="${esc(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
+      : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
+    return `
+    <div class="course-card" data-i="${i}" style="animation-delay:${Math.min(i*0.05,0.6)}s">
+      <div class="thumb">
+        ${img}
+        ${c.is_finished ? '<span class="badge">已完成</span>' : ""}
+      </div>
+      <div class="body">
+        <div class="name">${esc(c.name||"未命名课程")}</div>
+        <div class="school">${esc(c.shortName||"")} · 学期 ${esc(String(c.termId??"-"))}</div>
+        <div class="pbar"><i style="width:${pct}%"></i></div>
+        <div class="meta">
+          <span>已学 ${c.learnedCount||0} / ${c.lessonsCount||0}</span>
+          <span class="pct">${pct}%</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+  grid.querySelectorAll(".course-card").forEach(el=>{
+    el.addEventListener("click", ()=> openCourse(list[+el.dataset.i]));
+  });
+}
+
+/* ================= 课程详情 ================= */
+async function openCourse(c){
+  S.course = c;
+  S.lastSeq = null;
+  stopTimers();
+  // 立即检查该用户是否有运行中的任务(可能是其他课程)
+  try{
+    const st = await api("/api/user/brush/status?username=" + enc(S.user));
+    applyBrushSnapshot(st, true);
+  }catch(e){}
+
+  $("#d-name").textContent = c.name || "";
+  $("#d-school").textContent = (c.shortName||"") + " · " + (c.termId||"");
+  $("#task-list").innerHTML = '<p class="loading-tip">任务加载中…</p>';
+  $("#logbox").innerHTML = "";
+  showView("view-course");
+  await loadDetail();
+  startWatch();
+}
+
+async function loadDetail(){
+  if (!S.course) return;
+  const c = S.course;
+  try{
+    const res = await api("/api/user/course/detail?" +
+      `username=${enc(S.user)}&course_id=${enc(c.courseId)}&term_id=${enc(c.termId)}&short_name=${enc(c.shortName||"")}`);
+    drawProgress(res.progress);
+    drawTasks(res.tasks || []);
+  }catch(e){
+    toast(e.message, "error");
+    if (e.status === 401) { stopTimers(); goLogin(true); }
+    else $("#task-list").innerHTML = `<p class="loading-tip">加载失败：${esc(e.message)}</p>`;
+  }
+}
+
+function drawProgress(p){
+  if (!p) return;
+  const timeEl = $("#st-time"), timeS = $("#st-time-s");
+  const newText = fmtClock(p.learntime_sec);
+  if (timeEl.textContent !== newText){ timeEl.textContent = newText; timeEl.classList.remove("pulse"); void timeEl.offsetWidth; timeEl.classList.add("pulse"); }
+  timeS.textContent = `${p.learntime_sec || 0}s`;
+  const total = p.lessonCount||0, learned = p.learnedCount||0;
+  const pct = total ? Math.round(learned*100/total) : 0;
+  $("#st-comp").textContent = `${learned} / ${total}`;
+  $("#st-comp-p").textContent = `(${pct}%)`;
+  $("#st-video").textContent = p.learnedVideo ?? "-";
+}
+
+function taskRowHTML(t, idx){
+  const off = {1:"视频",3:"PPT",6:"讨论",11:"作业",12:"测验"}[t.type]||"其他";
+  const colMap = {1:"var(--v-video)",3:"var(--v-ppt)",6:"var(--v-diss)",11:"var(--v-hw)",12:"var(--v-quiz)"};
+  const col = colMap[t.type]||"var(--gold)";
+  const done = !!t.done;
+  const pctNum = Math.min(100, Math.round((t.completePercent||0)*100));
+  let pct = "", extra = "";
+  if (t.type===1){ pct = pctNum + "%"; extra = fmtDur(t.duration); }
+  else if (t.type===3){ pct = pctNum + "%"; extra = ""; }
+  else if (t.type===6){ pct = pctNum + "%"; extra = t.done ? "已参与" : "未参与"; }
+  else if (t.type===11 || t.type===12){
+    pct = t.usedTryCount ? `已交${t.usedTryCount}次` : "未提交";
+    extra = (t.userScore!=null && t.totalScore) ? `得分 ${t.userScore}/${t.totalScore}` : `截止 ${fmtDate(t.deadline)}`;
+  }
+  const mark = done ? "✓" : "✗";
+  const rowCls = done ? "done" : "todo";
+  const ch = t.chapterName || "";
+  return `
+  <div class="task-row ${rowCls}" data-task="${idx}">
+    <div class="mark">${mark}</div>
+    <span class="task-tag" style="color:${col}; border-color:${col}55; background:${col}14">${off}</span>
+    <div class="task-main">
+      <div class="ti">${esc(t.title||"-")}</div>
+      ${ch ? `<div class="ch">${esc(ch)}</div>` : ""}
+    </div>
+    <div class="task-aside">
+      <div class="pct" style="color:${done?'var(--ok)':'var(--ink-dim)'}">${esc(pct)}</div>
+      ${extra ? `<div class="extra">${esc(extra)}</div>` : ""}
+      <div class="bar"><i style="width:${pctNum}%; background:${done?'var(--ok)':col}"></i></div>
+    </div>
+  </div>`;
+}
+
+function drawTasks(tasks){
+  const doneN = tasks.filter(t=>t.done).length;
+  $("#task-cnt").textContent = `共 ${tasks.length} 个任务 · 已完成 ${doneN} · 未完成 ${tasks.length-doneN}`;
+  if (!tasks.length){
+    $("#task-list").innerHTML = '<p class="loading-tip">该课程暂无任务数据</p>';
+    return;
+  }
+  const curKey = brushCurrentTaskKey();
+  $("#task-list").innerHTML = tasks.map((t,i)=>{
+    let html = taskRowHTML(t,i);
+    if (curKey && taskKey(t) === curKey) html = html.replace('class="task-row', 'class="task-row row-cur');
+    return html;
+  }).join("");
+}
+
+function taskKey(t){
+  return `${t.lessonId||""}-${t.unitId||t.contentId||""}-${t.type}`;
+}
+function brushCurrentTaskKey(){
+  // 日志/快照中取当前任务的定位信息(见 applyBrushSnapshot 存入)
+  return S.curTaskKey || null;
+}
+
+function startWatch(){
+  if (S.progressTimer) clearInterval(S.progressTimer);
+  if (S.brushTimer) clearInterval(S.brushTimer);
+  S.progressTimer = setInterval(async ()=>{
+    if (!S.course) return;
+    const c = S.course;
+    try{
+      const res = await api("/api/user/progress?" +
+        `username=${enc(S.user)}&course_id=${enc(c.courseId)}&term_id=${enc(c.termId)}&short_name=${enc(c.shortName||"")}`);
+      drawProgress(res.progress);
+    }catch(e){ if (e.status===401){ stopTimers(); goLogin(true);} }
+  }, 5000);
+  S.brushTimer = setInterval(pollBrush, 2500);
+  pollBrush();
+}
+
+/* ================= 刷课 ================= */
+async function pollBrush(){
+  if (!S.user) return;
+  try{
+    const st = await api("/api/user/brush/status?username=" + enc(S.user));
+    const prevKey = S.curTaskKey;
+    const changed = applyBrushSnapshot(st, false);
+    // 任务切换(当前任务定位键变化)也触发一次列表刷新以移动高亮
+    if (S.curTaskKey !== prevKey && S.course) loadDetail();
+    if (changed && S.course && st.running) loadDetail();
+    if (!st.running && S.brush.running) loadDetail(); // 结束收尾刷新
+  }catch(e){}
+}
+
+function applyBrushSnapshot(st, initial){
+  const prev = S.brush;
+  S.brush = st;
+  const running = !!st.running;
+  if (!running){
+    S.curTaskKey = null;
+    // 归位按钮
+    const btn = $("#btn-brush");
+    btn.classList.add("start"); btn.classList.remove("stop");
+    btn.textContent = "启 动 刷 课";
+    btn.disabled = false;
+    $("#brush-state").textContent = st.status==="idle" ? "待机" : (st.status==="done" ? "已完成" : st.status==="stopped" ? "已停止" : st.status);
+    $("#brush-state").classList.remove("on");
+    $("#job-now").classList.add("hidden");
+    $("#warn-other").classList.remove("show");
+    renderLog(st.log, true);
+    const changed = prev.running && !initial;
+    return changed;
+  }
+  // 运行中:同步按钮
+  const btn = $("#btn-brush");
+  btn.classList.remove("start"); btn.classList.add("stop");
+  btn.textContent = "停 止 刷 课";
+  $("#brush-state").textContent = "运行中";
+  $("#brush-state").classList.add("on");
+  // 是否属于当前课程
+  const sameCourse = S.course && st.course && String(st.course.course_id) === String(S.course.courseId);
+  if (!sameCourse){
+    $("#job-now").classList.add("hidden");
+    const w = $("#warn-other");
+    w.classList.add("show");
+    w.textContent = `该用户正在刷另一门课《${st.course ? st.course.name : ""}》,本页控制台不可操作。`;
+    btn.disabled = true;
+    renderLog(st.log, true);
+    return false;
+  }
+  $("#warn-other").classList.remove("show");
+  btn.disabled = false;
+  S.curTaskKey = st.current_key || null;
+  $("#job-now").classList.remove("hidden");
+  $("#job-task").textContent = st.current_task || "准备中…";
+  $("#job-prog").textContent = st.current_progress || "";
+  $("#job-cnt").textContent = `已完成 ${st.done_count}/${st.total_count}`;
+  // 任务定位:从日志里找最近一条 "开始处理:" 的 current_task 无法直接对应行,
+  // 我们通过当前 progress 无法定位精确行,这里用 done_count 变化触发整表刷新。
+  renderLog(st.log, false);
+  const changed = (st.refresh_seq !== prev.refresh_seq) && !initial;
+  return changed;
+}
+
+let logRendered = -1;
+function renderLog(log, force){
+  if (!log) return;
+  const box = $("#logbox");
+  if (force || log.length < logRendered) {
+    box.innerHTML = log.map(l=>logLine(l)).join("");
+    logRendered = log.length;
+  } else if (log.length > logRendered) {
+    for (let i=logRendered; i<log.length; i++) box.insertAdjacentHTML("beforeend", logLine(log[i]));
+    logRendered = log.length;
+  }
+  if (box.scrollHeight - box.scrollTop - box.clientHeight < 60) box.scrollTop = box.scrollHeight;
+}
+function logLine(l){
+  const cls = {info:"info", ok:"ok", warn:"warn", error:"error"}[l.level]||"info";
+  return `<div class="ln ${cls}"><span class="t">[${esc(l.t)}]</span>${esc(l.msg)}</div>`;
+}
+
+async function toggleBrush(){
+  if (!S.course){ toast("请先选择课程","warn"); return; }
+  const btn = $("#btn-brush");
+  if (S.brush.running){
+    btn.disabled = true; btn.textContent = "停止中…";
+    try{
+      await api("/api/user/brush/stop", {method:"POST", body:{username:S.user}});
+      toast("停止指令已发送", "warn");
+    }catch(e){ toast(e.message,"error"); btn.disabled=false; btn.textContent = "停 止 刷 课"; }
+    return;
+  }
+  // 收集参数
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  let types = [];
+  if (mode === "types"){
+    types = [...document.querySelectorAll("#type-chips input:checked")].map(i=>+i.value);
+    if (!types.length) return toast("请至少勾选一种任务类型","warn");
+  }
+  const speed = parseInt($("#speed").value, 10);
+  if (!speed || speed < 1 || speed > 3600) return toast("速度为 1-3600 的整数","warn");
+  const c = S.course;
+  const body = {
+    username: S.user,
+    course: {course_id:String(c.courseId), term_id:String(c.termId), short_name:c.shortName||"", name:c.name||""},
+    mode, types, speed,
+  };
+  btn.disabled = true; btn.textContent = "启动中…";
+  try{
+    const res = await api("/api/user/brush/start", {method:"POST", body});
+    toast(res.message || "任务已启动", "ok");
+    S.lastSeq = -1;
+    setTimeout(pollBrush, 800);
+  }catch(e){
+    toast(e.message, "error");
+  }finally{
+    btn.disabled = false;
+    btn.textContent = S.brush.running ? "停 止 刷 课" : "启 动 刷 课";
+  }
+}
+
+/* ================= 视图切换 ================= */
+function goLogin(withHint){
+  stopTimers();
+  S.user = null; S.course = null; S.brush = {running:false, refresh_seq:-1, log:[], course:null};
+  setChip("");
+  showView("view-login");
+  if (withHint) toast("登录已失效，请重新登录","warn");
+}
+function leaveCourse(){
+  stopTimers();
+  S.course = null;
+  showView("view-courses");
+}
+
+/* ================= 事件绑定 ================= */
+$("#btn-login").addEventListener("click", doLogin);
+$("#username").addEventListener("keydown", e=>{ if (e.key==="Enter") doLogin(); });
+$("#btn-switch").addEventListener("click", ()=>{ goLogin(false); $("#username").value = ""; });
+$("#btn-back").addEventListener("click", leaveCourse);
+$("#btn-brush").addEventListener("click", toggleBrush);
+$("#log-clear").addEventListener("click", ()=>{ $("#logbox").innerHTML=""; logRendered=-1; });
+$("#btn-qr-refresh").addEventListener("click", async ()=>{
+  $("#btn-qr-refresh").disabled = true;
+  try{
+    const res = await api("/api/user/login", {method:"POST", body:{username:S.user}});
+    if (res.status === "qr") openQr(res); else { await enterCourses(); $("#qr-mask").classList.remove("show"); }
+  }catch(e){ toast(e.message,"error"); }
+  $("#btn-qr-refresh").disabled = false;
+});
+$("#btn-qr-cancel").addEventListener("click", ()=>{
+  if (S.flowTimer){ clearInterval(S.flowTimer); S.flowTimer=null; }
+  $("#qr-mask").classList.remove("show");
+});
+// 按类型刷:取消勾选置灰
+document.querySelectorAll('input[name="mode"]').forEach(r=>{
+  r.addEventListener("change", ()=>{
+    const on = r.value === "types";
+    document.querySelectorAll("#type-chips input").forEach(i=>{
+      i.disabled = !on;
+      i.closest("label").style.opacity = on ? 1 : 0.35;
+    });
+  });
+});
+// 恢复上次用户名
+const savedUser = localStorage.getItem("mooc_user");
+if (savedUser) {
+  $("#username").value = savedUser;
+  S.user = savedUser;
+  api("/api/user/login", {method:"POST", body:{username:savedUser}})
+    .then(res=>{
+      if (res.status==="ok") enterCourses().then(()=>localStorage.setItem("mooc_user", savedUser));
+      else { goLogin(false); toast("上次登录已失效，请重新扫码","warn"); }
+    })
+    .catch(()=>goLogin(false));
+}
+</script>
+</body>
+</html>

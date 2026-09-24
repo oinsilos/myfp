@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>挑灯夜读 · 总务台（管理）</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315181f'/%3E%3Cpath d='M16 6a6.5 6.5 0 0 1 6.5 6.5c0 3.6-2.6 6-4.5 9h-4c-1.9-3-4.5-5.4-4.5-9A6.5 6.5 0 0 1 16 6Zm2.6 16.6a.9.9 0 0 1 0 1.3l-2.6 2.5 2.6 2.5a.9.9 0 0 1-1.3 1.3l-3.1-3a.9.9 0 0 1 0-1.3l3.1-3a.9.9 0 0 1 1.3-.3Z' fill='%23e8b45a'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0e1014; --bg2:#12151c; --card:#191d26; --card2:#1e232e;
+    --line:rgba(232,180,90,.16); --line-soft:rgba(255,255,255,.06);
+    --gold:#e8b45a; --gold-hi:#f4cf8b; --gold-dim:#9c8148;
+    --ink:#e9e2d0; --ink-dim:#a89f8d; --ink-faint:#6f6a5c;
+    --ok:#86c99a; --bad:#d98e73; --warn:#e8c878;
+    --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong","SimSun",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Consolas,"Courier New",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--ink); min-height:100vh;
+    font-family:var(--sans); font-size:15px; line-height:1.7;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(900px 520px at 85% -10%, rgba(90,118,232,.06), transparent 60%),
+      radial-gradient(700px 460px at 8% -8%, rgba(232,180,90,.09), transparent 55%),
+      var(--bg);
+  }
+  ::selection{background:rgba(232,180,90,.3)}
+  button{font-family:var(--sans); cursor:pointer}
+  input{font-family:var(--sans)}
+
+  .topbar{
+    position:sticky; top:0; z-index:20; display:flex; align-items:center;
+    justify-content:space-between; padding:14px 34px;
+    background:rgba(14,16,20,.85); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex; align-items:center; gap:13px}
+  .brand svg{width:34px;height:34px}
+  .brand .t1{font-family:var(--serif); font-size:21px; font-weight:700; letter-spacing:2px}
+  .brand .t1 em{font-style:normal; color:var(--gold)}
+  .brand .t2{font-size:11px; letter-spacing:3px; color:var(--ink-faint)}
+  .local-chip{
+    display:flex; align-items:center; gap:8px; padding:5px 13px; border-radius:999px;
+    border:1px solid rgba(134,201,154,.35); background:rgba(134,201,154,.06);
+    color:var(--ok); font-size:12px; letter-spacing:1px;
+  }
+  .local-chip .dot{width:7px;height:7px;border-radius:50%;background:var(--ok); box-shadow:0 0 8px var(--ok)}
+  .local-chip.danger{border-color:rgba(217,142,115,.4); background:rgba(217,142,115,.07); color:var(--bad)}
+  .local-chip.danger .dot{background:var(--bad); box-shadow:0 0 8px var(--bad)}
+
+  main{max-width:1180px; margin:0 auto; padding:36px 30px 90px}
+  .pagehead{display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:14px; margin-bottom:24px}
+  .pagehead h2{font-family:var(--serif); font-size:27px; letter-spacing:3px; font-weight:700}
+  .pagehead .sub{color:var(--ink-faint); font-size:13px; letter-spacing:1px}
+  .toolbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  .toolbar input{
+    background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:11px 16px; border-radius:11px; font-size:14px; outline:none; width:230px;
+    transition:border-color .25s;
+  }
+  .toolbar input:focus{border-color:var(--gold-dim)}
+  .btn-gold{
+    background:linear-gradient(160deg,var(--gold-hi),var(--gold)); color:#241c0c;
+    border:none; padding:11px 24px; border-radius:11px; font-size:14px; font-weight:600;
+    letter-spacing:2px; transition:all .22s; box-shadow:0 5px 18px rgba(232,180,90,.18);
+  }
+  .btn-gold:hover{transform:translateY(-1px); box-shadow:0 9px 26px rgba(232,180,90,.3)}
+  .btn-ghost{
+    background:transparent; border:1px solid var(--line); color:var(--ink-dim);
+    padding:10px 18px; border-radius:10px; font-size:13px; letter-spacing:1px; transition:all .22s;
+  }
+  .btn-ghost:hover{color:var(--ink); border-color:var(--gold-dim)}
+
+  .stats-line{
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+    gap:14px; margin-bottom:24px;
+  }
+  .mini-stat{
+    background:linear-gradient(170deg,var(--card),#151823); border:1px solid var(--line-soft);
+    border-radius:12px; padding:13px 22px;
+  }
+  .mini-stat .v{font-family:var(--serif); font-size:25px; font-weight:700; color:var(--gold-hi); font-variant-numeric:tabular-nums}
+  .mini-stat .k{font-size:11px; color:var(--ink-faint); letter-spacing:2px; margin-top:2px}
+
+  .panel{
+    background:linear-gradient(170deg,var(--card),#141824); border:1px solid var(--line-soft);
+    border-radius:16px; overflow:hidden; animation:rise .5s ease both;
+  }
+  .table-wrap{overflow-x:auto}
+  .table-wrap table{min-width:640px}
+  @keyframes rise{from{opacity:0; transform:translateY(16px)} to{opacity:1; transform:none}}
+  .panel .head{
+    padding:17px 24px; display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .panel .head h3{font-family:var(--serif); font-size:17px; letter-spacing:3px}
+  .panel .head .cnt{font-size:12.5px; color:var(--ink-faint); font-family:var(--mono)}
+
+  table{width:100%; border-collapse:collapse}
+  thead th{
+    text-align:left; font-size:11.5px; font-weight:600; letter-spacing:2px; color:var(--ink-faint);
+    padding:13px 20px; border-bottom:1px solid var(--line-soft); white-space:nowrap; background:rgba(0,0,0,.14);
+  }
+  tbody td{padding:13px 20px; border-bottom:1px solid var(--line-soft); vertical-align:middle; font-size:14px}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .2s}
+  tbody tr:hover{background:rgba(255,255,255,.025)}
+  td .uname{font-family:var(--serif); font-size:16px; font-weight:600; letter-spacing:1px}
+  td .ctime{font-size:12px; color:var(--ink-faint); font-family:var(--mono); margin-top:1px}
+  .mono{font-family:var(--mono); font-size:12.5px; color:var(--ink-dim)}
+  .badge{
+    display:inline-flex; align-items:center; gap:6px; font-size:12px; letter-spacing:1px;
+    padding:3px 12px; border-radius:999px; border:1px solid;
+  }
+  .badge.ok{color:var(--ok); border-color:rgba(134,201,154,.4); background:rgba(134,201,154,.07)}
+  .badge.bad{color:var(--bad); border-color:rgba(217,142,115,.4); background:rgba(217,142,115,.07)}
+  .badge.none{color:var(--ink-faint); border-color:var(--line-soft); background:rgba(0,0,0,.2)}
+  .badge.unk{color:var(--warn); border-color:rgba(232,200,120,.35); background:rgba(232,200,120,.06)}
+  .badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+  .btn-mini{
+    background:transparent; border:1px solid var(--line-soft); color:var(--ink-dim);
+    padding:6px 13px; border-radius:8px; font-size:12.5px; letter-spacing:1px; transition:all .2s;
+    white-space:nowrap;
+  }
+  .btn-mini:hover{color:var(--gold-hi); border-color:var(--gold-dim)}
+  .btn-mini.danger:hover{color:var(--bad); border-color:rgba(217,142,115,.5)}
+  .btn-mini:disabled{opacity:.4; cursor:not-allowed}
+  .acts{display:flex; gap:8px; flex-wrap:wrap}
+
+  /* 展开的进度行 */
+  tr.expand td{background:rgba(0,0,0,.22); padding:0}
+  .prog-wrap{padding:20px 26px}
+  .prog-wrap .tt{font-size:12px; color:var(--ink-faint); letter-spacing:2px; margin-bottom:13px}
+  .prog-grid{display:flex; flex-direction:column; gap:11px}
+  .prog-item{
+    display:flex; align-items:center; gap:16px; padding:12px 18px; border-radius:11px;
+    background:var(--card2); border:1px solid var(--line-soft);
+  }
+  .prog-item img{
+    width:112px; height:63px; object-fit:cover; border-radius:7px; flex:none;
+    background:linear-gradient(140deg,#222836,#181c26);
+  }
+  .prog-item .ph{
+    width:112px; height:63px; border-radius:7px; flex:none; display:flex; align-items:center;
+    justify-content:center; font-family:var(--serif); font-size:24px; color:rgba(232,180,90,.55);
+    background:linear-gradient(140deg,#222836,#181c26);
+  }
+  .prog-item .info{flex:1; min-width:0}
+  .prog-item .cn{font-family:var(--serif); font-size:14.5px; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .prog-item .cs{font-size:12px; color:var(--ink-faint); margin-top:1px}
+  .prog-item .p-nums{font-family:var(--mono); font-size:12.5px; color:var(--ink-dim); margin-top:5px}
+  .prog-item .p-bar{height:4px; background:rgba(255,255,255,.07); border-radius:3px; margin-top:7px; overflow:hidden}
+  .prog-item .p-bar i{
+    display:block; height:100%; border-radius:3px;
+    background:linear-gradient(90deg,var(--gold-dim),var(--gold-hi)); transition:width .8s;
+  }
+  .prog-item .p-right{flex:none; text-align:right; min-width:150px}
+  .prog-item .time{font-family:var(--serif); font-size:17px; font-weight:700; color:var(--gold-hi)}
+  .prog-item .comp{font-size:12px; color:var(--ink-dim); margin-top:2px; font-family:var(--mono)}
+
+  .loading-tip{text-align:center; color:var(--ink-faint); padding:50px 0; font-size:14px; letter-spacing:2px}
+  .empty-tip{text-align:center; color:var(--ink-faint); padding:60px 0; font-family:var(--serif); font-size:16px; letter-spacing:3px}
+
+  #toasts{position:fixed; right:26px; bottom:26px; z-index:80; display:flex; flex-direction:column; gap:10px}
+  .toast{
+    padding:12px 20px; border-radius:11px; font-size:13.5px;
+    background:#1b202b; border:1px solid var(--line); color:var(--ink);
+    box-shadow:0 12px 34px rgba(0,0,0,.5); animation:tin .35s ease both; max-width:340px;
+  }
+  .toast.warn{border-color:rgba(232,180,90,.45); color:var(--gold-hi)}
+  .toast.error{border-color:rgba(217,142,115,.5); color:#e8a48f}
+  .toast.ok{border-color:rgba(134,201,154,.5); color:var(--ok)}
+  @keyframes tin{from{opacity:0; transform:translateX(30px)} to{opacity:1; transform:none}}
+  .toast.out{opacity:0; transform:translateX(30px); transition:all .4s}
+
+  @media (max-width:900px){
+    .topbar{padding:12px 20px} main{padding:26px 16px 70px}
+    td,th{padding:11px 12px}
+    .prog-item{flex-wrap:wrap}
+    .prog-item .p-right{min-width:100px}
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="7" fill="#15181f"/><path d="M16 6a6.5 6.5 0 0 1 6.5 6.5c0 3.6-2.6 6-4.5 9h-4c-1.9-3-4.5-5.4-4.5-9A6.5 6.5 0 0 1 16 6Zm2.6 16.6a.9.9 0 0 1 0 1.3l-2.6 2.5 2.6 2.5a.9.9 0 0 1-1.3 1.3l-3.1-3a.9.9 0 0 1 0-1.3l3.1-3a.9.9 0 0 1 1.3-.3Z" fill="#e8b45a"/></svg>
+    <div>
+      <div class="t1">挑灯<em>夜读</em> · 总务台</div>
+      <div class="t2">用户与凭证管理（本页仅限本机访问）</div>
+    </div>
+  </div>
+  <div class="local-chip" id="local-chip"><span class="dot"></span><span id="local-chip-txt">本机访问 · 正在确认…</span></div>
+</header>
+
+<main>
+  <div class="pagehead">
+    <div>
+      <h2>用户花名册</h2>
+      <div class="sub">管理用户、查看 cookie 有效性及各课程学习进度</div>
+    </div>
+    <div class="toolbar">
+      <input id="new-user" placeholder="新用户名（中英文/数字/_-）">
+      <button class="btn-gold" id="btn-add">添加用户</button>
+      <button class="btn-ghost" id="btn-refresh">刷新列表</button>
+    </div>
+  </div>
+
+  <div class="stats-line">
+    <div class="mini-stat"><div class="v" id="s-total">-</div><div class="k">用户总数</div></div>
+    <div class="mini-stat"><div class="v" id="s-cookie">-</div><div class="k">已绑定 Cookie</div></div>
+    <div class="mini-stat"><div class="v" id="s-valid">-</div><div class="k">Cookie 有效</div></div>
+    <div class="mini-stat"><div class="v" id="s-invalid">-</div><div class="k">失效 / 未绑定</div></div>
+    <div class="mini-stat"><div class="v" id="s-brushing">-</div><div class="k">正在刷课</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="head">
+      <h3>用户列表</h3>
+      <span class="cnt" id="list-cnt"></span>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>用户</th><th>Cookie 文件</th><th>Cookie 状态</th><th>刷课</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="user-tbody"></tbody>
+    </table>
+    </div>
+    <div class="loading-tip" id="list-loading">加载中…</div>
+    <div class="empty-tip" id="list-empty" style="display:none">暂无用户，请先在上方添加</div>
+  </div>
+</main>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const enc = encodeURIComponent;
+const validCache = {};   // username -> true/false/null
+
+function toast(msg, kind="info", ms=3600){
+  const el = document.createElement("div");
+  el.className = "toast "+kind; el.textContent = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(()=>{ el.classList.add("out"); setTimeout(()=>el.remove(),450); }, ms);
+}
+
+async function api(url, opts){
+  const init = {headers:{}, ...(opts||{})};
+  if (init.body && typeof init.body === "object"){
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(init.body);
+  }
+  const r = await fetch(url, init);
+  let j = null; try{ j = await r.json(); }catch(e){}
+  if (!r.ok){
+    const msg = (j && j.detail) || ("请求失败 HTTP "+r.status);
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
+  return j;
+}
+function esc(s){ return String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ================= 本机确认 ================= */
+async function pingLocal(){
+  const chip = $("#local-chip");
+  try{
+    const u = new URL(location.href);
+    // 仅当主机名是"字面 IP 地址"且非回环时才提示(主机名形式无法从客户端判断,以后端拦截为准)
+    const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+    const isLoopback = ["127.0.0.1","localhost","::1"].includes(u.hostname) || /^127\./.test(u.hostname);
+    if (isIp && !isLoopback){
+      chip.classList.add("danger");
+      $("#local-chip-txt").textContent = "警告：当前非回环地址，后端已拦截管理接口";
+      return;
+    }
+    const r = await fetch("/api/health");
+    if (r.ok){ $("#local-chip-txt").textContent = "本机访问 · 后端正常"; }
+    else if (r.status === 403){ chip.classList.add("danger"); $("#local-chip-txt").textContent = "后端拒绝：仅限本机"; }
+  }catch(e){
+    chip.classList.add("danger"); $("#local-chip-txt").textContent = "后端不可达";
+  }
+}
+
+/* ================= 列表与统计 ================= */
+let rows = [];
+
+function badgeHTML(v){
+  if (v === true)  return '<span class="badge ok"><span class="dot"></span>有效</span>';
+  if (v === false) return '<span class="badge bad"><span class="dot"></span>已失效</span>';
+  return '<span class="badge unk"><span class="dot"></span>未检测</span>';
+}
+
+function render(){
+  const tbody = $("#user-tbody");
+  $("#list-empty").style.display = rows.length ? "none" : "block";
+  $("#list-loading").style.display = "none";
+  $("#list-cnt").textContent = rows.length ? `共 ${rows.length} 人` : "";
+  tbody.innerHTML = rows.map(r=>{
+    const v = validCache[r.username] === undefined
+      ? (r.valid === true ? true : r.valid === false ? false : null)
+      : validCache[r.username];
+    const brush = r.brush_running ? '<span class="badge ok"><span class="dot"></span>运行中</span>' : '<span class="badge none">空闲</span>';
+    return `
+    <tr data-u="${esc(r.username)}" class="row-main">
+      <td>
+        <div class="uname">${esc(r.username)}</div>
+        <div class="ctime">${r.created_at ? "登记 " + esc(String(r.created_at).replace("T"," ").slice(0,16)) : ""}</div>
+      </td>
+      <td>
+        ${r.has_cookie
+          ? `<span class="mono">${esc(r.cookie_file)}</span>`
+          : '<span class="badge none">未绑定</span>'}
+      </td>
+      <td data-cell="valid">${badgeHTML(v)}</td>
+      <td>${brush}</td>
+      <td>
+        <div class="acts">
+          <button class="btn-mini" data-act="check" ${r.has_cookie?"":"disabled"}>检测</button>
+          <button class="btn-mini" data-act="view" ${r.has_cookie?"":"disabled"}>课程进度</button>
+          <button class="btn-mini danger" data-act="del">删除</button>
+        </div>
+      </td>
+    </tr>
+    <tr class="expand" data-exp="${esc(r.username)}" style="display:none"><td colspan="5"><div class="prog-wrap"><div class="tt" id="prog-tt">加载中…</div><div class="prog-grid" id="prog-grid"></div></div></td></tr>`;
+  }).join("");
+
+  // 统计
+  const total = rows.length;
+  const withCookie = rows.filter(r=>r.has_cookie).length;
+  let valid=0, invalid=0, brushing=0;
+  rows.forEach(r=>{
+    const v = validCache[r.username] === undefined ? r.valid : validCache[r.username];
+    if (v === true) valid++; else if (v === false) invalid++;
+    if (r.brush_running) brushing++;
+  });
+  $("#s-total").textContent = total;
+  $("#s-cookie").textContent = withCookie;
+  $("#s-valid").textContent = valid;
+  $("#s-invalid").textContent = (total - valid);
+  $("#s-brushing").textContent = brushing;
+
+  tbody.querySelectorAll("button[data-act]").forEach(b=>{
+    b.addEventListener("click", async ()=>{
+      const u = b.closest("tr.row-main").dataset.u;
+      const act = b.dataset.act;
+      if (act === "check") await doCheck(u, b);
+      else if (act === "view") toggleProgress(u, b);
+      else if (act === "del") await doDelete(u);
+    });
+  });
+}
+
+async function loadList(){
+  $("#list-loading").style.display = "block";
+  try{
+    const res = await api("/api/admin/users");
+    rows = res.users || [];
+    // 合并本地已缓存的检测结果
+    rows.forEach(r=>{ if (validCache[r.username] !== undefined) r.valid = validCache[r.username]; });
+    render();
+  }catch(e){
+    toast(e.message, "error");
+    $("#list-loading").style.display = "none";
+  }
+}
+
+/* ================= 操作 ================= */
+async function doCheck(u, btn){
+  btn.disabled = true; btn.textContent = "检测中…";
+  try{
+    const res = await api(`/api/admin/users/${enc(u)}/check`, {method:"POST"});
+    validCache[u] = !!res.valid;
+    const cell = document.querySelector(`tr.row-main[data-u="${CSS.escape(u)}"] [data-cell=valid]`);
+    if (cell) cell.innerHTML = badgeHTML(!!res.valid);
+    render();
+    toast(res.valid ? `「${u}」cookie 有效` : `「${u}」cookie 已失效，需重新扫码`, res.valid?"ok":"warn");
+  }catch(e){
+    toast(e.message, "error");
+  }finally{
+    btn.disabled = false; btn.textContent = "检测";
+  }
+}
+
+let expanded = null;
+async function toggleProgress(u, btn){
+  const row = document.querySelector(`tr[data-exp="${CSS.escape(u)}"]`);
+  if (!row) return;
+  if (expanded === u){ row.style.display = "none"; expanded = null; btn.textContent = "课程进度"; return; }
+  expanded = u;
+  // 收起其他
+  document.querySelectorAll("tr[data-exp]").forEach(r=>r.style.display = "none");
+  document.querySelectorAll('button[data-act="view"]').forEach(b=>b.textContent = "课程进度");
+  row.style.display = ""; btn.textContent = "收起进度";
+  const grid = row.querySelector("#prog-grid");
+  const tt = row.querySelector("#prog-tt");
+  grid.innerHTML = ""; tt.textContent = "正在获取课程进度…";
+  try{
+    const res = await api(`/api/admin/users/${enc(u)}/courses`);
+    validCache[u] = !!res.valid;
+    render();
+    const list = res.courses || [];
+    if (!list.length){ tt.textContent = "该用户暂无课程数据"; return; }
+    tt.textContent = `共 ${list.length} 门课程 · 学习时长与完成进度`;
+    grid.innerHTML = list.map(c=>{
+      const total = c.lessonsCount||0, learned = c.learnedCount||0;
+      const pct = total ? Math.round(learned*100/total) : 0;
+      const p = c.progress;
+      const timeText = p && p.learntime_text ? p.learntime_text : "-";
+      const compText = p && p.completion_text ? p.completion_text : "-";
+      const img = c.imgUrl
+        ? `<img src="${esc(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
+        : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
+      return `
+      <div class="prog-item">
+        ${img}
+        <div class="info">
+          <div class="cn">${esc(c.name||"未命名课程")}${c.is_finished?' <span class="badge ok" style="font-size:10.5px;padding:1px 8px">已完成</span>':""}</div>
+          <div class="cs">${esc(c.shortName||"")} · 学期 ${esc(String(c.termId??"-"))}</div>
+          <div class="p-nums">已学 ${learned} / ${total} 学时</div>
+          <div class="p-bar"><i style="width:${pct}%"></i></div>
+        </div>
+        <div class="p-right">
+          <div class="time">${esc(timeText)}</div>
+          <div class="comp">${esc(compText)} · 视频 ${p ? p.learnedVideo : "-"}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }catch(e){
+    tt.textContent = "获取失败：" + e.message;
+    toast(e.message, "error");
+  }
+}
+
+async function doDelete(u){
+  if (!confirm(`确定删除用户「${u}」？其 cookie 文件也会一并删除，此操作不可恢复。`)) return;
+  try{
+    await api(`/api/admin/users/${enc(u)}`, {method:"DELETE"});
+    delete validCache[u];
+    if (expanded === u) expanded = null;
+    toast(`已删除用户「${u}」`, "ok");
+    await loadList();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+/* ================= 事件 ================= */
+$("#btn-add").addEventListener("click", async ()=>{
+  const v = $("#new-user").value.trim();
+  if (!v) return toast("请输入用户名", "warn");
+  try{
+    await api("/api/admin/users", {method:"POST", body:{username:v}});
+    toast(`用户「${v}」已添加`, "ok");
+    $("#new-user").value = "";
+    await loadList();
+  }catch(e){ toast(e.message, "error"); }
+});
+$("#new-user").addEventListener("keydown", e=>{ if (e.key==="Enter") $("#btn-add").click(); });
+$("#btn-refresh").addEventListener("click", loadList);
+
+pingLocal();
+loadList();
+setInterval(loadList, 15000);   // 周期性刷新刷课状态
+</script>
+</body>
+</html>
