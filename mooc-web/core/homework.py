@@ -5,7 +5,8 @@ from core.ai_client import get_answer
 from core.auth import auth_signature
 
 
-def get_hwdata(sess, csrfkey, task, referer, name):
+def get_hwdata(sess, csrfkey, task, referer, provider):
+    """获取并组装作业提交数据;provider 为 AI 配置字典(未配置则无法作答)。"""
     url = f"https://www.icourse163.org/web/j/mocQuizRpcBean.getOpenHomeworkPaperDto.rpc?csrfKey={csrfkey}"
     data = {
         "tid": task['contentId'],
@@ -32,7 +33,7 @@ def get_hwdata(sess, csrfkey, task, referer, name):
                 "type": q_item["type"],
                 "plainTextTitle": q_item["plainTextTitle"]
             })
-        answerlist = get_answer(question_list, name)
+        answerlist = get_answer(question_list, provider)
         if answerlist is None:
             return None
         ans_array = []
@@ -55,9 +56,9 @@ def get_hwdata(sess, csrfkey, task, referer, name):
     return None
 
 
-def save_hw(sess, csrfkey, task, referer, name):
+def save_hw(sess, csrfkey, task, referer, provider):
     url = f"https://www.icourse163.org/web/j/mocQuizRpcBean.submitAnswers.rpc?csrfKey={csrfkey}"
-    data = get_hwdata(sess, csrfkey, task, referer, name)
+    data = get_hwdata(sess, csrfkey, task, referer, provider)
     if data is None:
         print("答案获取失败")
         return False

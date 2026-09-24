@@ -17,6 +17,7 @@ from core.login import check_session
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 COOKIE_DIR = DATA_DIR / "cookies"
+AI_DIR = DATA_DIR / "ai"
 USERS_FILE = DATA_DIR / "users.json"
 
 # cookie 有效性缓存时长(秒):避免每次页面操作都打真实校验请求
@@ -36,6 +37,7 @@ class Store:
     def __init__(self):
         DATA_DIR.mkdir(exist_ok=True)
         COOKIE_DIR.mkdir(exist_ok=True)
+        AI_DIR.mkdir(exist_ok=True)
         self._lock = threading.RLock()
         self._users = {}
         self._validity = {}  # username -> {"valid": bool, "ts": float}
@@ -92,6 +94,9 @@ class Store:
         cookie_path = self.cookie_path(username)
         if cookie_path.exists():
             cookie_path.unlink()
+        ai_path = self.ai_config_path(username)
+        if ai_path.exists():
+            ai_path.unlink()
         return existed
 
     # ---------- cookie 文件 ----------
@@ -117,6 +122,35 @@ class Store:
         with self._lock:
             self._users.setdefault(username, {"created_at": int(time.time()), "note": ""})
         self._save()
+
+    # ---------- （AI 配置） ----------
+    def ai_config_path(self, username: str) -> Path:
+        return AI_DIR / f"ai_{username}.json"
+
+    def load_ai_config(self, username: str):
+        """读取用户的 AI 配置字典;未配置或读取失败返回 None。"""
+        p = self.ai_config_path(username)
+        if not p.exists():
+            return None
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception as e:
+            print(f"读取AI配置出错:{e}")
+        return None
+
+    def save_ai_config(self, username: str, cfg: dict) -> None:
+        p = self.ai_config_path(username)
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"AI配置已保存:{p}")
+
+    def remove_ai_config(self, username: str) -> bool:
+        p = self.ai_config_path(username)
+        if p.exists():
+            p.unlink()
+            return True
+        return False
 
     # ---------- cookie 有效性 ----------
     def cached_validity(self, username: str):

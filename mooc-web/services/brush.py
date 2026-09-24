@@ -20,7 +20,16 @@ from core.homework import save_hw
 
 TYPE_NAMES = {1: "视频", 3: "PPT", 6: "讨论", 11: "作业", 12: "测验"}
 BRUSHABLE_TYPES = {1, 3, 6, 11}
-AI_PROVIDER = "modelscope"
+# 需要调用 AI 的任务类型(讨论 6 / 作业 11)
+AI_REQUIRED_TYPES = {6, 11}
+
+def mode_needs_ai(mode, types) -> bool:
+    """判断所选刷课模式是否涉及需要 AI 的任务类型。"""
+    if mode == "all":
+        return True
+    if mode == "types":
+        return bool(set(types or []) & AI_REQUIRED_TYPES)
+    return False
 
 
 def task_done(task) -> bool:
@@ -62,12 +71,13 @@ def task_key(task) -> str:
 
 
 class BrushJob:
-    def __init__(self, username, course, mode, types, speed):
+    def __init__(self, username, course, mode, types, speed, ai_config=None):
         self.username = username
         self.course = course          # {course_id, term_id, short_name, name}
         self.mode = mode
         self.types = list(types or [])
         self.speed = int(speed)
+        self.ai_config = ai_config    # 用户的 AI provider 配置字典,可为 None
         self.status = "running"       # running/done/stopped/error
         self.current_task = ""
         self.current_key = ""         # 当前任务定位键(高亮用)
@@ -79,7 +89,8 @@ class BrushJob:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._log = deque(maxlen=200)
-        self._log.append({"t": self._ts(), "level": "info", "msg": f"刷课任务启动(模式:{mode},速度:{speed})"})
+        self._log.append({"t": self._ts(), "level": "info",
+                          "msg": f"刷课任务启动(模式:{mode},速度:{speed},AI:{'已配置' if ai_config else '未配置'})"})
         self._thread = None
 
     @staticmethod
@@ -107,6 +118,7 @@ class BrushJob:
                 "total_count": self.total_count,
                 "refresh_seq": self.refresh_seq,
                 "started_at": self.started_at,
+                "has_ai": bool(self.ai_config),
                 "log": list(self._log),
             }
 
@@ -125,10 +137,13 @@ class BrushManager:
         job = self.get(username)
         return job is not None and job.status == "running"
 
-    def start(self, username, course, mode, types, speed):
+    def start(self, username, course, mode, types, speed, ai_config=None):
         if self.running(username):
             return False, "该用户已有刷课任务在运行"
-        job = BrushJob(username, course, mode, types, speed)
+        # 需要 AI 的模式,未配置 AI 则拒绝启动
+        if mode_needs_ai(mode, types) and ai_config is None:
+            return False, "该模式包含讨论/作业任务,需要先在「AI 设置」中配置并保存 AI"
+        job = BrushJob(username, course, mode, types, speed, ai_config)
         with self._lock:
             self._jobs[username] = job
         job._thread = threading.Thread(
@@ -225,13 +240,13 @@ class BrushManager:
                 savelearn_ppt(sess, csrfkey, task, speed, referer)
                 return True
             if t == 6:
-                return bool(savelearn_discuss(sess, csrfkey, task, referer, AI_PROVIDER))
+                return bool(savelearn_discuss(sess, csrfkey, task, referer, job.ai_config))
             if t == 11:
                 deadline = task.get("deadline")
                 if deadline and deadline <= time.time():
                     job.log("作业已过截止时间,跳过", "warn")
                     return True
-                return bool(save_hw(sess, csrfkey, task, referer, AI_PROVIDER))
+                return bool(save_hw(sess, csrfkey, task, referer, job.ai_config))
         except Exception as e:
             job.log(f"任务执行异常:{e}", "error")
             return False

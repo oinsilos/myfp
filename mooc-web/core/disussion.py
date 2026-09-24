@@ -61,14 +61,14 @@ def clean_content(content_str):
     return title, content
 
 
-def savelearn_discuss(sess, csrfkey, task, referer, name):
+def savelearn_discuss(sess, csrfkey, task, referer, provider):
     url = "https://www.icourse163.org/dwr/call/plaincall/MocForumBean.addReply.dwr"
     rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
     title, content = get_discuss(sess, csrfkey, task, referer)
     if not content:
         print("未获取到讨论内容")
         return False
-    content_text = get_reply(title, content, name)
+    content_text = get_reply(title, content, provider)
     if content_text is None:
         print("获取回复内容失败")
         return False

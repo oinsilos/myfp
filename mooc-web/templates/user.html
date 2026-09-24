@@ -275,6 +275,14 @@
     display:none;
   }
   .warn-other.show{display:block}
+  .ai-gate{
+    display:none; margin-top:16px; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:12px 16px; border-radius:11px; font-size:13px;
+    background:rgba(232,180,90,.07); border:1px dashed rgba(232,200,120,.4); color:var(--gold-hi);
+  }
+  .ai-gate.show{display:flex}
+  .ai-gate .g-icon{color:var(--gold)}
+  .ai-gate.locked{background:rgba(217,142,115,.07); border-color:rgba(217,142,115,.45); color:#e8a48f}
 
   /* ---------- 任务列表 ---------- */
   .tasks-panel{
@@ -383,6 +391,48 @@
   }
   .btn-line:hover{color:var(--ink); border-color:var(--gold-dim)}
 
+  /* ---------- AI 设置弹窗 ---------- */
+  .ai-fields{text-align:left; display:flex; flex-direction:column; gap:13px; margin:20px 0 6px}
+  .ai-fields .f label{display:block; font-size:12px; color:var(--ink-faint); letter-spacing:1px; margin-bottom:6px}
+  .ai-fields .f input{
+    width:100%; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:10px 14px; border-radius:9px; font-size:13.5px; outline:none; transition:border-color .25s;
+  }
+  .ai-fields .f input:focus{border-color:var(--gold-dim)}
+  .ai-fields .f input::placeholder{color:var(--ink-faint)}
+  .ai-preset-row{text-align:left; margin-bottom:4px}
+  .ai-preset-row .lab{display:block; font-size:12px; color:var(--ink-faint); letter-spacing:1px; margin-bottom:8px}
+  .ai-presets{display:flex; flex-wrap:wrap; gap:8px}
+  .ai-preset{
+    background:var(--bg2); border:1px solid var(--line-soft); color:var(--ink-dim);
+    padding:6px 13px; border-radius:8px; font-size:12.5px; cursor:pointer; transition:all .2s;
+  }
+  .ai-preset:hover{color:var(--gold-hi); border-color:var(--gold-dim)}
+  .ai-preset.sel{color:#241c0c; background:linear-gradient(160deg,var(--gold-hi),var(--gold)); border-color:transparent; font-weight:600}
+  .ai-test-result{
+    text-align:left; font-size:12.5px; font-family:var(--mono); margin-top:12px; padding:10px 13px;
+    border-radius:9px; background:rgba(0,0,0,.25); border:1px dashed var(--line-soft);
+    color:var(--ink-dim); min-height:18px; word-break:break-all; display:none;
+  }
+  .ai-test-result.show{display:block}
+  .ai-test-result.ok{color:var(--ok); border-color:rgba(134,201,154,.35)}
+  .ai-test-result.err{color:var(--bad); border-color:rgba(217,142,115,.4)}
+  .ai-test-result.pending{color:var(--gold-hi)}
+  .ai-current{
+    text-align:left; font-size:12.5px; color:var(--ink-dim); margin-bottom:10px;
+    display:none; align-items:center; gap:7px; flex-wrap:wrap;
+  }
+  .ai-current.show{display:flex}
+  .ai-current .badge-ai{
+    display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:3px 11px;
+    border-radius:999px; border:1px solid rgba(134,201,154,.4); color:var(--ok);
+    background:rgba(134,201,154,.07);
+  }
+  .ai-current .badge-none{
+    display:inline-flex; align-items:center; gap:6px; font-size:11.5px; padding:3px 11px;
+    border-radius:999px; border:1px solid var(--line-soft); color:var(--ink-faint);
+  }
+
   /* ---------- Toast ---------- */
   #toasts{position:fixed; right:26px; bottom:26px; z-index:80; display:flex; flex-direction:column; gap:10px}
   .toast{
@@ -419,6 +469,7 @@
   </a>
   <div class="topbar-right">
     <div class="userchip" id="userchip"><span class="dot"></span><span id="chipname"></span></div>
+    <button class="btn-ghost" id="btn-ai" style="display:none">AI 设置</button>
     <button class="btn-ghost" id="btn-switch" style="display:none">切换用户</button>
   </div>
 </header>
@@ -518,6 +569,11 @@
         </div>
       </div>
       <div class="warn-other" id="warn-other"></div>
+      <div class="ai-gate hidden" id="ai-gate">
+        <span class="g-icon">✦</span>
+        <span id="ai-gate-txt"></span>
+        <button class="btn-line" id="btn-ai-gate" style="padding:6px 16px;font-size:12.5px">AI 设置</button>
+      </div>
       <div class="job-now hidden" id="job-now">
         <span class="spinner"></span>
         <span id="job-task">-</span>
@@ -540,6 +596,45 @@
     </div>
   </section>
 </main>
+
+<!-- AI 设置弹窗 -->
+<div class="modal-mask" id="ai-mask">
+  <div class="modal" style="width:min(440px,94vw); max-height:92vh; overflow-y:auto">
+    <h3>AI 设置</h3>
+    <p class="desc">讨论、作业类任务需要调用 AI。填写 OpenAI 兼容接口配置（Key 不会回显，留空表示沿用已保存值）</p>
+    <div>
+      <div class="ai-current" id="ai-current"></div>
+      <div class="ai-preset-row">
+        <span class="lab">选择预设（可自定义修改）</span>
+        <div class="ai-presets" id="ai-presets"></div>
+      </div>
+      <div class="ai-fields">
+        <div class="f">
+          <label>名称 Name（自定义标识）</label>
+          <input id="ai-name" placeholder="如 my-deepseek">
+        </div>
+        <div class="f">
+          <label>Base URL（OpenAI 兼容地址）</label>
+          <input id="ai-baseurl" placeholder="https://api.xxx.com/v1">
+        </div>
+        <div class="f">
+          <label>API Key</label>
+          <input id="ai-apikey" type="password" placeholder="留空 = 沿用已保存的 Key">
+        </div>
+        <div class="f">
+          <label>模型 Model</label>
+          <input id="ai-model" placeholder="如 deepseek-chat">
+        </div>
+      </div>
+      <div class="ai-test-result" id="ai-test-result"></div>
+      <div class="m-actions">
+        <button class="btn-line" id="btn-ai-test">连通性测试</button>
+        <button class="btn-gold" id="btn-ai-save">保 存</button>
+        <button class="btn-line" id="btn-ai-close">关 闭</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- 二维码弹窗 -->
 <div class="modal-mask" id="qr-mask">
@@ -617,6 +712,9 @@ const S = {
   progressTimer: null,
   lastSeq: null,
   curTaskKey: null,
+  aiConfigured: false,
+  aiConfig: null,       // {name, base_url, model, api_key_masked}
+  aiPresets: [],
 };
 
 function showView(id){
@@ -628,6 +726,7 @@ function setChip(name){
   $("#chipname").textContent = name || "";
   $("#userchip").style.display = name ? "flex" : "none";
   $("#btn-switch").style.display = name ? "inline-block" : "none";
+  $("#btn-ai").style.display = name ? "inline-block" : "none";
 }
 function stopTimers(){
   if (S.flowTimer){ clearInterval(S.flowTimer); S.flowTimer=null; }
@@ -719,12 +818,170 @@ async function pollFlow(){
   }catch(e){ /* 网络抖动,继续轮询 */ }
 }
 
+/* ================= AI 设置 ================= */
+async function loadAiState(){
+  if (!S.user) return;
+  try{
+    const res = await api("/api/user/ai/config?username=" + enc(S.user));
+    S.aiConfigured = !!res.configured;
+    S.aiConfig = res.config;
+    S.aiPresets = res.presets || [];
+  }catch(e){ /* 忽略,保持原状态 */ }
+}
+
+function renderAiPresets(selName){
+  const box = $("#ai-presets");
+  const all = [
+    {name: "自定义", type: "custom"},
+    ...(S.aiPresets || []).map(p => ({name: p.name, type: "preset", ...p})),
+  ];
+  box.innerHTML = all.map(p => {
+    const cls = (p.type === "custom" ? !selName : selName === p.name) ? " sel" : "";
+    return `<span class="ai-preset${cls}" data-p="${esc(p.type === "custom" ? "custom" : p.name)}">${esc(p.name)}</span>`;
+  }).join("");
+  box.querySelectorAll(".ai-preset").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      const key = el.dataset.p;
+      box.querySelectorAll(".ai-preset").forEach(x=>x.classList.remove("sel"));
+      el.classList.add("sel");
+      if (key === "custom") return;
+      const p = S.aiPresets.find(x=>x.name === key);
+      if (p){
+        const cur = selNameFromInput();
+        if (p.base_url) $("#ai-baseurl").value = p.base_url;
+        if (p.model) $("#ai-model").value = p.model;
+        if (!$("#ai-name").value || $("#ai-name").dataset.auto) $("#ai-name").value = p.name;
+        $("#ai-name").dataset.auto = "1";
+      }
+    });
+  });
+}
+
+function selNameFromInput(){
+  // 依据当前 base_url 判断命中的预设名(用于首屏选中态)
+  const url = $("#ai-baseurl").value.trim();
+  const p = (S.aiPresets || []).find(x=>x.base_url && x.base_url === url);
+  return p ? p.name : null;
+}
+
+async function openAiModal(){
+  await loadAiState();
+  // 当前状态条
+  const cur = $("#ai-current");
+  if (S.aiConfigured && S.aiConfig){
+    cur.className = "ai-current show";
+    cur.innerHTML = `<span class="badge-ai"><span class="dot" style="width:6px;height:6px;border-radius:50%;background:currentColor"></span>已配置</span>` +
+      `<span>${esc(S.aiConfig.name)}</span><span style="color:var(--ink-faint)">model: ${esc(S.aiConfig.model)}</span>` +
+      `<span style="color:var(--ink-faint);font-family:var(--mono)">key: ${esc(S.aiConfig.api_key_masked)}</span>`;
+    $("#ai-name").value = S.aiConfig.name;
+    $("#ai-baseurl").value = S.aiConfig.base_url;
+    $("#ai-model").value = S.aiConfig.model;
+    $("#ai-apikey").value = "";
+    $("#ai-name").dataset.auto = "0";
+  } else {
+    cur.className = "ai-current show";
+    cur.innerHTML = `<span class="badge-none">未配置 —— 讨论/作业任务将被禁用</span>`;
+    $("#ai-apikey").value = "";
+  }
+  renderAiPresets(selNameFromInput());
+  hideAiResult();
+  $("#ai-mask").classList.add("show");
+}
+
+function hideAiResult(){
+  const r = $("#ai-test-result");
+  r.className = "ai-test-result";
+  r.textContent = "";
+}
+function showAiResult(ok, msg, pending){
+  const r = $("#ai-test-result");
+  r.className = "ai-test-result show " + (pending ? "pending" : ok ? "ok" : "err");
+  r.textContent = msg;
+}
+
+function collectAiPayload(){
+  return {
+    username: S.user,
+    name: $("#ai-name").value.trim(),
+    base_url: $("#ai-baseurl").value.trim(),
+    api_key: $("#ai-apikey").value.trim(),
+    model: $("#ai-model").value.trim(),
+  };
+}
+
+async function testAi(){
+  const p = collectAiPayload();
+  if (!p.name || !p.base_url || !p.model){
+    return showAiResult(false, "名称 / Base URL / 模型 不能为空", false);
+  }
+  showAiResult(null, "连通性测试中,请稍候…", true);
+  const btn = $("#btn-ai-test"); btn.disabled = true;
+  try{
+    const res = await api("/api/user/ai/test", {method:"POST", body:p});
+    showAiResult(!!res.ok, res.message || "-", false);
+    if (res.ok) toast("AI 连通性测试通过", "ok");
+  }catch(e){
+    showAiResult(false, e.message, false);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function saveAi(){
+  const p = collectAiPayload();
+  if (!p.name || !p.base_url || !p.model){
+    return showAiResult(false, "名称 / Base URL / 模型 不能为空", false);
+  }
+  if (!p.api_key && !S.aiConfigured){
+    return showAiResult(false, "首次保存必须填写 API Key", false);
+  }
+  const btn = $("#btn-ai-save"); btn.disabled = true;
+  try{
+    await api("/api/user/ai/config", {method:"POST", body:p});
+    await loadAiState();
+    toast("AI 配置已保存", "ok");
+    $("#ai-mask").classList.remove("show");
+    // 保存后如果配置变化,刷新控制台提示
+    renderAiGateHint();
+  }catch(e){
+    showAiResult(false, e.message, false);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+function currentBrushNeedsAi(){
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  if (mode === "all") return true;
+  if (mode === "types"){
+    return [...document.querySelectorAll("#type-chips input:checked")]
+      .some(i => +i.value === 6 || +i.value === 11);
+  }
+  return false; // duration 仅视频
+}
+
+function renderAiGateHint(){
+  const gate = $("#ai-gate");
+  const txt = $("#ai-gate-txt");
+  const needs = currentBrushNeedsAi();
+  if (needs && !S.aiConfigured){
+    gate.className = "ai-gate show locked";
+    txt.textContent = "当前模式包含「讨论 / 作业」任务,需要 AI 作答。未配置 AI,此模式无法启动。";
+  } else if (needs && S.aiConfigured){
+    gate.className = "ai-gate show";
+    txt.textContent = `当前模式包含「讨论 / 作业」,将使用 AI:${S.aiConfig.name} (${S.aiConfig.model})`;
+  } else {
+    gate.className = "ai-gate hidden";
+  }
+}
+
 /* ================= 课程列表 ================= */
 async function enterCourses(){
   try{
     const res = await api("/api/user/courses?username=" + enc(S.user));
     renderCourses(res.courses || []);
     setChip(S.user);
+    loadAiState();
     showView("view-courses");
   }catch(e){
     toast(e.message, "error");
@@ -780,6 +1037,8 @@ async function openCourse(c){
   $("#task-list").innerHTML = '<p class="loading-tip">任务加载中…</p>';
   $("#logbox").innerHTML = "";
   showView("view-course");
+  await loadAiState();
+  renderAiGateHint();
   await loadDetail();
   startWatch();
 }
@@ -984,6 +1243,13 @@ async function toggleBrush(){
     types = [...document.querySelectorAll("#type-chips input:checked")].map(i=>+i.value);
     if (!types.length) return toast("请至少勾选一种任务类型","warn");
   }
+  // AI 门槛:全部未完成 / 勾选了讨论(6)、作业(11) 需要 AI
+  const needsAi = mode === "all" || (mode === "types" && types.some(t => t === 6 || t === 11));
+  if (needsAi && !S.aiConfigured){
+    toast("该模式包含讨论/作业,需要先配置 AI", "warn");
+    openAiModal();
+    return;
+  }
   const speed = parseInt($("#speed").value, 10);
   if (!speed || speed < 1 || speed > 3600) return toast("速度为 1-3600 的整数","warn");
   const c = S.course;
@@ -1010,6 +1276,7 @@ async function toggleBrush(){
 function goLogin(withHint){
   stopTimers();
   S.user = null; S.course = null; S.brush = {running:false, refresh_seq:-1, log:[], course:null};
+  S.aiConfigured = false; S.aiConfig = null;
   setChip("");
   showView("view-login");
   if (withHint) toast("登录已失效，请重新登录","warn");
@@ -1047,8 +1314,19 @@ document.querySelectorAll('input[name="mode"]').forEach(r=>{
       i.disabled = !on;
       i.closest("label").style.opacity = on ? 1 : 0.35;
     });
+    renderAiGateHint();
   });
 });
+document.querySelectorAll("#type-chips input").forEach(i=>{
+  i.addEventListener("change", renderAiGateHint);
+});
+// AI 设置
+$("#btn-ai").addEventListener("click", openAiModal);
+$("#btn-ai-gate").addEventListener("click", openAiModal);
+$("#btn-ai-close").addEventListener("click", ()=> $("#ai-mask").classList.remove("show"));
+$("#btn-ai-test").addEventListener("click", testAi);
+$("#btn-ai-save").addEventListener("click", saveAi);
+$("#ai-mask").addEventListener("click", e=>{ if (e.target === $("#ai-mask")) $("#ai-mask").classList.remove("show"); });
 // 恢复上次用户名
 const savedUser = localStorage.getItem("mooc_user");
 if (savedUser) {

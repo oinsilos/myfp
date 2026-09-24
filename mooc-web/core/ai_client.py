@@ -1,55 +1,66 @@
-import random
+"""AI 客户端:按用户配置调用 OpenAI 兼容接口。
+
+不内置任何默认 API Key;provider 由用户在 Web 端自行配置
+(name / base_url / api_key / model),并支持连通性测试。
+"""
+
 import time
+
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 import requests
 import openai
 
-AI_PROVIDERS = [
+# 预设 provider 元模板:仅提供 base_url / model 参考值,不含任何密钥
+PRESET_PROVIDERS = [
     {
         "name": "deepseek",
         "base_url": "https://api.deepseek.com/v1",
-        "api_key": "",
-        "model": "deepseek-v4-flash[1m]",
-        "enabled": True,
+        "model": "deepseek-chat",
     },
     {
         "name": "openrouter",
         "base_url": "https://openrouter.ai/api/v1",
-        "api_key": "",
-        "model": "z-ai/glm-5.2:fre6",
-        "enabled": True,  
+        "model": "meta-llama/llama-3.3-70b-instruct",
     },
     {
         "name": "modelscope",
         "base_url": "https://api-inference.modelscope.cn/v1",
-        "api_key": "",
-        "model": "deepseek-ai/DeepSeek-V4.1-Flash",
-        "enabled": True,
+        "model": "deepseek-ai/DeepSeek-V3.2",
     },
     {
         "name": "mimo",
-        "base_url": "https://api.xiaomimimo.com/v1",  # 按官方文档替换
-        "api_key": "",
+        "base_url": "https://api.xiaomimimo.com/v1",
         "model": "mimo-v2.5",
-        "enabled": True,
     },
 ]
 
-_clients={}
+_clients = {}
+
+
+def is_configured(provider) -> bool:
+    """判断 provider 配置是否完整(name/base_url/api_key/model)。"""
+    if not isinstance(provider, dict):
+        return False
+    return all(
+        isinstance(provider.get(k), str) and provider.get(k).strip()
+        for k in ("name", "base_url", "api_key", "model")
+    )
+
 
 def get_client(provider):
-    name=provider['name']
-    if name not in _clients:
-        _clients[name]=OpenAI(
-            base_url=provider['base_url'],
-            api_key=provider['api_key'],
+    key = (provider["name"], provider["base_url"], provider["api_key"], provider["model"])
+    if key not in _clients:
+        _clients[key] = OpenAI(
+            base_url=provider["base_url"],
+            api_key=provider["api_key"],
         )
-    return _clients[name]
+    return _clients[key]
+
 
 @retry(
-    stop=stop_after_attempt(3),  # 最多重试3次（总共4次调用）
-    wait=wait_exponential_jitter(initial=1, max=8), # 初始1s，上限8s，自带随机抖动
+    stop=stop_after_attempt(3),  # 最多重试3次(总共4次调用)
+    wait=wait_exponential_jitter(initial=1, max=8),  # 初始1s,上限8s,自带随机抖动
     retry=retry_if_exception_type((
         # OpenAI SDK抛出的网络、超时相关异常
         requests.exceptions.Timeout,
@@ -58,56 +69,73 @@ def get_client(provider):
         openai.APITimeoutError,
         openai.InternalServerError,
     )),
-    reraise=True # 重试全部失败后，把异常抛出去，交给外层try捕获
+    reraise=True  # 重试全部失败后,把异常抛出去,交给外层try捕获
 )
 def call_chat_api(client, provider, system_prompt, user_prompt):
     response = client.chat.completions.create(
-        model=provider['model'],
+        model=provider["model"],
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.9,
         max_tokens=1000,
-        timeout=18 # 单次请求的超时时间，18秒
+        timeout=18  # 单次请求的超时时间,18秒
     )
     return response
 
-def get_answer(question_list,name):
-    system_prompt=(
+
+def _chat(provider, system_prompt, user_prompt):
+    """单次对话,成功返回纯文本内容,失败返回 None。"""
+    if not is_configured(provider):
+        print("AI 未配置,跳过调用")
+        return None
+    try:
+        client = get_client(provider)
+        response = call_chat_api(client, provider, system_prompt, user_prompt)
+        content = (response.choices[0].message.content or "").strip()
+        content = content.strip('"').strip("'").strip("“”")
+        return content or None
+    except Exception as e:
+        print(f"[AI:{provider.get('name')}] 调用失败:{e}")
+        return None
+
+
+def get_answer(question_list, provider):
+    """生成作业答案列表;provider 未配置时返回 None。"""
+    if not is_configured(provider):
+        print("AI 未配置,无法作答(作业任务会被跳过)")
+        return None
+    system_prompt = (
         "你是一名认真学习网课的大学生。请针对老师或同学提出的问题回答。要求:"
         "1.选择题直接输出选项,例如'c,d';简答题按照题目要求作答，字数贴合题目要求。"
         "2.禁止输出任何思考过程,只输出答案即可。"
         "3.直接输出回复内容,不要加引号或前缀。"
     )
-    providers=[p for p in AI_PROVIDERS if p.get("enabled")]
-    provider=next((p for p in AI_PROVIDERS if p['name']==name),None)
-    if provider in providers:
-        print(f"尝试使用{name}({provider.get('model')})")
-        answerlist=[]
-        for question in question_list:
-            user_prompt=(
-                f"问题:{question['plainTextTitle']}\n\n"
-                f"请写出你的答案:"
-            )
-            try:
-                client=get_client(provider)
-                response = call_chat_api(client, provider, system_prompt, user_prompt)
-                content=response.choices[0].message.content.strip()
-                content=content.strip('"').strip("'").strip("“”")
-                if content:
-                    print(f"{provider['name']}生成成功")
-                    answerlist.append({
-                        "qid":question['qid'],
-                        "type":question['type'],
-                        "answer":content
-                    })                    
-            except Exception as e:
-                print(f"{provider['name']}调用失败:{e}")
-        return answerlist
+    print(f"尝试使用{provider['name']}({provider.get('model')})")
+    answerlist = []
+    for question in question_list:
+        user_prompt = (
+            f"问题:{question['plainTextTitle']}\n\n"
+            f"请写出你的答案:"
+        )
+        content = _chat(provider, system_prompt, user_prompt)
+        if content:
+            print(f"{provider['name']}生成成功")
+            answerlist.append({
+                "qid": question['qid'],
+                "type": question['type'],
+                "answer": content
+            })
+    return answerlist or None
 
-def get_reply(title,content,name):
-    system_prompt=(
+
+def get_reply(title, content, provider):
+    """生成讨论回复;provider 未配置时返回 None。"""
+    if not is_configured(provider):
+        print("AI 未配置,无法生成讨论回复(讨论任务会被跳过)")
+        return None
+    system_prompt = (
         "你是一名认真学习网课的大学生。请针对老师或同学提出的课程讨论题,"
         "写一段100字以上的、有思考深度的回复。要求:"
         "1. 使用第一人称,口吻自然、友好;"
@@ -115,30 +143,39 @@ def get_reply(title,content,name):
         "3. 不要暴露你是 AI,不要用『作为AI』这种表达:"
         "4. 直接输出回复内容,不要加引号或前缀。"
     )
-    user_prompt=(
-        f"讨论标题：{title}\n"
-        f"讨论正文：{content}\n\n"
+    user_prompt = (
+        f"讨论标题:{title}\n"
+        f"讨论正文:{content}\n\n"
         f"请写出你的回复:"
     )
-    providers=[p for p in AI_PROVIDERS if p.get("enabled")]
-    provider=next((p for p in AI_PROVIDERS if p['name']==name),None)
-    if provider in providers:
-        try:
-            print(f"尝试使用{name}({provider.get('model')})")
-            client=get_client(provider)
-            response = call_chat_api(client, provider, system_prompt, user_prompt)
-            content=response.choices[0].message.content.strip()
-            content=content.strip('"').strip("'").strip("“”")
-            if content:
-                print(f"{provider['name']}生成成功")
-                return content
-        except Exception as e:
-            print(f"{provider['name']}调用失败:{e}")
-    
-if __name__=="__main__":
-    reply = get_reply(
-        title="加密技术与信息隐藏技术之我见！",
-        content="请结合自身所学说说加密技术和信息隐藏技术的优缺点，并列举各自可能的应用场景！",
-        name="modelscope"
-    )
-    print("\n最终回复:", reply)
+    print(f"尝试使用{provider['name']}({provider.get('model')})")
+    return _chat(provider, system_prompt, user_prompt)
+
+
+def test_provider(provider):
+    """连通性测试:发送一条最小消息验证配置可用。
+
+    返回 (ok: bool, message: str)。
+    """
+    if not is_configured(provider):
+        return False, "配置不完整:名称 / Base URL / API Key / 模型 均必填"
+    try:
+        client = OpenAI(
+            base_url=provider["base_url"],
+            api_key=provider["api_key"],
+        )
+        t0 = time.time()
+        response = client.chat.completions.create(
+            model=provider["model"],
+            messages=[{"role": "user", "content": "请只回复两个字母:pong"}],
+            max_tokens=8,
+            temperature=0,
+            timeout=15,
+        )
+        latency_ms = int((time.time() - t0) * 1000)
+        if response.choices and response.choices[0].message.content:
+            text = response.choices[0].message.content.strip() or "(空回复)"
+            return True, f"连接成功({latency_ms}ms),模型回复:{text[:50]}"
+        return True, f"连接成功({latency_ms}ms),但模型未返回内容"
+    except Exception as e:
+        return False, f"连接失败:{e}"

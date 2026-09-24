@@ -30,7 +30,8 @@ mooc-web/
 │   └── admin.html        #   管理页面(仅本机可访问)
 ├── data/
 │   ├── users.json        #   用户注册表(运行时自动生成)
-│   └── cookies/          #   cookie_{username}.json 按用户隔离存储
+│   ├── cookies/          #   cookie_{username}.json 按用户隔离存储
+│   └── ai/               #   ai_{username}.json 按用户隔离的 AI 配置
 ├── requirements.txt
 └── README.md
 ```
@@ -81,6 +82,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
    - 速度可自定义（默认 600 秒/次提交）；
    - 启动/停止共用同一按钮；
 5. 每个任务完成后服务端 `refresh_seq` 变化，前端自动刷新任务列表显示最新进度。
+6. **AI 设置**（顶栏入口）：
+   - 讨论、作业类任务需要调用 AI，**未配置 AI 时相关模式无法启动**（前后端双重拦截）；
+   - 可选择预设 provider（deepseek/openrouter/modelscope/mimo）或完全自定义：名称、Base URL、API Key、模型均可手填；
+   - 保存前可点击「连通性测试」实测接口可用性；
+   - 代码中不内置任何默认 API Key；配置按用户隔离存放于 `data/ai/ai_{username}.json`，API Key 在接口返回时打码，不落前端。
 
 ### 管理页面（仅本机）
 - 添加 / 删除用户（删除同时清理其 cookie 文件）；
@@ -99,6 +105,10 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 | POST | /api/user/brush/start | 启动刷课 |
 | POST | /api/user/brush/stop | 停止刷课 |
 | GET  | /api/user/brush/status?username= | 刷课状态(日志/进度) |
+| GET  | /api/user/ai/config?username= | 用户 AI 配置(打码)+预设模板 |
+| POST | /api/user/ai/config | 保存 AI 配置 |
+| DELETE | /api/user/ai/config?username= | 删除 AI 配置 |
+| POST | /api/user/ai/test | AI 连通性测试 |
 | GET  | /api/admin/users | 用户列表(仅本机) |
 | POST | /api/admin/users | 添加用户 |
 | DELETE | /api/admin/users/{u} | 删除用户 |
@@ -119,4 +129,4 @@ curl "http://127.0.0.1:8000/api/user/courses?username=testuser"
 ## 备注
 
 - 管理页仅限本机：由 `main.py` 中 `admin_local_only` 中间件基于 `request.client.host` 强制，代理部署时需注意客户端 IP 透传；
-- AI 作答（作业/讨论）依赖 `core/ai_client.py` 中配置的 API Key，未配置时相应任务会失败并记入日志，不影响视频/PPT 刷课。
+- 讨论/作业任务的 AI 作答依赖用户在「AI 设置」中自行配置的 OpenAI 兼容接口（name/base_url/api_key/model），代码不内置任何默认 Key；未配置时含讨论/作业的刷课模式被拒绝启动，视频/PPT 刷课不受影响。

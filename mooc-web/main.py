@@ -16,11 +16,12 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from core.ai_client import PRESET_PROVIDERS, test_provider
 from core.courses import getcourselist
 from core.login import get_userid
 from core.tasks import gettaskid
 from core.video import learnprogress
-from services.brush import BrushManager, decorate_tasks
+from services.brush import BrushManager, decorate_tasks, mode_needs_ai
 from services.login import LoginFlowManager
 from services.store import Store, validate_username
 
@@ -81,6 +82,24 @@ class BrushStartIn(BaseModel):
 
 class StopIn(BaseModel):
     username: str
+
+
+class AISaveIn(BaseModel):
+    """保存 AI 配置;api_key 留空表示沿用已保存的密钥。"""
+    username: str
+    name: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(min_length=1, max_length=256)
+    api_key: str = Field(default="", max_length=512)
+    model: str = Field(min_length=1, max_length=128)
+
+
+class AITestIn(BaseModel):
+    """连通性测试;api_key 留空时尝试使用该用户已保存的密钥。"""
+    username: str | None = None
+    name: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(min_length=1, max_length=256)
+    api_key: str = Field(default="", max_length=512)
+    model: str = Field(min_length=1, max_length=128)
 
 
 class AdminAddUser(BaseModel):
@@ -196,7 +215,12 @@ def brush_start(payload: BrushStartIn):
     types = payload.types if mode == "types" else []
     if mode == "types" and not types:
         raise HTTPException(status_code=400, detail="按类型刷课需要至少勾选一种类型")
-    ok, msg = brushman.start(username, course, mode, types, payload.speed)
+    ai_config = store.load_ai_config(username)
+    if mode_needs_ai(mode, types) and ai_config is None:
+        raise HTTPException(
+            status_code=409,
+            detail="该模式包含讨论/作业任务,需要先在「AI 设置」中配置并保存 AI")
+    ok, msg = brushman.start(username, course, mode, types, payload.speed, ai_config)
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return {"ok": True, "message": msg}
@@ -216,6 +240,80 @@ async def brush_status(username: str = Query(...)):
     if job is None:
         return {"running": False, "status": "idle"}
     return job.snapshot()
+
+
+# ============================================================
+# 用户端 AI 配置
+# ============================================================
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "****" + key[-4:]
+
+
+@app.get("/api/user/ai/config", tags=["ai"])
+def ai_get_config(username: str = Query(...)):
+    """获取用户 AI 配置(api_key 打码返回)及预设 provider 模板。"""
+    username = _safe_username(username)
+    cfg = store.load_ai_config(username)
+    return {
+        "configured": cfg is not None,
+        "config": None if cfg is None else {
+            "name": cfg.get("name", ""),
+            "base_url": cfg.get("base_url", ""),
+            "model": cfg.get("model", ""),
+            "api_key_masked": _mask_key(cfg.get("api_key", "")),
+        },
+        "presets": PRESET_PROVIDERS,
+    }
+
+
+@app.post("/api/user/ai/config", tags=["ai"])
+def ai_save_config(payload: AISaveIn):
+    """保存用户 AI 配置;api_key 留空则沿用旧密钥。"""
+    username = _safe_username(payload.username)
+    old = store.load_ai_config(username)
+    api_key = payload.api_key.strip()
+    if not api_key:
+        api_key = (old or {}).get("api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请填写 API Key")
+    cfg = {
+        "name": payload.name.strip(),
+        "base_url": payload.base_url.strip(),
+        "api_key": api_key,
+        "model": payload.model.strip(),
+    }
+    store.save_ai_config(username, cfg)
+    return {"ok": True, "configured": True, "name": cfg["name"]}
+
+
+@app.delete("/api/user/ai/config", tags=["ai"])
+def ai_delete_config(username: str = Query(...)):
+    """删除用户 AI 配置。"""
+    username = _safe_username(username)
+    removed = store.remove_ai_config(username)
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/user/ai/test", tags=["ai"])
+def ai_test(payload: AITestIn):
+    """AI 连通性测试(阻塞调用,由 Starlette 线程池执行)。"""
+    if payload.username:
+        _safe_username(payload.username)
+    api_key = payload.api_key.strip()
+    if not api_key and payload.username:
+        saved = store.load_ai_config(payload.username) or {}
+        api_key = saved.get("api_key", "")
+    ok, message = test_provider({
+        "name": payload.name.strip(),
+        "base_url": payload.base_url.strip(),
+        "api_key": api_key,
+        "model": payload.model.strip(),
+    })
+    return {"ok": ok, "message": message}
 
 
 # ============================================================
