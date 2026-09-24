@@ -82,6 +82,11 @@ class Store:
         self._save()
         return True
 
+    def has_user(self, username: str) -> bool:
+        """用户是否已在注册表中(用户由管理页增删)。"""
+        with self._lock:
+            return username in self._users
+
     def remove_user(self, username: str) -> bool:
         with self._lock:
             existed = username in self._users

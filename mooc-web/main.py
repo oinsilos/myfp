@@ -85,7 +85,7 @@ class BrushStartIn(BaseModel):
     course: dict                       # {course_id, term_id, short_name, name}
     mode: str = "all"                  # all | types | duration
     types: list[int] = []              # mode=types 时生效
-    speed: int = Field(600, ge=1, le=3600)
+    speed: int = Field(300, ge=1, le=3600)
     ai: AiProviderIn | None = None     # 需要 AI 的任务类型时必须携带(来自浏览器本地配置)
 
 
@@ -128,8 +128,14 @@ def user_login(payload: LoginIn):
 
     有效 → {status: ok, user}
     无效/不存在 → 生成扫码登录流程,返回二维码图片(base64)与 flow_id。
+
+    仅允许已登记用户(由管理页增删)登录;未登记的用户名直接拒绝,不生成二维码。
     """
     username = _safe_username(payload.username)
+    if not store.has_user(username):
+        raise HTTPException(
+            status_code=403,
+            detail=f"用户「{username}」不存在,请联系管理员先在管理页添加该用户")
     sess = store.require_session(username)
     if sess is not None:
         return {"status": "ok", "user": username}
@@ -151,6 +157,12 @@ async def user_login_status(flow_id: str = Query(...)):
         if f.flow_id == flow_id:
             return f.snapshot()
     raise HTTPException(status_code=404, detail="登录流程不存在或已过期")
+
+
+@app.post("/api/user/login/cancel", tags=["user"])
+async def user_login_cancel(flow_id: str = Query(...)):
+    """用户手动关闭二维码弹窗时,取消后台轮询线程。"""
+    return {"ok": loops.cancel_by_flow_id(flow_id)}
 
 
 @app.get("/api/user/courses", tags=["user"])

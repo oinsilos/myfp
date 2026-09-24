@@ -94,6 +94,20 @@ class LoginFlowManager:
         if flow is not None:
             flow._stop.set()
 
+    def cancel_by_flow_id(self, flow_id: str) -> bool:
+        """按 flow_id 取消登录流程(用户手动关闭二维码弹窗时调用)。"""
+        with self._lock:
+            target = None
+            for name, f in list(self._flows.items()):
+                if f.flow_id == flow_id:
+                    target = self._flows.pop(name, None)
+                    break
+        if target is None:
+            return False
+        target._stop.set()
+        target.set_status("canceled", "已取消")
+        return True
+
     def _run(self, flow: LoginFlow):
         try:
             pollkey, img = get_qrcode(flow.session)

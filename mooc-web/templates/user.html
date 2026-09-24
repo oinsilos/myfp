@@ -101,8 +101,6 @@
   }
   .btn-gold:hover{transform:translateY(-1px); box-shadow:0 10px 28px rgba(232,180,90,.28)}
   .btn-gold:disabled{opacity:.55; cursor:not-allowed; transform:none}
-  .login-hint{font-size:12px; color:var(--ink-faint); margin-top:15px; line-height:1.8}
-  .login-hint code{font-family:var(--mono); color:var(--ink-dim); background:rgba(255,255,255,.04); padding:2px 7px; border-radius:5px}
 
   /* ---------- 区域切换 ---------- */
   .view{display:none}
@@ -358,12 +356,20 @@
   }
   .modal-mask.show{opacity:1; pointer-events:auto}
   .modal{
+    position:relative;
     width:min(400px,92vw); background:linear-gradient(170deg,#1b202b,#151823);
     border:1px solid var(--line); border-radius:20px; padding:32px 34px 28px;
     text-align:center; transform:translateY(26px) scale(.96); transition:transform .35s cubic-bezier(.2,.8,.2,1);
     box-shadow:0 30px 90px rgba(0,0,0,.6);
   }
   .modal-mask.show .modal{transform:none}
+  .modal-x{
+    position:absolute; top:14px; right:16px; width:30px; height:30px; line-height:1;
+    display:flex; align-items:center; justify-content:center; font-size:22px;
+    background:transparent; border:1px solid transparent; border-radius:9px;
+    color:var(--ink-faint); transition:all .2s;
+  }
+  .modal-x:hover{color:var(--ink); border-color:var(--line); background:rgba(255,255,255,.04)}
   .modal h3{font-family:var(--serif); font-size:21px; letter-spacing:4px; margin-bottom:6px}
   .modal .desc{font-size:13px; color:var(--ink-faint); margin-bottom:22px}
   .qr-frame{
@@ -488,10 +494,6 @@
         <input id="username" placeholder="输入你的用户名 / 学号" autocomplete="off">
         <button class="btn-gold" id="btn-login">进 入</button>
       </div>
-      <p class="login-hint">
-        后端将按用户名隔离存储登录凭证：<code>data/cookies/cookie_用户名.json</code><br>
-        已有有效凭证则直接进入；没有或已过期将弹出二维码，用「中国大学MOOC」App 扫码登录。
-      </p>
     </div>
   </section>
 
@@ -560,8 +562,8 @@
         <div class="ctl-group">
           <span class="lab">速度（秒/次提交）</span>
           <div class="speed-box">
-            <input id="speed" type="number" value="600" min="1" max="3600">
-            <span class="unit">默认 600</span>
+            <input id="speed" type="number" value="300" min="1" max="3600">
+            <span class="unit">默认 300</span>
           </div>
         </div>
         <div class="ctl-group">
@@ -640,6 +642,7 @@
 <!-- 二维码弹窗 -->
 <div class="modal-mask" id="qr-mask">
   <div class="modal">
+    <button class="modal-x" id="btn-qr-x" title="关闭" aria-label="关闭">×</button>
     <h3>扫码登录</h3>
     <p class="desc">使用「中国大学MOOC」App 扫一扫</p>
     <div class="qr-frame" id="qr-frame"><span class="qrfail">二维码加载中…</span></div>
@@ -750,7 +753,8 @@ async function doLogin(){
       openQr(res);
     }
   } catch(e){
-    toast(e.message, "error");
+    // 403:用户名不在管理页登记的用户名单中
+    toast(e.message, e.status === 403 ? "warn" : "error");
   } finally {
     btn.disabled = false; btn.textContent = "进 入";
   }
@@ -769,6 +773,16 @@ function openQr(res){
   $("#qr-mask").classList.add("show");
   if (S.flowTimer) clearInterval(S.flowTimer);
   S.flowTimer = setInterval(pollFlow, 2000);
+}
+
+// 关闭二维码弹窗;cancelFlow=true 时同时通知后端取消轮询线程
+function hideQrModal(cancelFlow){
+  if (S.flowTimer){ clearInterval(S.flowTimer); S.flowTimer = null; }
+  $("#qr-mask").classList.remove("show");
+  if (cancelFlow && S.flowId){
+    api("/api/user/login/cancel?flow_id=" + enc(S.flowId), {method:"POST"}).catch(()=>{});
+  }
+  S.flowId = null;
 }
 
 function setQrStatus(msg, cls){
@@ -793,6 +807,7 @@ async function pollFlow(){
       setQrStatus("登录成功！正在加载课程…", "ok");
       setTimeout(async ()=>{
         $("#qr-mask").classList.remove("show");
+        S.flowId = null;
         toast("扫码登录成功", "ok");
         await enterCourses();
       }, 900);
@@ -805,8 +820,9 @@ async function pollFlow(){
     } else if (s.status === "scanned") {
       setQrStatus("已扫码，请在手机上确认登录", "");
     } else if (s.status === "expired") {
+      // 二维码过期:停止轮询,提示并提供"重新获取二维码"/"取消"
       clearInterval(S.flowTimer); S.flowTimer=null;
-      setQrStatus("二维码已过期", "err");
+      setQrStatus("二维码已过期，请重新获取", "err");
       showQrActions(false);
     } else if (s.status === "error") {
       clearInterval(S.flowTimer); S.flowTimer=null;
@@ -814,6 +830,7 @@ async function pollFlow(){
       showQrActions(true);
     } else if (s.status === "canceled") {
       clearInterval(S.flowTimer); S.flowTimer=null;
+      S.flowId = null;
       $("#qr-mask").classList.remove("show");
     }
   }catch(e){ /* 网络抖动,继续轮询 */ }
@@ -1353,10 +1370,10 @@ $("#btn-qr-refresh").addEventListener("click", async ()=>{
   }catch(e){ toast(e.message,"error"); }
   $("#btn-qr-refresh").disabled = false;
 });
-$("#btn-qr-cancel").addEventListener("click", ()=>{
-  if (S.flowTimer){ clearInterval(S.flowTimer); S.flowTimer=null; }
-  $("#qr-mask").classList.remove("show");
-});
+$("#btn-qr-cancel").addEventListener("click", ()=> hideQrModal(true));
+// 叉号 / 点击遮罩:随时手动关闭二维码弹窗(并取消后端轮询)
+$("#btn-qr-x").addEventListener("click", ()=> hideQrModal(true));
+$("#qr-mask").addEventListener("click", e=>{ if (e.target === $("#qr-mask")) hideQrModal(true); });
 // 按类型刷:取消勾选置灰
 document.querySelectorAll('input[name="mode"]').forEach(r=>{
   r.addEventListener("change", ()=>{
@@ -1387,9 +1404,19 @@ if (savedUser) {
   api("/api/user/login", {method:"POST", body:{username:savedUser}})
     .then(res=>{
       if (res.status==="ok") enterCourses().then(()=>localStorage.setItem("mooc_user", savedUser));
-      else { goLogin(false); toast("上次登录已失效，请重新扫码","warn"); }
+      else { openQr(res); }   // 凭证失效,直接弹二维码
     })
-    .catch(()=>goLogin(false));
+    .catch(e=>{
+      goLogin(false);
+      if (e.status === 403) {
+        // 该用户名已被管理员移除,清掉本地记录并提示
+        localStorage.removeItem("mooc_user");
+        $("#username").value = "";
+        toast(e.message, "warn");
+      } else {
+        toast("上次登录已失效，请重新登录", "warn");
+      }
+    });
 }
 </script>
 </body>
