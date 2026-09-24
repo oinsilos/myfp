@@ -213,24 +213,36 @@
   .ctl-group{display:flex; flex-direction:column; gap:8px}
   .ctl-group .lab{font-size:12px; color:var(--ink-faint); letter-spacing:2px}
   .seg{display:flex; gap:8px; flex-wrap:wrap}
-  .seg label{position:relative; cursor:pointer}
-  .seg input{position:absolute; opacity:0; pointer-events:none}
-  .seg .chip{
+  .seg label, .type-chips label{position:relative; cursor:pointer}
+  .seg input, .type-chips input{position:absolute; opacity:0; pointer-events:none}
+  /* chip 通用样式(单选/勾选都复用) */
+  .chip{
     display:inline-block; padding:8px 16px; border-radius:10px; border:1px solid var(--line-soft);
     color:var(--ink-dim); font-size:13px; letter-spacing:1px; user-select:none;
     transition:all .22s; background:var(--bg2);
   }
-  .seg input:checked + .chip{
+  input:checked + .chip{
     color:#241c0c; background:linear-gradient(160deg,var(--gold-hi),var(--gold));
     border-color:transparent; font-weight:600;
     box-shadow:0 4px 14px rgba(232,180,90,.2);
   }
-  .seg input:disabled + .chip{opacity:.4; cursor:not-allowed}
-  .type-chips{display:flex; gap:8px; flex-wrap:wrap}
-  .type-chips .chip{position:relative; padding:7px 14px}
+  input:disabled + .chip{opacity:.4; cursor:not-allowed}
+  /* 类型勾选:保留各类型配色,方框打勾表示选中 */
+  .type-chips{display:flex; gap:10px; flex-wrap:wrap}
   .type-chips .chip::before{
-    content:""; display:inline-block; width:8px; height:8px; border-radius:2px;
-    margin-right:8px; background:var(--tc,var(--gold)); transform:translateY(-1px);
+    content:""; display:inline-block; width:14px; height:14px; box-sizing:border-box;
+    border-radius:4px; margin-right:8px; vertical-align:-2px;
+    border:1.5px solid var(--tc,var(--gold)); background:transparent;
+    text-align:center; line-height:11px; font-size:10px; font-weight:700;
+    color:transparent; transition:all .18s;
+  }
+  .type-chips input:not(:checked) + .chip{opacity:.6}
+  .type-chips input:checked + .chip{
+    color:var(--ink); background:rgba(255,255,255,.05);
+    border-color:var(--tc,var(--gold)); font-weight:600; box-shadow:none;
+  }
+  .type-chips input:checked + .chip::before{
+    content:"✓"; background:var(--tc,var(--gold)); color:#12151c;
   }
   .speed-box{display:flex; align-items:center; gap:10px}
   .speed-box input{
@@ -586,7 +598,7 @@
             <label><input type="checkbox" value="6" data-name="讨论" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#9a8fd9">讨论</span></label>
             <label><input type="checkbox" value="11" data-name="作业" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#d98e8e">作业</span></label>
           </div>
-          <div class="seg" id="seg-duration" style="margin-top:10px">
+          <div class="type-chips" id="seg-duration" style="margin-top:10px">
             <label><input type="checkbox" id="chk-duration" style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">刷时长（仅视频，含已完成）</span></label>
           </div>
         </div>
