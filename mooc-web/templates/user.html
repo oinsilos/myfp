@@ -370,6 +370,42 @@
     color:var(--ink-faint); transition:all .2s;
   }
   .modal-x:hover{color:var(--ink); border-color:var(--line); background:rgba(255,255,255,.04)}
+  /* ---------- 手动作答 ---------- */
+  .btn-manual{
+    flex:none; background:transparent; border:1px solid var(--gold-dim); color:var(--gold-hi);
+    padding:5px 12px; border-radius:8px; font-size:12px; letter-spacing:1px; transition:all .2s;
+  }
+  .btn-manual:hover{background:rgba(232,180,90,.1); border-color:var(--gold)}
+  .m-q{
+    padding:14px 16px; border-radius:11px; background:var(--bg2);
+    border:1px solid var(--line-soft); margin-bottom:12px;
+  }
+  .m-q .q-t{
+    font-size:14px; color:var(--ink); line-height:1.6; white-space:pre-wrap; word-break:break-all;
+  }
+  .m-q .q-s{font-size:12px; color:var(--ink-faint); margin-top:4px; font-family:var(--mono)}
+  .m-q .q-kind{font-size:12px; color:var(--gold-hi); letter-spacing:1px}
+  .m-opts{margin-top:10px; display:flex; flex-direction:column; gap:8px}
+  .m-opt{
+    display:flex; align-items:flex-start; gap:10px; padding:9px 12px; border-radius:9px;
+    background:var(--card2); border:1px solid var(--line-soft); cursor:pointer; transition:all .2s;
+    font-size:13.5px; color:var(--ink-dim); line-height:1.5;
+  }
+  .m-opt:hover{border-color:var(--gold-dim)}
+  .m-opt input{margin-top:3px; accent-color:var(--gold)}
+  .m-opt.sel{border-color:var(--gold); color:var(--ink); background:rgba(232,180,90,.07)}
+  .m-text{
+    width:100%; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:10px 13px; border-radius:9px; font-size:13.5px; outline:none; resize:vertical;
+    min-height:70px; font-family:var(--sans); transition:border-color .25s;
+  }
+  .m-text:focus{border-color:var(--gold-dim)}
+  .m-discuss-t{font-size:14px; color:var(--ink); white-space:pre-wrap; word-break:break-all; line-height:1.8}
+  .m-discuss-c{
+    font-size:13.5px; color:var(--ink-dim); white-space:pre-wrap; word-break:break-all; line-height:1.8;
+    background:var(--bg2); border:1px solid var(--line-soft); border-radius:11px; padding:13px 15px;
+    max-height:220px; overflow-y:auto;
+  }
   .modal h3{font-family:var(--serif); font-size:21px; letter-spacing:4px; margin-bottom:6px}
   .modal .desc{font-size:13px; color:var(--ink-faint); margin-bottom:22px}
   .qr-frame{
@@ -543,20 +579,15 @@
       </div>
       <div class="ctl-row">
         <div class="ctl-group">
-          <span class="lab">刷课模式</span>
-          <div class="seg" id="seg-mode">
-            <label><input type="radio" name="mode" value="all" checked><span class="chip">全部未完成</span></label>
-            <label><input type="radio" name="mode" value="types"><span class="chip">按类型刷</span></label>
-            <label><input type="radio" name="mode" value="duration"><span class="chip">刷时长（仅视频）</span></label>
-          </div>
-        </div>
-        <div class="ctl-group">
-          <span class="lab">任务类型（“按类型刷”生效）</span>
+          <span class="lab">任务类型（勾选一个或多个，刷其未完成项）</span>
           <div class="type-chips" id="type-chips">
-            <label><input type="checkbox" value="1" data-name="视频" style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">视频</span></label>
-            <label><input type="checkbox" value="3" data-name="PPT" style="position:absolute;opacity:0"><span class="chip" style="--tc:#79b8a8">PPT</span></label>
-            <label><input type="checkbox" value="6" data-name="讨论" style="position:absolute;opacity:0"><span class="chip" style="--tc:#9a8fd9">讨论</span></label>
-            <label><input type="checkbox" value="11" data-name="作业" style="position:absolute;opacity:0"><span class="chip" style="--tc:#d98e8e">作业</span></label>
+            <label><input type="checkbox" value="1" data-name="视频" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">视频</span></label>
+            <label><input type="checkbox" value="3" data-name="PPT" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#79b8a8">PPT</span></label>
+            <label><input type="checkbox" value="6" data-name="讨论" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#9a8fd9">讨论</span></label>
+            <label><input type="checkbox" value="11" data-name="作业" checked style="position:absolute;opacity:0"><span class="chip" style="--tc:#d98e8e">作业</span></label>
+          </div>
+          <div class="seg" id="seg-duration" style="margin-top:10px">
+            <label><input type="checkbox" id="chk-duration" style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">刷时长（仅视频，含已完成）</span></label>
           </div>
         </div>
         <div class="ctl-group">
@@ -598,6 +629,19 @@
     </div>
   </section>
 </main>
+
+<!-- 手动作答弹窗 -->
+<div class="modal-mask" id="manual-mask">
+  <div class="modal" style="width:min(560px,94vw); max-height:90vh; overflow-y:auto; text-align:left">
+    <button class="modal-x" id="btn-manual-x" title="关闭" aria-label="关闭">×</button>
+    <h3 style="text-align:center" id="manual-title">题目</h3>
+    <div id="manual-body"></div>
+    <div class="m-actions" style="justify-content:center; margin-top:18px">
+      <button class="btn-gold" id="btn-manual-submit">提 交</button>
+      <button class="btn-line" id="btn-manual-close">关 闭</button>
+    </div>
+  </div>
+</div>
 
 <!-- AI 设置弹窗 -->
 <div class="modal-mask" id="ai-mask">
@@ -719,6 +763,7 @@ const S = {
   aiConfigured: false,
   aiConfig: null,       // {name, base_url, api_key, model} —— 存于浏览器本地
   aiPresets: [],
+  tasks: [],
 };
 
 function showView(id){
@@ -1016,25 +1061,26 @@ function clearAi(){
 }
 
 function currentBrushNeedsAi(){
-  const mode = document.querySelector('input[name="mode"]:checked').value;
-  if (mode === "all") return true;
-  if (mode === "types"){
-    return [...document.querySelectorAll("#type-chips input:checked")]
-      .some(i => +i.value === 6 || +i.value === 11);
-  }
-  return false; // duration 仅视频
+  // 刷时长只刷视频,不需要 AI;否则看勾选类型是否含讨论(6)/作业(11)
+  if ($("#chk-duration").checked) return false;
+  return [...document.querySelectorAll("#type-chips input:checked")]
+    .some(i => +i.value === 6 || +i.value === 11);
 }
 
 function renderAiGateHint(){
   const gate = $("#ai-gate");
   const txt = $("#ai-gate-txt");
   const needs = currentBrushNeedsAi();
+  if ($("#chk-duration").checked){
+    gate.className = "ai-gate hidden";
+    return;
+  }
   if (needs && !S.aiConfigured){
     gate.className = "ai-gate show locked";
-    txt.textContent = "当前模式包含「讨论 / 作业」任务,需要 AI 作答。未配置 AI,此模式无法启动。";
+    txt.textContent = "已勾选「讨论 / 作业」任务,需要 AI 作答。未配置 AI,无法启动。";
   } else if (needs && S.aiConfigured){
     gate.className = "ai-gate show";
-    txt.textContent = `当前模式包含「讨论 / 作业」,将使用 AI:${S.aiConfig.name} (${S.aiConfig.model})`;
+    txt.textContent = `已勾选「讨论 / 作业」,将使用 AI:${S.aiConfig.name} (${S.aiConfig.model})`;
   } else {
     gate.className = "ai-gate hidden";
   }
@@ -1061,6 +1107,12 @@ async function enterCourses(){
   }
 }
 
+function proxiedImg(url){
+  // 课程封面走后端代理,规避 Referer 防盗链 / http 明文混合内容问题
+  if (!url) return "";
+  return "/api/user/img?url=" + encodeURIComponent(url);
+}
+
 function renderCourses(list){
   const grid = $("#course-grid");
   // 每次渲染重置空态文案(避免上一次错误信息残留)
@@ -1070,7 +1122,7 @@ function renderCourses(list){
   grid.innerHTML = list.map((c,i)=>{
     const pct = (c.lessonsCount||0) > 0 ? Math.round((c.learnedCount||0)*100/(c.lessonsCount||1)) : 0;
     const img = c.imgUrl
-      ? `<img src="${esc(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
+      ? `<img src="${esc(proxiedImg(c.imgUrl))}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
       : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
     return `
     <div class="course-card" data-i="${i}" style="animation-delay:${Math.min(i*0.05,0.6)}s">
@@ -1161,6 +1213,11 @@ function taskRowHTML(t, idx){
   const mark = done ? "✓" : "✗";
   const rowCls = done ? "done" : "todo";
   const ch = t.chapterName || "";
+  // 讨论(6)/作业(11)/测验(12) 支持查看题目并手动作答
+  let manualBtn = "";
+  if (t.type === 6 || t.type === 11 || t.type === 12){
+    manualBtn = `<button class="btn-manual" data-midx="${idx}">${done ? "查看" : "作答"}</button>`;
+  }
   return `
   <div class="task-row ${rowCls}" data-task="${idx}">
     <div class="mark">${mark}</div>
@@ -1174,10 +1231,12 @@ function taskRowHTML(t, idx){
       ${extra ? `<div class="extra">${esc(extra)}</div>` : ""}
       <div class="bar"><i style="width:${pctNum}%; background:${done?'var(--ok)':col}"></i></div>
     </div>
+    ${manualBtn}
   </div>`;
 }
 
 function drawTasks(tasks){
+  S.tasks = tasks;
   const doneN = tasks.filter(t=>t.done).length;
   $("#task-cnt").textContent = `共 ${tasks.length} 个任务 · 已完成 ${doneN} · 未完成 ${tasks.length-doneN}`;
   if (!tasks.length){
@@ -1190,6 +1249,9 @@ function drawTasks(tasks){
     if (curKey && taskKey(t) === curKey) html = html.replace('class="task-row', 'class="task-row row-cur');
     return html;
   }).join("");
+  document.querySelectorAll(".btn-manual").forEach(b=>{
+    b.addEventListener("click", ()=> openManualModal(+b.dataset.midx));
+  });
 }
 
 function taskKey(t){
@@ -1198,6 +1260,136 @@ function taskKey(t){
 function brushCurrentTaskKey(){
   // 日志/快照中取当前任务的定位信息(见 applyBrushSnapshot 存入)
   return S.curTaskKey || null;
+}
+
+/* ================= 手动作答(讨论/作业/测验) ================= */
+let M = null;   // 当前手动作答会话 {task, questions, kind}
+
+function courseRef(){
+  const c = S.course;
+  return {course_id:String(c.courseId), term_id:String(c.termId), short_name:c.shortName||"", name:c.name||""};
+}
+
+async function openManualModal(idx){
+  const t = (S.tasks || [])[idx];
+  if (!t) return;
+  const c = S.course;
+  M = {task: t};
+  $("#manual-title").textContent = t.title || "题目";
+  $("#manual-body").innerHTML = '<p class="loading-tip" style="padding:30px 0">加载中…</p>';
+  $("#btn-manual-submit").style.display = t.done ? "none" : "";
+  $("#manual-mask").classList.add("show");
+  try{
+    if (t.type === 6){
+      // 讨论:标题+正文+回复输入框
+      const res = await api("/api/user/task/discuss?" +
+        `username=${enc(S.user)}&course_id=${enc(c.courseId)}&term_id=${enc(c.termId)}&short_name=${enc(c.shortName||"")}` +
+        `&content_id=${enc(t.contentId)}&unit_id=${enc(t.unitId)}`);
+      M.kind = "discuss";
+      $("#manual-body").innerHTML = `
+        <div class="m-discuss-t" style="font-family:var(--serif);font-size:15px;margin-bottom:12px;color:var(--gold-hi)">${esc(res.title || "(无标题)")}</div>
+        <div class="m-discuss-c">${esc(res.content || "(无正文)")}</div>
+        <div style="margin-top:14px">
+          <span class="q-kind">你的回复</span>
+          <textarea class="m-text" id="m-reply" style="margin-top:8px" placeholder="输入回复内容…"></textarea>
+        </div>`;
+    } else {
+      // 作业/测验:题目列表
+      const res = await api("/api/user/task/paper?" +
+        `username=${enc(S.user)}&course_id=${enc(c.courseId)}&term_id=${enc(c.termId)}&short_name=${enc(c.shortName||"")}` +
+        `&content_id=${enc(t.contentId)}`);
+      M.kind = "paper";
+      M.questions = res.questions || [];
+      $("#manual-body").innerHTML = `<div style="font-size:12px;color:var(--ink-faint);margin-bottom:10px">${esc(res.tname||"")} · 共 ${M.questions.length} 题</div>` +
+        M.questions.map((q,i)=>paperQuestionHTML(q,i)).join("");
+      bindPaperInputs();
+    }
+  }catch(e){
+    $("#manual-body").innerHTML = `<p class="loading-tip">加载失败:${esc(e.message)}</p>`;
+  }
+}
+
+function paperQuestionHTML(q, i){
+  let kind = q.kind === "objective" ? "选择/判断" : "简答";
+  let typeName = {1:"单选", 2:"多选", 3:"填空", 4:"判断", 6:"填空", 10:"简答"}[q.type] || `题型${q.type}`;
+  const score = q.score ? ` ${q.score}分` : "";
+  let input = "";
+  if (q.kind === "objective" && q.options.length){
+    const multi = q.type === 2;
+    input = `<div class="m-opts">` + q.options.map((o,j)=>{
+      const name = `mq_${i}`;
+      return `<label class="m-opt" data-q="${i}" data-oid="${esc(o.id)}">
+        <input type="${multi ? "checkbox" : "radio"}" name="${name}" value="${esc(o.id)}">
+        <span>${esc(o.text)}</span></label>`;
+    }).join("") + `</div>`;
+  } else {
+    input = `<textarea class="m-text" data-q="${i}" data-type="${q.type}" placeholder="在此输入你的答案…" style="margin-top:8px"></textarea>`;
+  }
+  return `<div class="m-q">
+    <div class="q-kind">${typeName}${score}</div>
+    <div class="q-t">${i+1}. ${esc(q.title)}</div>
+    ${input}</div>`;
+}
+
+function bindPaperInputs(){
+  // 选项点击切换高亮
+  document.querySelectorAll("#manual-body .m-opt").forEach(lb=>{
+    const input = lb.querySelector("input");
+    const onChg = ()=> lb.classList.toggle("sel", input.checked);
+    input.addEventListener("change", onChg);
+    lb.addEventListener("click", e=>{ if (e.target.tagName !== "INPUT") input.click(); });
+  });
+}
+
+function collectManualAnswers(){
+  if (M.kind === "discuss"){
+    const v = ($("#m-reply") || {}).value || "";
+    return {content: v};
+  }
+  const answers = [];
+  document.querySelectorAll("#manual-body .m-q").forEach((el, i)=>{
+    const q = M.questions[i];
+    if (!q) return;
+    const optInputs = [...el.querySelectorAll("input[type=radio]:checked, input[type=checkbox]:checked")];
+    if (optInputs.length){
+      answers.push({qid: q.qid, type: q.type, content: optInputs.map(o=>o.value).join(",")});
+    } else {
+      const ta = el.querySelector("textarea");
+      if (ta && ta.value.trim()) answers.push({qid: q.qid, type: q.type, content: ta.value.trim()});
+    }
+  });
+  return {answers};
+}
+
+async function submitManual(){
+  if (!M || !M.task) return;
+  const btn = $("#btn-manual-submit");
+  btn.disabled = true; btn.textContent = "提交中…";
+  try{
+    let res;
+    if (M.kind === "discuss"){
+      const {content} = collectManualAnswers();
+      if (!content.trim()) return toast("回复内容不能为空", "warn");
+      res = await api("/api/user/task/discuss/submit", {method:"POST", body:{
+        username: S.user, course: courseRef(),
+        content_id: String(M.task.contentId), unit_id: String(M.task.unitId), content,
+      }});
+    } else {
+      const {answers} = collectManualAnswers();
+      if (!answers.length) return toast("请先作答", "warn");
+      res = await api("/api/user/task/paper/submit", {method:"POST", body:{
+        username: S.user, course: courseRef(),
+        content_id: String(M.task.contentId), answers,
+      }});
+    }
+    toast(res.message || "提交成功", "ok");
+    $("#manual-mask").classList.remove("show");
+    await loadDetail();   // 刷新任务列表显示新状态
+  }catch(e){
+    toast(e.message, "error");
+  }finally{
+    btn.disabled = false; btn.textContent = "提 交";
+  }
 }
 
 function startWatch(){
@@ -1309,18 +1501,19 @@ async function toggleBrush(){
     }catch(e){ toast(e.message,"error"); btn.disabled=false; btn.textContent = "停 止 刷 课"; }
     return;
   }
-  // 收集参数
-  const mode = document.querySelector('input[name="mode"]:checked').value;
+  // 收集参数:类型勾选(一个或多个) + 刷时长开关
+  loadAiState();
+  const durationOn = $("#chk-duration").checked;
+  let mode = durationOn ? "duration" : "types";
   let types = [];
-  if (mode === "types"){
+  if (!durationOn){
     types = [...document.querySelectorAll("#type-chips input:checked")].map(i=>+i.value);
     if (!types.length) return toast("请至少勾选一种任务类型","warn");
   }
-  // AI 门槛:全部未完成 / 勾选了讨论(6)、作业(11) 需要 AI(配置取自浏览器本地)
-  loadAiState();
-  const needsAi = mode === "all" || (mode === "types" && types.some(t => t === 6 || t === 11));
+  // AI 门槛:勾选了讨论(6)、作业(11) 需要 AI(配置取自浏览器本地)
+  const needsAi = !durationOn && types.some(t => t === 6 || t === 11);
   if (needsAi && !S.aiConfigured){
-    toast("该模式包含讨论/作业,请先填写 AI 配置", "warn");
+    toast("已勾选讨论/作业,请先在「AI 设置」中填写 AI 配置", "warn");
     openAiModal();
     return;
   }
@@ -1382,20 +1575,11 @@ $("#btn-qr-cancel").addEventListener("click", ()=> hideQrModal(true));
 // 叉号 / 点击遮罩:随时手动关闭二维码弹窗(并取消后端轮询)
 $("#btn-qr-x").addEventListener("click", ()=> hideQrModal(true));
 $("#qr-mask").addEventListener("click", e=>{ if (e.target === $("#qr-mask")) hideQrModal(true); });
-// 按类型刷:取消勾选置灰
-document.querySelectorAll('input[name="mode"]').forEach(r=>{
-  r.addEventListener("change", ()=>{
-    const on = r.value === "types";
-    document.querySelectorAll("#type-chips input").forEach(i=>{
-      i.disabled = !on;
-      i.closest("label").style.opacity = on ? 1 : 0.35;
-    });
-    renderAiGateHint();
-  });
-});
+// 类型勾选 / 刷时长开关变化时,刷新 AI 门槛提示
 document.querySelectorAll("#type-chips input").forEach(i=>{
   i.addEventListener("change", renderAiGateHint);
 });
+$("#chk-duration").addEventListener("change", renderAiGateHint);
 // AI 设置
 $("#btn-ai").addEventListener("click", openAiModal);
 $("#btn-ai-gate").addEventListener("click", openAiModal);
@@ -1404,6 +1588,12 @@ $("#btn-ai-test").addEventListener("click", testAi);
 $("#btn-ai-save").addEventListener("click", saveAi);
 $("#btn-ai-clear").addEventListener("click", clearAi);
 $("#ai-mask").addEventListener("click", e=>{ if (e.target === $("#ai-mask")) $("#ai-mask").classList.remove("show"); });
+// 手动作答弹窗
+$("#btn-manual-submit").addEventListener("click", submitManual);
+function closeManual(){ $("#manual-mask").classList.remove("show"); }
+$("#btn-manual-x").addEventListener("click", closeManual);
+$("#btn-manual-close").addEventListener("click", closeManual);
+$("#manual-mask").addEventListener("click", e=>{ if (e.target === $("#manual-mask")) closeManual(); });
 // 恢复上次用户名
 const savedUser = localStorage.getItem("mooc_user");
 if (savedUser) {

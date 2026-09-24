@@ -419,7 +419,7 @@ async function toggleProgress(u, btn){
       const timeText = p && p.learntime_text ? p.learntime_text : "-";
       const compText = p && p.completion_text ? p.completion_text : "-";
       const img = c.imgUrl
-        ? `<img src="${esc(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
+        ? `<img src="/api/user/img?url=${encodeURIComponent(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
         : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
       return `
       <div class="prog-item">

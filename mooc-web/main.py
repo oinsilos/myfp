@@ -11,13 +11,17 @@
 
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
+import requests as _requests
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from core.ai_client import test_provider
 from core.courses import getcourselist
+from core.disussion import get_discuss, submit_reply_manual
+from core.homework import fetch_paper, submit_manual
 from core.login import get_userid
 from core.tasks import gettaskid
 from core.video import learnprogress
@@ -29,6 +33,13 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+# 课程图片代理允许的域名后缀(防 SSRF);课程封面均来自网易 nosdn CDN
+IMG_ALLOWED_SUFFIX = ".nosdn.127.net"
+IMG_FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+    "Referer": "https://www.icourse163.org/",
+}
 
 store = Store()
 loops = LoginFlowManager(store)
@@ -112,6 +123,35 @@ class AdminAddUser(BaseModel):
     username: str
 
 
+class CourseRef(BaseModel):
+    """课程定位信息(referer 拼接用)。"""
+    course_id: str
+    term_id: str
+    short_name: str = ""
+    name: str = ""
+
+
+class DiscussSubmitIn(BaseModel):
+    username: str
+    course: CourseRef
+    content_id: str      # 帖子 id
+    unit_id: str         # 讨论单元 id
+    content: str = Field(min_length=1, max_length=5000)
+
+
+class ManualAnswer(BaseModel):
+    qid: str
+    type: int
+    content: str = Field(max_length=20000)
+
+
+class PaperSubmitIn(BaseModel):
+    username: str
+    course: CourseRef
+    content_id: str      # 作业/测验的 contentId(tid)
+    answers: list[ManualAnswer]
+
+
 def _safe_username(name: str) -> str:
     try:
         return validate_username(name)
@@ -124,6 +164,14 @@ def _user_session_or_401(username: str):
     if sess is None:
         raise HTTPException(status_code=401, detail="未登录或cookie已失效,请重新扫码")
     return sess
+
+
+def _course_ref_to_referer(sess, username, course: CourseRef) -> str:
+    """校验用户会话并拼接课程 referer。"""
+    csrfkey = sess.cookies.get("NTESSTUDYSI")
+    if not csrfkey:
+        raise HTTPException(status_code=401, detail="cookie信息不完整,请重新扫码")
+    return f"https://www.icourse163.org/learn/{course.short_name}-{course.course_id}?tid={course.term_id}"
 
 
 # ============================================================
@@ -218,6 +266,112 @@ def user_progress(
     referer = f"https://www.icourse163.org/learn/{short_name}-{course_id}?tid={term_id}"
     progress = learnprogress(sess, csrfkey, referer, term_id)
     return {"progress": progress}
+
+
+@app.get("/api/user/img", tags=["user"])
+def user_img(url: str = Query(...)):
+    """课程封面图代理:解决浏览器直连 CDN 的 Referer 防盗链/mixed-content 问题。
+
+    仅允许网易 nosdn CDN 域名(防 SSRF),响应可缓存一天。
+    """
+    target = url.strip()
+    host = (urlparse(target).hostname or "").lower()
+    if not host.endswith(IMG_ALLOWED_SUFFIX):
+        raise HTTPException(status_code=400, detail="不允许的图片域名")
+    if target.startswith("http://"):
+        target = "https://" + target[len("http://"):]
+    try:
+        r = _requests.get(target, headers=IMG_FETCH_HEADERS, timeout=15)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"图片拉取失败:{e}") from e
+    if r.status_code != 200 or not r.content:
+        raise HTTPException(status_code=502, detail=f"图片拉取失败:HTTP {r.status_code}")
+    return Response(
+        content=r.content,
+        media_type=r.headers.get("Content-Type", "image/jpeg"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ---------- 手动作答:讨论 / 作业 / 测验 ----------
+
+@app.get("/api/user/task/discuss", tags=["user"])
+def task_discuss(
+    username: str = Query(...),
+    course_id: str = Query(...),
+    term_id: str = Query(...),
+    short_name: str = Query(...),
+    content_id: str = Query(...),
+    unit_id: str = Query(...),
+):
+    """查看讨论帖标题与正文(手动作答用)。"""
+    username = _safe_username(username)
+    sess = _user_session_or_401(username)
+    csrfkey = sess.cookies.get("NTESSTUDYSI")
+    if not csrfkey:
+        raise HTTPException(status_code=401, detail="cookie信息不完整,请重新扫码")
+    referer = f"https://www.icourse163.org/learn/{short_name}-{course_id}?tid={term_id}"
+    task = {"contentId": content_id, "unitId": unit_id}
+    title, content = get_discuss(sess, csrfkey, task, referer)
+    return {"title": title, "content": content}
+
+
+@app.post("/api/user/task/discuss/submit", tags=["user"])
+def task_discuss_submit(payload: DiscussSubmitIn):
+    """手动回复讨论帖。"""
+    username = _safe_username(payload.username)
+    sess = _user_session_or_401(username)
+    csrfkey = sess.cookies.get("NTESSTUDYSI")
+    if not csrfkey:
+        raise HTTPException(status_code=401, detail="cookie信息不完整")
+    referer = _course_ref_to_referer(sess, username, payload.course)
+    task = {"contentId": payload.content_id, "unitId": payload.unit_id}
+    ok, msg = submit_reply_manual(sess, csrfkey, task, referer, payload.content)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.get("/api/user/task/paper", tags=["user"])
+def task_paper(
+    username: str = Query(...),
+    course_id: str = Query(...),
+    term_id: str = Query(...),
+    short_name: str = Query(...),
+    content_id: str = Query(...),
+):
+    """查看作业/测验试卷题目(客观题含选项)。"""
+    username = _safe_username(username)
+    sess = _user_session_or_401(username)
+    csrfkey = sess.cookies.get("NTESSTUDYSI")
+    if not csrfkey:
+        raise HTTPException(status_code=401, detail="cookie信息不完整,请重新扫码")
+    referer = f"https://www.icourse163.org/learn/{short_name}-{course_id}?tid={term_id}"
+    paper, questions = fetch_paper(sess, csrfkey, {"contentId": content_id}, referer)
+    if paper is None:
+        raise HTTPException(status_code=502, detail="试卷拉取失败")
+    return {
+        "tname": paper.get("tname", ""),
+        "submitStatus": paper.get("submitStatus"),
+        "questions": questions,
+    }
+
+
+@app.post("/api/user/task/paper/submit", tags=["user"])
+def task_paper_submit(payload: PaperSubmitIn):
+    """以用户手动作答提交作业/测验。"""
+    username = _safe_username(payload.username)
+    sess = _user_session_or_401(username)
+    csrfkey = sess.cookies.get("NTESSTUDYSI")
+    if not csrfkey:
+        raise HTTPException(status_code=401, detail="cookie信息不完整")
+    referer = _course_ref_to_referer(sess, username, payload.course)
+    task = {"contentId": payload.content_id}
+    answers = [a.model_dump() for a in payload.answers]
+    ok, msg = submit_manual(sess, csrfkey, task, referer, answers)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "message": msg}
 
 
 @app.post("/api/user/brush/start", tags=["user"])
