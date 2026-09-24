@@ -1,7 +1,9 @@
-"""AI 客户端:按用户配置调用 OpenAI 兼容接口。
+"""AI 客户端:按调用方传入的配置调用 OpenAI 兼容接口。
 
-不内置任何默认 API Key;provider 由用户在 Web 端自行配置
-(name / base_url / api_key / model),并支持连通性测试。
+本模块与整个服务端**不保存任何 API Key**:
+provider 配置(name / base_url / api_key / model)由用户在浏览器本地填写,
+仅在发起刷课任务或连通性测试时随请求传入,使用后即随任务对象释放。
+代码内亦不内置任何默认 Key 或默认 provider。
 """
 
 import time
@@ -10,32 +12,6 @@ from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 import requests
 import openai
-
-# 预设 provider 元模板:仅提供 base_url / model 参考值,不含任何密钥
-PRESET_PROVIDERS = [
-    {
-        "name": "deepseek",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-    },
-    {
-        "name": "openrouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        "model": "meta-llama/llama-3.3-70b-instruct",
-    },
-    {
-        "name": "modelscope",
-        "base_url": "https://api-inference.modelscope.cn/v1",
-        "model": "deepseek-ai/DeepSeek-V3.2",
-    },
-    {
-        "name": "mimo",
-        "base_url": "https://api.xiaomimimo.com/v1",
-        "model": "mimo-v2.5",
-    },
-]
-
-_clients = {}
 
 
 def is_configured(provider) -> bool:
@@ -49,13 +25,14 @@ def is_configured(provider) -> bool:
 
 
 def get_client(provider):
-    key = (provider["name"], provider["base_url"], provider["api_key"], provider["model"])
-    if key not in _clients:
-        _clients[key] = OpenAI(
-            base_url=provider["base_url"],
-            api_key=provider["api_key"],
-        )
-    return _clients[key]
+    """按传入配置临时创建客户端。
+
+    不缓存客户端,避免用户 Key 长期驻留服务端内存。
+    """
+    return OpenAI(
+        base_url=provider["base_url"],
+        api_key=provider["api_key"],
+    )
 
 
 @retry(

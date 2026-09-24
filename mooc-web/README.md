@@ -30,11 +30,14 @@ mooc-web/
 │   └── admin.html        #   管理页面(仅本机可访问)
 ├── data/
 │   ├── users.json        #   用户注册表(运行时自动生成)
-│   ├── cookies/          #   cookie_{username}.json 按用户隔离存储
-│   └── ai/               #   ai_{username}.json 按用户隔离的 AI 配置
+│   └── cookies/          #   cookie_{username}.json 按用户隔离存储
 ├── requirements.txt
 └── README.md
 ```
+
+> **服务端不保存任何 AI Key**：AI 配置（含 API Key）由用户在本浏览器填写，
+> 存于 `localStorage`，仅在启动刷课或点击连通性测试时随请求一次性传给后端，
+> 使用后即随任务对象释放，服务端不落盘、不缓存。
 
 ## 调用关系
 
@@ -86,8 +89,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 6. **AI 设置**（顶栏入口）：
    - 讨论、作业类任务需要调用 AI，**未配置 AI 时相关模式无法启动**（前后端双重拦截）；
    - 可选择预设 provider（deepseek/openrouter/modelscope/mimo）或完全自定义：名称、Base URL、API Key、模型均可手填；
-   - 保存前可点击「连通性测试」实测接口可用性；
-   - 代码中不内置任何默认 API Key；配置按用户隔离存放于 `data/ai/ai_{username}.json`，API Key 在接口返回时打码，不落前端。
+   - 配置**只保存在当前浏览器**（`localStorage`，键 `mooc_ai_config::<用户名>`），提供「清除配置」按钮；
+   - 保存前可点击「连通性测试」实测接口可用性（后端仅做一次探测，不留存）；
+   - 代码与 `requirements.txt` 中不内置任何默认 Key；后端接收 AI 配置仅在发起刷课任务时，存于任务对象内存，不写入磁盘。
 
 ### 管理页面（仅本机）
 - 添加 / 删除用户（删除同时清理其 cookie 文件）；
@@ -103,13 +107,10 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 | GET  | /api/user/courses?username= | 课程列表 |
 | GET  | /api/user/course/detail?… | 课程任务+进度 |
 | GET  | /api/user/progress?… | 仅进度(周期刷新) |
-| POST | /api/user/brush/start | 启动刷课 |
+| POST | /api/user/brush/start | 启动刷课(需要 AI 的模式须在 body 带 `ai` 配置) |
 | POST | /api/user/brush/stop | 停止刷课 |
 | GET  | /api/user/brush/status?username= | 刷课状态(日志/进度) |
-| GET  | /api/user/ai/config?username= | 用户 AI 配置(打码)+预设模板 |
-| POST | /api/user/ai/config | 保存 AI 配置 |
-| DELETE | /api/user/ai/config?username= | 删除 AI 配置 |
-| POST | /api/user/ai/test | AI 连通性测试 |
+| POST | /api/user/ai/test | AI 连通性测试(配置随请求传入,不保存) |
 | GET  | /api/admin/users | 用户列表(仅本机) |
 | POST | /api/admin/users | 添加用户 |
 | DELETE | /api/admin/users/{u} | 删除用户 |
@@ -130,4 +131,5 @@ curl "http://127.0.0.1:8000/api/user/courses?username=testuser"
 ## 备注
 
 - 管理页仅限本机：由 `main.py` 中 `admin_local_only` 中间件基于 `request.client.host` 强制，代理部署时需注意客户端 IP 透传；
-- 讨论/作业任务的 AI 作答依赖用户在「AI 设置」中自行配置的 OpenAI 兼容接口（name/base_url/api_key/model），代码不内置任何默认 Key；未配置时含讨论/作业的刷课模式被拒绝启动，视频/PPT 刷课不受影响。
+- 讨论/作业任务的 AI 作答依赖用户在浏览器「AI 设置」中自行填写的 OpenAI 兼容接口（name/base_url/api_key/model）；**服务端与代码均不保存任何 Key**，未配置时含讨论/作业的刷课模式被拒绝启动，视频/PPT 刷课不受影响；
+- 由于 Key 存于浏览器 `localStorage`，更换浏览器或清除浏览器数据后需重新填写。
