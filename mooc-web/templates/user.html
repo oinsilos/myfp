@@ -1051,12 +1051,20 @@ async function enterCourses(){
   }catch(e){
     toast(e.message, "error");
     if (e.status === 401) { goLogin(true); return; }
-    showView("view-login");
+    // 网络/服务异常:停留在课程视图并明确提示,不闪回登录页
+    showView("view-courses");
+    setChip(S.user);
+    $("#courses-sub").textContent = "";
+    $("#course-grid").innerHTML = "";
+    $("#courses-empty").style.display = "block";
+    $("#courses-empty").textContent = "课程加载失败:" + e.message + "，请检查网络后重试";
   }
 }
 
 function renderCourses(list){
   const grid = $("#course-grid");
+  // 每次渲染重置空态文案(避免上一次错误信息残留)
+  $("#courses-empty").textContent = "未获取到课程，请确认已选课或联系管理员添加用户后重新扫码";
   $("#courses-empty").style.display = list.length ? "none" : "block";
   $("#courses-sub").textContent = `共 ${list.length} 门课`;
   grid.innerHTML = list.map((c,i)=>{

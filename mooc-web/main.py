@@ -57,12 +57,19 @@ async def admin_local_only(request: Request, call_next):
 # ============================================================
 @app.get("/", include_in_schema=False)
 def page_user():
-    return FileResponse(TEMPLATES_DIR / "user.html")
+    # no-store:页面迭代频繁,避免浏览器缓存旧版 HTML
+    return FileResponse(
+        TEMPLATES_DIR / "user.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/admin", include_in_schema=False)
 def page_admin():
-    return FileResponse(TEMPLATES_DIR / "admin.html")
+    return FileResponse(
+        TEMPLATES_DIR / "admin.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ============================================================
