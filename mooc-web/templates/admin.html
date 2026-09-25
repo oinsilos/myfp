@@ -295,10 +295,52 @@ async function pingLocal(){
 /* ================= 列表与统计 ================= */
 let rows = [];
 
+let expanded = null;                 // 当前展开进度面板的用户名
+const progCache = {};                // username -> {tt, html} 已加载的进度内容
+
 function badgeHTML(v){
   if (v === true)  return '<span class="badge ok"><span class="dot"></span>有效</span>';
   if (v === false) return '<span class="badge bad"><span class="dot"></span>已失效</span>';
   return '<span class="badge unk"><span class="dot"></span>未检测</span>';
+}
+
+// 生成展开行内容(供渲染与刷新复用)
+function expandRowHTML(username){
+  const isExp = expanded === username;
+  const pc = progCache[username] || {tt: "加载中…", html: ""};
+  return `<tr class="expand" data-exp="${esc(username)}" style="${isExp ? "" : "display:none"}">
+    <td colspan="5"><div class="prog-wrap">
+      <div class="tt">${esc(pc.tt)}</div>
+      <div class="prog-grid">${pc.html}</div>
+    </div></td></tr>`;
+}
+
+// 生成某用户的课程进度列表 HTML
+function buildProgressHTML(list){
+  return list.map(c=>{
+    const total = c.lessonsCount||0, learned = c.learnedCount||0;
+    const pct = total ? Math.round(learned*100/total) : 0;
+    const p = c.progress;
+    const timeText = p && p.learntime_text ? p.learntime_text : "-";
+    const compText = p && p.completion_text ? p.completion_text : "-";
+    const img = c.imgUrl
+      ? `<img src="/api/user/img?url=${encodeURIComponent(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
+      : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
+    return `
+    <div class="prog-item">
+      ${img}
+      <div class="info">
+        <div class="cn">${esc(c.name||"未命名课程")}${c.is_finished?' <span class="badge ok" style="font-size:10.5px;padding:1px 8px">已完成</span>':""}</div>
+        <div class="cs">${esc(c.shortName||"")} · 学期 ${esc(String(c.termId??"-"))}</div>
+        <div class="p-nums">已学 ${learned} / ${total} 学时</div>
+        <div class="p-bar"><i style="width:${pct}%"></i></div>
+      </div>
+      <div class="p-right">
+        <div class="time">${esc(timeText)}</div>
+        <div class="comp">${esc(compText)} · 视频 ${p ? p.learnedVideo : "-"}</div>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 function render(){
@@ -327,12 +369,12 @@ function render(){
       <td>
         <div class="acts">
           <button class="btn-mini" data-act="check" ${r.has_cookie?"":"disabled"}>检测</button>
-          <button class="btn-mini" data-act="view" ${r.has_cookie?"":"disabled"}>课程进度</button>
+          <button class="btn-mini" data-act="view" ${r.has_cookie?"":"disabled"}>${expanded === r.username ? "收起进度" : "课程进度"}</button>
           <button class="btn-mini danger" data-act="del">删除</button>
         </div>
       </td>
     </tr>
-    <tr class="expand" data-exp="${esc(r.username)}" style="display:none"><td colspan="5"><div class="prog-wrap"><div class="tt" id="prog-tt">加载中…</div><div class="prog-grid" id="prog-grid"></div></div></td></tr>`;
+    ${expandRowHTML(r.username)}`;
   }).join("");
 
   // 统计
@@ -355,7 +397,7 @@ function render(){
       const u = b.closest("tr.row-main").dataset.u;
       const act = b.dataset.act;
       if (act === "check") await doCheck(u, b);
-      else if (act === "view") toggleProgress(u, b);
+      else if (act === "view") toggleProgress(u);
       else if (act === "del") await doDelete(u);
     });
   });
@@ -392,54 +434,26 @@ async function doCheck(u, btn){
   }
 }
 
-let expanded = null;
-async function toggleProgress(u, btn){
-  const row = document.querySelector(`tr[data-exp="${CSS.escape(u)}"]`);
-  if (!row) return;
-  if (expanded === u){ row.style.display = "none"; expanded = null; btn.textContent = "课程进度"; return; }
+// 展开/收起某用户的课程进度面板。
+// 注意:进度内容放入 progCache 后由 render() 统一渲染,
+// 因为 render() 会重建整个 tbody(15s 自动刷新同样会触发),直接改 DOM 会被覆盖。
+async function toggleProgress(u){
+  if (expanded === u){ expanded = null; render(); return; }
   expanded = u;
-  // 收起其他
-  document.querySelectorAll("tr[data-exp]").forEach(r=>r.style.display = "none");
-  document.querySelectorAll('button[data-act="view"]').forEach(b=>b.textContent = "课程进度");
-  row.style.display = ""; btn.textContent = "收起进度";
-  const grid = row.querySelector("#prog-grid");
-  const tt = row.querySelector("#prog-tt");
-  grid.innerHTML = ""; tt.textContent = "正在获取课程进度…";
+  progCache[u] = {tt: "正在获取课程进度…", html: ""};
+  render();
   try{
     const res = await api(`/api/admin/users/${enc(u)}/courses`);
     validCache[u] = !!res.valid;
-    render();
     const list = res.courses || [];
-    if (!list.length){ tt.textContent = "该用户暂无课程数据"; return; }
-    tt.textContent = `共 ${list.length} 门课程 · 学习时长与完成进度`;
-    grid.innerHTML = list.map(c=>{
-      const total = c.lessonsCount||0, learned = c.learnedCount||0;
-      const pct = total ? Math.round(learned*100/total) : 0;
-      const p = c.progress;
-      const timeText = p && p.learntime_text ? p.learntime_text : "-";
-      const compText = p && p.completion_text ? p.completion_text : "-";
-      const img = c.imgUrl
-        ? `<img src="/api/user/img?url=${encodeURIComponent(c.imgUrl)}" loading="lazy" alt="" onerror="this.outerHTML='<span class=ph>${esc((c.name||'课')[0])}</span>'">`
-        : `<span class="ph">${esc((c.name||'课')[0])}</span>`;
-      return `
-      <div class="prog-item">
-        ${img}
-        <div class="info">
-          <div class="cn">${esc(c.name||"未命名课程")}${c.is_finished?' <span class="badge ok" style="font-size:10.5px;padding:1px 8px">已完成</span>':""}</div>
-          <div class="cs">${esc(c.shortName||"")} · 学期 ${esc(String(c.termId??"-"))}</div>
-          <div class="p-nums">已学 ${learned} / ${total} 学时</div>
-          <div class="p-bar"><i style="width:${pct}%"></i></div>
-        </div>
-        <div class="p-right">
-          <div class="time">${esc(timeText)}</div>
-          <div class="comp">${esc(compText)} · 视频 ${p ? p.learnedVideo : "-"}</div>
-        </div>
-      </div>`;
-    }).join("");
+    progCache[u] = list.length
+      ? {tt: `共 ${list.length} 门课程 · 学习时长与完成进度`, html: buildProgressHTML(list)}
+      : {tt: "该用户暂无课程数据", html: ""};
   }catch(e){
-    tt.textContent = "获取失败：" + e.message;
+    progCache[u] = {tt: `获取失败：${e.message}（可点「检测」确认 cookie 是否失效）`, html: ""};
     toast(e.message, "error");
   }
+  render();
 }
 
 async function doDelete(u){
@@ -447,6 +461,7 @@ async function doDelete(u){
   try{
     await api(`/api/admin/users/${enc(u)}`, {method:"DELETE"});
     delete validCache[u];
+    delete progCache[u];
     if (expanded === u) expanded = null;
     toast(`已删除用户「${u}」`, "ok");
     await loadList();
