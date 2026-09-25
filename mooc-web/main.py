@@ -25,7 +25,7 @@ from core.homework import fetch_paper, submit_manual
 from core.login import get_userid
 from core.tasks import gettaskid
 from core.video import learnprogress
-from services.brush import BrushManager, decorate_tasks, mode_needs_ai
+from services.brush import BRUSHABLE_TYPES, BrushManager, decorate_tasks, mode_needs_ai
 from services.login import LoginFlowManager
 from services.store import Store, validate_username
 
@@ -101,10 +101,12 @@ class AiProviderIn(BaseModel):
 class BrushStartIn(BaseModel):
     username: str
     course: dict                       # {course_id, term_id, short_name, name}
-    mode: str = "all"                  # all | types | duration
-    types: list[int] = []              # mode=types 时生效
+    mode: str = "types"                # types(按勾选类型刷未完成) | duration(刷时长,仅视频)
+    types: list[int] = []              # mode=types 时生效;留空=全部类型
     speed: int = Field(300, ge=1, le=3600)
     ai: AiProviderIn | None = None     # 需要 AI 的任务类型时必须携带(来自浏览器本地配置)
+    duration_mode: str = "target"      # 刷时长停止条件:target(刷到课程总时长) | session(本次新增时长)
+    duration_sec: int = Field(0, ge=0, le=3600000)   # 目标/新增时长(秒)
 
 
 class StopIn(BaseModel):
@@ -382,17 +384,24 @@ def brush_start(payload: BrushStartIn):
         if not course.get(key):
             raise HTTPException(status_code=400, detail=f"课程信息缺少字段:{key}")
     mode = payload.mode
-    if mode not in ("all", "types", "duration"):
-        raise HTTPException(status_code=400, detail="mode 必须为 all/types/duration")
+    if mode not in ("types", "duration"):
+        raise HTTPException(status_code=400, detail="mode 必须为 types/duration")
     types = payload.types if mode == "types" else []
-    if mode == "types" and not types:
-        raise HTTPException(status_code=400, detail="按类型刷课需要至少勾选一种类型")
+    if mode == "types" and payload.types and not set(types) & BRUSHABLE_TYPES:
+        raise HTTPException(status_code=400, detail="勾选的任务类型无效")
+    if mode == "duration":
+        if payload.duration_mode not in ("target", "session"):
+            raise HTTPException(status_code=400, detail="duration_mode 必须为 target/session")
+        if payload.duration_sec <= 0:
+            raise HTTPException(status_code=400, detail="请设置要刷的时长(大于 0)")
     ai_config = payload.ai.model_dump() if payload.ai else None
     if mode_needs_ai(mode, types) and ai_config is None:
         raise HTTPException(
             status_code=409,
             detail="该模式包含讨论/作业任务,请先在「AI 设置」中填写 AI 配置")
-    ok, msg = brushman.start(username, course, mode, types, payload.speed, ai_config)
+    ok, msg = brushman.start(username, course, mode, types, payload.speed, ai_config,
+                             duration_mode=payload.duration_mode,
+                             duration_sec=payload.duration_sec)
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return {"ok": True, "message": msg}

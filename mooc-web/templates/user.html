@@ -244,6 +244,25 @@
   .type-chips input:checked + .chip::before{
     content:"✓"; background:var(--tc,var(--gold)); color:#12151c;
   }
+  /* 刷时长设置 */
+  .type-chips.dimmed{opacity:.35; pointer-events:none}
+  .dur-opts{
+    display:none; flex-direction:column; gap:11px; margin-top:10px;
+    padding:13px 15px; border-radius:12px;
+    border:1px dashed rgba(232,200,120,.4); background:rgba(232,180,90,.05);
+  }
+  .dur-opts.show{display:flex}
+  .dur-input{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .dur-input input{
+    width:96px; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:8px 11px; border-radius:9px; font-size:14px; font-family:var(--mono); outline:none;
+  }
+  .dur-input input:focus{border-color:var(--gold-dim)}
+  .dur-input select{
+    background:var(--bg2); border:1px solid var(--line); color:var(--ink);
+    padding:8px 10px; border-radius:9px; font-size:13.5px; outline:none; cursor:pointer;
+  }
+  .dur-hint{font-size:12px; color:var(--gold-hi); letter-spacing:.5px}
   .speed-box{display:flex; align-items:center; gap:10px}
   .speed-box input{
     width:110px; background:var(--bg2); border:1px solid var(--line); color:var(--ink);
@@ -600,6 +619,20 @@
           </div>
           <div class="type-chips" id="seg-duration" style="margin-top:10px">
             <label><input type="checkbox" id="chk-duration" style="position:absolute;opacity:0"><span class="chip" style="--tc:#e8b45a">刷时长（仅视频，含已完成）</span></label>
+          </div>
+          <div class="dur-opts" id="dur-opts">
+            <div class="seg" id="seg-dur-mode">
+              <label><input type="radio" name="durm" value="target" checked><span class="chip">刷到课程总时长</span></label>
+              <label><input type="radio" name="durm" value="session"><span class="chip">本次刷够时长</span></label>
+            </div>
+            <div class="dur-input">
+              <input id="dur-value" type="number" value="10" min="1" max="999">
+              <select id="dur-unit">
+                <option value="60">分钟</option>
+                <option value="3600" selected>小时</option>
+              </select>
+              <span class="dur-hint" id="dur-hint"></span>
+            </div>
           </div>
         </div>
         <div class="ctl-group">
@@ -1072,6 +1105,30 @@ function clearAi(){
   renderAiGateHint();
 }
 
+/* ---------- 刷时长设置 ---------- */
+function durSeconds(){
+  const v = parseFloat($("#dur-value").value);
+  const unit = parseInt($("#dur-unit").value, 10) || 60;
+  return Math.round((v || 0) * unit);
+}
+function durMode(){
+  const r = document.querySelector('input[name="durm"]:checked');
+  return r ? r.value : "target";
+}
+function updateDurHint(){
+  const secs = durSeconds();
+  const t = durMode() === "target"
+    ? `刷到课程累计学习时长达 ${fmtClock(secs)} 即停止`
+    : `本次累计新增 ${fmtClock(secs)} 学习时长后停止`;
+  $("#dur-hint").textContent = secs > 0 ? t : "请填写大于 0 的时长";
+}
+function renderDurationOpts(){
+  const on = $("#chk-duration").checked;
+  $("#dur-opts").classList.toggle("show", on);
+  $("#type-chips").classList.toggle("dimmed", on);   // 刷时长只刷视频,类型勾选不参与
+  updateDurHint();
+}
+
 function currentBrushNeedsAi(){
   // 刷时长只刷视频,不需要 AI;否则看勾选类型是否含讨论(6)/作业(11)
   if ($("#chk-duration").checked) return false;
@@ -1472,11 +1529,30 @@ function applyBrushSnapshot(st, initial){
   }
   $("#warn-other").classList.remove("show");
   btn.disabled = false;
+  // 若是刷时长任务,把控制台设置同步为运行中的参数,避免界面与实际不一致
+  if (st.mode === "duration" && initial){
+    $("#chk-duration").checked = true;
+    const r = document.querySelector(`input[name="durm"][value="${st.duration_mode === "session" ? "session" : "target"}"]`);
+    if (r) r.checked = true;
+    if (st.duration_sec > 0){
+      const useHour = st.duration_sec % 3600 === 0;
+      $("#dur-unit").value = useHour ? "3600" : "60";
+      $("#dur-value").value = useHour ? st.duration_sec / 3600 : Math.round(st.duration_sec / 60);
+    }
+    renderDurationOpts();
+  }
   S.curTaskKey = st.current_key || null;
   $("#job-now").classList.remove("hidden");
   $("#job-task").textContent = st.current_task || "准备中…";
   $("#job-prog").textContent = st.current_progress || "";
-  $("#job-cnt").textContent = `已完成 ${st.done_count}/${st.total_count}`;
+  if (st.mode === "duration"){
+    const cond = st.duration_mode === "session"
+      ? `本次新增目标 ${fmtClock(st.duration_sec)}`
+      : `课程总时长目标 ${fmtClock(st.duration_sec)}`;
+    $("#job-cnt").textContent = `${cond} · 已刷 ${st.done_count} 个视频`;
+  } else {
+    $("#job-cnt").textContent = `已完成 ${st.done_count}/${st.total_count}`;
+  }
   // 任务定位:从日志里找最近一条 "开始处理:" 的 current_task 无法直接对应行,
   // 我们通过当前 progress 无法定位精确行,这里用 done_count 变化触发整表刷新。
   renderLog(st.log, false);
@@ -1518,7 +1594,11 @@ async function toggleBrush(){
   const durationOn = $("#chk-duration").checked;
   let mode = durationOn ? "duration" : "types";
   let types = [];
-  if (!durationOn){
+  let durationSec = 0;
+  if (durationOn){
+    durationSec = durSeconds();
+    if (durationSec <= 0) return toast("请设置要刷的时长(大于 0)","warn");
+  } else {
     types = [...document.querySelectorAll("#type-chips input:checked")].map(i=>+i.value);
     if (!types.length) return toast("请至少勾选一种任务类型","warn");
   }
@@ -1536,6 +1616,7 @@ async function toggleBrush(){
     username: S.user,
     course: {course_id:String(c.courseId), term_id:String(c.termId), short_name:c.shortName||"", name:c.name||""},
     mode, types, speed,
+    duration_mode: durMode(), duration_sec: durationSec,
     // AI 配置随请求下发(浏览器本地存储),服务端不落盘
     ai: S.aiConfigured ? S.aiConfig : null,
   };
@@ -1591,7 +1672,13 @@ $("#qr-mask").addEventListener("click", e=>{ if (e.target === $("#qr-mask")) hid
 document.querySelectorAll("#type-chips input").forEach(i=>{
   i.addEventListener("change", renderAiGateHint);
 });
-$("#chk-duration").addEventListener("change", renderAiGateHint);
+$("#chk-duration").addEventListener("change", ()=>{ renderDurationOpts(); renderAiGateHint(); });
+document.querySelectorAll('input[name="durm"]').forEach(r=>{
+  r.addEventListener("change", updateDurHint);
+});
+$("#dur-value").addEventListener("input", updateDurHint);
+$("#dur-unit").addEventListener("change", updateDurHint);
+renderDurationOpts();
 // AI 设置
 $("#btn-ai").addEventListener("click", openAiModal);
 $("#btn-ai-gate").addEventListener("click", openAiModal);

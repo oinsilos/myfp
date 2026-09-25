@@ -84,8 +84,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 3. 扫码成功后弹窗自动关闭，自动拉取课程列表；
 4. 点击课程 → 展示学习时长（每 5 秒自动刷新）与任务列表（✓已完成 / ✗未完成）；
 5. 刷课控制台：
-   - **按类型勾选**：视频 / PPT / 讨论 / 作业 四个类型可勾选一个或多个，只刷所选类型中未完成的任务（也支持全选=刷全部未完成）；
-   - **刷时长**：勾选后仅刷视频类型，且已完成视频也从头重刷以累计学习时长；
+   - **按类型勾选**：视频 / PPT / 讨论 / 作业 四个类型可勾选一个或多个，只刷所选类型中未完成的任务（默认全选=刷全部未完成）；
+   - **刷时长**：勾选后仅刷视频类型（此时类型勾选自动置灰不参与），无论视频是否已完成都从头重刷以增加学习时长；
+     停止条件二选一：
+       - `刷到课程总时长`（target）：刷到该课程**累计**学习时长达设定值即停止；
+       - `本次刷够时长`（session）：**本次新增**学习时长达设定值后停止；
+     时长可填数值 + 选择分钟/小时，界面实时显示"刷到课程累计学习时长达 3时0分 即停止"这类确认文案；
    - 速度可自定义（默认 300 秒/次提交）；
    - 启动/停止共用同一按钮；勾选讨论/作业而未配置 AI 时禁止启动（前后端双重拦截）；
 6. 每个任务完成后服务端 `refresh_seq` 变化，前端自动刷新任务列表显示最新进度。
@@ -115,7 +119,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 | GET  | /api/user/courses?username= | 课程列表 |
 | GET  | /api/user/course/detail?… | 课程任务+进度 |
 | GET  | /api/user/progress?… | 仅进度(周期刷新) |
-| POST | /api/user/brush/start | 启动刷课(需要 AI 的模式须在 body 带 `ai` 配置) |
+| POST | /api/user/brush/start | 启动刷课(需要 AI 的类型须在 body 带 `ai` 配置) |
 | POST | /api/user/brush/stop | 停止刷课 |
 | GET  | /api/user/brush/status?username= | 刷课状态(日志/进度) |
 | GET  | /api/user/img?url= | 课程封面图代理(仅网易 nosdn CDN,防 SSRF) |
@@ -130,6 +134,21 @@ uvicorn main:app --host 0.0.0.0 --port 8000   # 用户页需局域网访问
 | POST | /api/admin/users/{u}/check | 强制检测 cookie |
 | GET  | /api/admin/users/{u}/courses | 各课程学习进度 |
 
+### `POST /api/user/brush/start` 请求体
+
+```json
+{
+  "username": "testuser",
+  "course": {"course_id": "1469198164", "term_id": "1476714442", "short_name": "nudt", "name": "信息隐藏技术"},
+  "mode": "types",              // types=按类型刷未完成 | duration=刷时长
+  "types": [1, 3, 6, 11],       // mode=types 时生效;留空=全部类型
+  "speed": 300,                 // 每次提交的秒数
+  "duration_mode": "target",    // mode=duration 时生效:target=刷到课程总时长 | session=本次刷够时长
+  "duration_sec": 10800,        // 目标/新增时长(秒)
+  "ai": {"name": "..", "base_url": "..", "api_key": "..", "model": ".."}   // 需要 AI 时携带
+}
+```
+
 ## 测试验证
 
 仓库内 `data/cookies/cookie_testuser.json` 为随代码提供的测试凭证（用户 `testuser`）。
@@ -140,6 +159,23 @@ curl -X POST http://127.0.0.1:8000/api/user/login -H 'Content-Type: application/
 # 返回 {"status":"ok"...} 即凭证有效
 curl "http://127.0.0.1:8000/api/user/courses?username=testuser"
 ```
+
+## 刷时长机制
+
+刷时长（`mode="duration"`）只处理**视频**任务，且对已完成的视频也从 0 重刷（`finished` 随进度推进自然置真）。
+
+| 停止条件 | `duration_mode` | 判定依据 |
+|---|---|---|
+| 刷到课程总时长 | `target` | 接口返回的课程 `learnedTimeCount` ≥ `duration_sec` |
+| 本次刷够时长 | `session` | 本次 `learnedTimeCount` 增量 ≥ `duration_sec` |
+
+安全设计：
+
+- **真实进度校准**：每刷完一个视频都调 `getTermLearn.rpc` 取真实累计时长判定，而非只依赖本地估算，避免刷过头；接口临时取不到时才回退本地估算；
+- **停滞检测**：若平台连续 2 轮完全未计入重刷时长（部分课程不重复计时），自动停止并提示"该课程可能不支持重复计时"，避免无效上传；
+- **轮数上限**：最多 10 轮循环，防止无限空转；
+- **已达目标即结束**：启动时若累计时长已达标，直接结束，不做任何上传；
+- 长视频优先排序，减少请求次数；随时可点"停止"中断。
 
 ## 二维码过期与超时处理
 
